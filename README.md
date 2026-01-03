@@ -56,7 +56,7 @@ Ghost Agent acts as a bridge between your editor environment and a local Large L
 
 1.  **Clone the repository**
     ```bash
-    git clone [https://github.com/TRXAlpha/ghost-agent.git](https://github.com/TRXAlpha/ghost-agent.git)
+    git clone https://github.com/TRXAlpha/ghost-agent.git
     cd ghost-agent
     ```
 
@@ -68,7 +68,7 @@ Ghost Agent acts as a bridge between your editor environment and a local Large L
     ```
 
 3.  **Configure your Model**
-    *Ensure your local LLM server is running.*
+    *Ensure your local LLM server is running. I used Ollama*
     ```bash
     # Example environment setup
     export LLM_API_URL="http://localhost:11434/api/generate"
