@@ -1,2 +1,0 @@
-[console_scripts]
-ghost = ghost_agent.cli:main

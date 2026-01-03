@@ -1,7 +1,0 @@
-{
-  "id": "mvp_smoketest_001",
-  "title": "Implement fizzbuzz",
-  "goal": "Create a Python script fizzbuzz.py that prints 1..100 with fizz/buzz rules. Add pytest tests.",
-  "constraints": { "test_cmd": "pytest -q", "iteration_limit": 8 },
-  "context": { "notes": "Keep it simple." }
-}

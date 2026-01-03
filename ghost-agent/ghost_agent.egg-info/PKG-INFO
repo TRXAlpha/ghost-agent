@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: ghost-agent
-Version: 0.1.0
-Summary: Local Codex-like coding agent
-Requires-Python: >=3.11
-Requires-Dist: pydantic>=2.6
-Requires-Dist: requests>=2.31
