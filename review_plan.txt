@@ -1,0 +1,10 @@
+### Verification Strategy
+- **Steps:"
+  - Review the `schema.py` review plan to ensure all tasks are completed
+  - Review the `orchestrator.py` review plan to ensure all tasks are completed
+  - Run the following commands to verify:
+    ```sh
+dev/run_tests --path ghost_agent/schema.py
+```\n```sh
+dev/run_tests --path ghost_agent/orchestrator.py
+```

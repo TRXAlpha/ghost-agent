@@ -1,0 +1,6 @@
+........................................................................ [ 44%]
+.......
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+C:\Users\chris\AppData\Local\Python\pythoncore-3.14-64\Lib\threading.py:1470: KeyboardInterrupt
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+79 passed in 3.10s

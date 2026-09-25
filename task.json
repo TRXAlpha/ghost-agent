@@ -1,0 +1,12 @@
+{
+  "id": "my_task_001",
+  "title": "My task",
+  "goal": "Describe what you want the agent to do here.",
+  "constraints": {
+    "test_cmd": "pytest -q",
+    "iteration_limit": 8
+  },
+  "context": {
+    "notes": "Optional notes for the agent."
+  }
+}

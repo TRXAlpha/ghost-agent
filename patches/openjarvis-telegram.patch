@@ -1,0 +1,31 @@
+diff --git a/src/openjarvis/channels/telegram.py b/src/openjarvis/channels/telegram.py
+index 64fccb7..a3b435b 100644
+--- a/src/openjarvis/channels/telegram.py
++++ b/src/openjarvis/channels/telegram.py
+@@ -342,7 +342,7 @@ class TelegramChannel(BaseChannel):
+                     return
+ 
+             if not await self._run_stage_until_stopped(
+-                updater.start_polling(drop_pending_updates=True),
++                updater.start_polling(drop_pending_updates=False),
+                 async_stop_event,
+             ):
+                 return
+@@ -383,7 +383,7 @@ class TelegramChannel(BaseChannel):
+             with self._runtime_lock:
+                 self._app = app
+ 
+-            def _handle_msg(update, context):
++            async def _handle_msg(update, context):
+                 msg = update.message
+                 if msg is None:
+                     return
+@@ -409,7 +409,7 @@ class TelegramChannel(BaseChannel):
+                         return
+                 for handler in self._handlers:
+                     try:
+-                        handler(cm)
++                        await asyncio.to_thread(handler, cm)
+                     except Exception:
+                         logger.exception("Telegram handler error")
+                 if self._bus is not None:

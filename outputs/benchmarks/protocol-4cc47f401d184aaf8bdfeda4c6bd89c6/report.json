@@ -1,0 +1,304 @@
+{
+  "benchmark": "ghost-action-protocol-v1",
+  "status": "completed",
+  "model": {
+    "name": "qwen2.5-coder:1.5b",
+    "model": "qwen2.5-coder:1.5b",
+    "modified_at": "2026-06-21T11:22:19.1139769+03:00",
+    "size": 986062089,
+    "digest": "d7372fd828518a4d38b1eb196c673c31a85f2ed302b3d1e406c4c2d1b64a0668",
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "qwen2",
+      "families": [
+        "qwen2"
+      ],
+      "parameter_size": "1.5B",
+      "quantization_level": "Q4_K_M",
+      "context_length": 32768,
+      "embedding_length": 1536
+    },
+    "capabilities": [
+      "completion",
+      "tools",
+      "insert"
+    ]
+  },
+  "base_url": "http://127.0.0.1:11434",
+  "options": {
+    "temperature": 0,
+    "seed": 42,
+    "num_predict": 256,
+    "num_ctx": 4096
+  },
+  "repetitions": 2,
+  "prompt_style": "production",
+  "dataset": "validation",
+  "output_format": "json",
+  "format": "json",
+  "system_prompt": "You are Ghost, a coding agent. You respond with valid JSON only.\n\nSCHEMA:\n{\"thought\": \"short reasoning\", \"actions\": [{\"tool\": \"write_file\", \"path\": \"f.py\", \"content\": \"print('hi')\"}]}\n\nAVAILABLE TOOLS:\n- write_file: {\"tool\": \"write_file\", \"path\": \"...\", \"content\": \"...\"}\n- read_file: {\"tool\": \"read_file\", \"path\": \"...\"}\n- list_dir: {\"tool\": \"list_dir\", \"path\": \".\"}\n- search_in_files: {\"tool\": \"search_in_files\", \"path\": \".\", \"query\": \"...\"}\n- run_cmd: {\"tool\": \"run_cmd\", \"cmd\": \"pytest -q\", \"cwd\": \".\"}\n- web_search: {\"tool\": \"web_search\", \"query\": \"search terms here\"}\n\nRULES:\n- Output ONLY a JSON object. No markdown fences, no prose, no explanation outside JSON.\n- No placeholder values. Use real file paths and commands.\n- Use pytest-style tests unless the task says otherwise.\n- Stay inside the workspace root. Use only allowed commands.\n- If no actions needed: {\"thought\": \"...\", \"actions\": []}\n\nSTRATEGY:\n- Read relevant files first before writing\n- Make minimal, targeted changes\n- Run tests after implementation\n- If tests fail, fix the specific issues shown\n- Add focused tests for behavior you change, then run the broadest relevant test command.\n- Use web_search when you need current information, documentation, or solutions from the internet\n- If you do not know something, ALWAYS use web_search instead of hallucinating.\n- If asked to come up with a new idea, FIRST use web_search to find what is already done, identify problems in the field, and THEN start working if there is no existing solution.\n\nEXAMPLES:\n\nExample 1 - Create a file:\n{\"thought\": \"Create hello.py with a greeting function\", \"actions\": [{\"tool\": \"write_file\", \"path\": \"hello.py\", \"content\": \"def greet(name):\\n    return f\\\"Hello, {name}!\\\"\\n\\nif __name__ == '__main__':\\n    print(greet('World'))\"}]}\n\nExample 2 - Read then write:\n{\"thought\": \"Read the existing file to understand its structure\", \"actions\": [{\"tool\": \"read_file\", \"path\": \"main.py\"}, {\"tool\": \"write_file\", \"path\": \"main.py\", \"content\": \"# updated content\"}]}\n\nExample 3 - Run tests:\n{\"thought\": \"Run the test suite to verify the implementation\", \"actions\": [{\"tool\": \"run_cmd\", \"cmd\": \"pytest -q\", \"cwd\": \".\"}]}\n\nExample 4 - Search codebase:\n{\"thought\": \"Find all references to the deprecated function\", \"actions\": [{\"tool\": \"search_in_files\", \"path\": \"src\", \"query\": \"old_function\"}]}\n\nExample 5 - Search the web:\n{\"thought\": \"Look up the latest FastAPI docs for dependency injection\", \"actions\": [{\"tool\": \"web_search\", \"query\": \"FastAPI dependency injection latest docs\"}]}\n",
+  "system_prompt_sha256": "527b45263d5d259638ba81f9f66366b62a62528c533200fdced9955ccb75f7fa",
+  "cases": [
+    {
+      "id": "list_nested",
+      "prompt": "List only the docs directory.",
+      "actions": [
+        {
+          "tool": "list_dir",
+          "path": "docs"
+        }
+      ]
+    },
+    {
+      "id": "read_space",
+      "prompt": "Read the file docs/setup notes.md. Only read that file.",
+      "actions": [
+        {
+          "tool": "read_file",
+          "path": "docs/setup notes.md"
+        }
+      ]
+    },
+    {
+      "id": "search_exact",
+      "prompt": "Search in src for the exact text parse_config. Only search.",
+      "actions": [
+        {
+          "tool": "search_in_files",
+          "path": "src",
+          "query": "parse_config"
+        }
+      ]
+    },
+    {
+      "id": "test_command",
+      "prompt": "Propose just the command pytest -q tests/test_parser.py with cwd set to .; do not claim it passed.",
+      "actions": [
+        {
+          "tool": "run_cmd",
+          "cmd": "pytest -q tests/test_parser.py",
+          "cwd": "."
+        }
+      ]
+    },
+    {
+      "id": "newline_write",
+      "prompt": "Write only status.txt with the text pending followed by exactly one newline character. No other actions.",
+      "actions": [
+        {
+          "tool": "write_file",
+          "path": "status.txt",
+          "content": "pending\n"
+        }
+      ]
+    },
+    {
+      "id": "ordered_reads",
+      "prompt": "Read alpha.py, then beta.py, in that order. Exactly these two reads and no other actions.",
+      "actions": [
+        {
+          "tool": "read_file",
+          "path": "alpha.py"
+        },
+        {
+          "tool": "read_file",
+          "path": "beta.py"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "case_id": "list_nested",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": false,
+      "actions": [
+        {
+          "tool": "web_search",
+          "query": "FastAPI documentation latest docs"
+        }
+      ],
+      "response": "{\n  \"thought\": \"Search the web for the latest FastAPI documentation to find the 'docs' directory\",\n  \"actions\": [\n    {\n      \"tool\": \"web_search\",\n      \"query\": \"FastAPI documentation latest docs\"\n    }\n  ]\n}",
+      "latency_seconds": 1.0183677000022726
+    },
+    {
+      "case_id": "read_space",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": false,
+      "actions": [],
+      "response": "{\"thought\": \"Read the setup notes from docs/setup_notes.md\", \"actions\": []}",
+      "latency_seconds": 0.44371849999879487
+    },
+    {
+      "case_id": "search_exact",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "search_in_files",
+          "path": "src",
+          "query": "parse_config"
+        }
+      ],
+      "response": "{\"thought\": \"Search for 'parse_config' in the src directory\", \"actions\": [{\"tool\": \"search_in_files\", \"path\": \"src\", \"query\": \"parse_config\"}]}",
+      "latency_seconds": 0.6271735999907833
+    },
+    {
+      "case_id": "test_command",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "run_cmd",
+          "cmd": "pytest -q tests/test_parser.py",
+          "cwd": "."
+        }
+      ],
+      "response": "{\"thought\": \"Run the test suite for parser functionality in the current directory\", \"actions\": [{\"tool\": \"run_cmd\", \"cmd\": \"pytest -q tests/test_parser.py\", \"cwd\": \".\"}]}",
+      "latency_seconds": 0.6962786000076449
+    },
+    {
+      "case_id": "newline_write",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "write_file",
+          "path": "status.txt",
+          "content": "pending\n"
+        }
+      ],
+      "response": "{\"thought\": \"Create a new file named status.txt and write 'pending' to it.\", \"actions\": [{\"tool\": \"write_file\", \"path\": \"status.txt\", \"content\": \"pending\\n\"}]}",
+      "latency_seconds": 0.6902877000102308
+    },
+    {
+      "case_id": "ordered_reads",
+      "repeat": 1,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "read_file",
+          "path": "alpha.py"
+        },
+        {
+          "tool": "read_file",
+          "path": "beta.py"
+        }
+      ],
+      "response": "{\"thought\": \"Read the existing files to understand their structure\", \"actions\": [{\"tool\": \"read_file\", \"path\": \"alpha.py\"}, {\"tool\": \"read_file\", \"path\": \"beta.py\"}]}",
+      "latency_seconds": 0.707086900001741
+    },
+    {
+      "case_id": "list_nested",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": false,
+      "actions": [
+        {
+          "tool": "web_search",
+          "query": "FastAPI documentation latest docs"
+        }
+      ],
+      "response": "{\n  \"thought\": \"Search the web for the latest FastAPI documentation to find the 'docs' directory\",\n  \"actions\": [\n    {\n      \"tool\": \"web_search\",\n      \"query\": \"FastAPI documentation latest docs\"\n    }\n  ]\n}",
+      "latency_seconds": 0.7609905999997864
+    },
+    {
+      "case_id": "read_space",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": false,
+      "actions": [],
+      "response": "{\"thought\": \"Read the setup notes from docs/setup_notes.md\", \"actions\": []}",
+      "latency_seconds": 0.42520179999701213
+    },
+    {
+      "case_id": "search_exact",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "search_in_files",
+          "path": "src",
+          "query": "parse_config"
+        }
+      ],
+      "response": "{\"thought\": \"Search for 'parse_config' in the src directory\", \"actions\": [{\"tool\": \"search_in_files\", \"path\": \"src\", \"query\": \"parse_config\"}]}",
+      "latency_seconds": 0.6437013999966439
+    },
+    {
+      "case_id": "test_command",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "run_cmd",
+          "cmd": "pytest -q tests/test_parser.py",
+          "cwd": "."
+        }
+      ],
+      "response": "{\"thought\": \"Run the test suite for parser functionality in the current directory\", \"actions\": [{\"tool\": \"run_cmd\", \"cmd\": \"pytest -q tests/test_parser.py\", \"cwd\": \".\"}]}",
+      "latency_seconds": 0.6950737999868579
+    },
+    {
+      "case_id": "newline_write",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "write_file",
+          "path": "status.txt",
+          "content": "pending\n"
+        }
+      ],
+      "response": "{\"thought\": \"Create a new file named status.txt and write 'pending' to it.\", \"actions\": [{\"tool\": \"write_file\", \"path\": \"status.txt\", \"content\": \"pending\\n\"}]}",
+      "latency_seconds": 0.6853980999876512
+    },
+    {
+      "case_id": "ordered_reads",
+      "repeat": 2,
+      "strict_json": true,
+      "parseable": true,
+      "exact_actions": true,
+      "actions": [
+        {
+          "tool": "read_file",
+          "path": "alpha.py"
+        },
+        {
+          "tool": "read_file",
+          "path": "beta.py"
+        }
+      ],
+      "response": "{\"thought\": \"Read the existing files to understand their structure\", \"actions\": [{\"tool\": \"read_file\", \"path\": \"alpha.py\"}, {\"tool\": \"read_file\", \"path\": \"beta.py\"}]}",
+      "latency_seconds": 0.6918585999956122
+    }
+  ],
+  "limitations": "No generated actions executed. No coding, research, kernel-security, or autonomous-reliability score. No routing reputation updated.",
+  "summary": {
+    "exact_actions": 8,
+    "parseable": 12,
+    "strict_json": 12,
+    "total": 12
+  }
+}

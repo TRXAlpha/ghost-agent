@@ -1,0 +1,91 @@
+"""Entry points for upstream-backed Ghost and qualification commands."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from .runtime import IntegrationError, doctor, initialize_process, project_root, require_upstream
+
+
+def main():
+    """Dedicated launcher: existing ghost remains a legacy compatibility route."""
+    initialize_process(Path.cwd())
+    os.environ["GHOST_INFERENCE_BACKEND"] = "openjarvis"
+    from ..cli import main as ghost_main
+    try:
+        ghost_main()
+    except IntegrationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def add_parser(sub):
+    parser = sub.add_parser("openjarvis", help="Qualify and use the pinned upstream integration")
+    actions = parser.add_subparsers(dest="oj_action", required=True)
+    health = actions.add_parser("doctor", help="Report dependency/engine status without provider discovery")
+    health.add_argument("--probe", action="store_true", help="Contact only the configured inference endpoint")
+    ask_parser = actions.add_parser("ask", help="Persistent read-only upstream assistant")
+    ask_parser.add_argument("prompt", nargs="+")
+    ask_parser.add_argument("--model", required=True)
+    ask_parser.add_argument("--memory", action="store_true", help="Allow search of explicitly imported documents")
+    ask_parser.add_argument("--max-calls", type=int, default=6)
+    for action in ("index", "forget"):
+        item = actions.add_parser(action, help=f"{action.capitalize()} one project document in upstream memory")
+        item.add_argument("path")
+    search = actions.add_parser("search", help="Search explicitly imported documents")
+    search.add_argument("query")
+    telegram = actions.add_parser("telegram", help="Pair/revoke or explicitly serve Telegram")
+    telegram.add_argument("action", choices=["pair", "revoke", "status", "serve"])
+    telegram.add_argument("--user-id", default="")
+    telegram.add_argument("--chat-id", default="")
+    telegram.add_argument("--model", default="")
+    telegram.add_argument("--memory", action="store_true", help="Permit delivery of imported document excerpts to your paired Telegram chat")
+    telegram.add_argument("--allow-sandbox-builds", action="store_true",
+                          help="Queue explicit build/create/implement requests for Ghost's sandbox worker")
+    telegram.add_argument("--run-worker", action="store_true",
+                          help="Run Ghost's existing bounded worker alongside the Telegram transport")
+    return parser
+
+
+def dispatch(args):
+    root = project_root()
+    initialize_process(root)
+    if args.oj_action == "doctor":
+        result = doctor(root, probe=args.probe)
+        print(json.dumps(result, indent=2))
+        if "error" in result or (args.probe and not result.get("healthy")):
+            raise SystemExit(1)
+        return
+    require_upstream()
+    if args.oj_action == "telegram":
+        from .telegram import pair, pairing, revoke, serve
+        if args.action == "pair":
+            result = pair(root, args.user_id, args.chat_id)
+        elif args.action == "revoke":
+            result = revoke(root)
+        elif args.action == "status":
+            result = pairing(root)
+        else:
+            if not args.model:
+                raise IntegrationError("Telegram serve requires --model.")
+            serve(root, args.model, memory=args.memory,
+                  allow_sandbox_builds=args.allow_sandbox_builds,
+                  run_worker=args.run_worker)
+            return
+    elif args.oj_action == "ask":
+        from .assistant import ask
+        result = ask(root, " ".join(args.prompt), args.model, memory=args.memory, max_calls=args.max_calls)
+    else:
+        from .memory import ProjectMemory
+        with ProjectMemory(root) as memory:
+            if args.oj_action == "index":
+                result = memory.index(args.path)
+            elif args.oj_action == "forget":
+                result = memory.forget(args.path)
+            else:
+                result = memory.search(args.query)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
