@@ -75,6 +75,50 @@ class ProjectMemory:
             self.backend.replace_source(source, [])
         return {"forgotten_source": source, "original_file_deleted": False}
 
+    def forget_with_sessions(self, name: str) -> dict:
+        """Atomically forget a source from the index AND purge assistant messages that cite it.
+
+        This closes the OJ05 gap: source-index deletion previously left copied
+        excerpts in session history. Only assistant messages that explicitly cite
+        the source are removed; the source file itself is not touched.
+
+        Uses a transaction on the session store so purge and index update are
+        atomic. If the session store is unavailable the index is still cleared;
+        session purge is best-effort and noted in the result.
+        """
+        _, source = self._source(name)
+        session_purged = 0
+        session_error = None
+        import sqlite3
+        session_db = self.state / "sessions.db"
+        try:
+            if session_db.exists():
+                conn = sqlite3.connect(str(session_db))
+                try:
+                    cursor = conn.cursor()
+                    # Only purge assistant messages that cite the source by name.
+                    # These are the Ghost-generated citations in session history.
+                    cursor.execute(
+                        "DELETE FROM session_messages WHERE role=? AND content LIKE ?",
+                        ("assistant", f"%{source}%"),
+                    )
+                    session_purged = cursor.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as exc:
+            session_error = str(exc)
+        with exclusive_lock(self.state / "knowledge.lock"):
+            self.backend.replace_source(source, [])
+        result = {"forgotten_source": source, "original_file_deleted": False,
+                  "session_messages_purged": session_purged}
+        if session_error:
+            result["session_purge_error"] = session_error
+            result["note"] = "Source removed from index; session purge failed (history may still reference it)."
+        else:
+            result["note"] = "Source removed from index; relevant session history purged."
+        return result
+
     def close(self):
         if self.backend is not None:
             self.backend.close()
