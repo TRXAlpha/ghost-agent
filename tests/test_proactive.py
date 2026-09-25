@@ -129,3 +129,92 @@ def test_watch_runs_existing_worker_callback_after_queue(tmp_path: Path, monkeyp
                      run_worker=lambda: (results.append("worker") or
                                          SimpleNamespace(status="completed", job_id="job", detail="ok")))
     assert results == ["worker"]
+
+
+# -- OJ09: rejected-idea memory, feedback/stop conditions, bounded backlog -----
+
+def test_dismissed_idea_is_suppressed_and_not_reproposed(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    result = engine.tick(auto_queue=False)
+    oid = result["opportunity"]["opportunity_id"]
+    assert engine.dismiss(oid).status == "dismissed"
+    # identical goal must not reappear as a new proposal
+    again = engine.tick(auto_queue=False)
+    assert again["status"] == "suppressed"
+    assert again["opportunity"]["status"] == "dismissed"
+
+
+def test_completed_idea_is_suppressed(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    result = engine.tick(auto_queue=False)
+    oid = result["opportunity"]["opportunity_id"]
+    # simulate a user decision: mark completed via direct feedback helper
+    from ghost_agent.proactive import Opportunity
+    op = engine.store.find_any(oid)
+    op.status = "queued"
+    engine.store.save(op)
+    engine.record_feedback(oid, "tests_passed")
+    assert engine.store.find_any(oid).status == "completed"
+    again = engine.tick(auto_queue=False)
+    assert again["status"] == "suppressed"
+
+
+def test_rejected_idea_is_suppressed(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    result = engine.tick(auto_queue=False)
+    oid = result["opportunity"]["opportunity_id"]
+    op = engine.store.find_any(oid)
+    op.status = "queued"
+    engine.store.save(op)
+    engine.record_feedback(oid, "tests_failed", evidence="flaky due to timing")
+    assert engine.store.find_any(oid).status == "rejected"
+    again = engine.tick(auto_queue=False)
+    assert again["status"] == "suppressed"
+
+
+def test_needs_input_idea_is_not_suppressed(tmp_path: Path):
+    # requires_user_input is a legitimate defer, not a rejection — it may re-propose
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(
+        goal="Explain why the system is slow (report only).", requires_user_input=True))
+    first = engine.tick(auto_queue=False)
+    assert first["status"] == "needs_input"
+    # a later tick can propose it again (status is no longer suppressed)
+    op = engine.store.find_any(first["opportunity"]["opportunity_id"])
+    assert op.status == "needs_input"
+    assert engine.store.find_suppressed(op.opportunity_id) is None
+
+
+def test_backlog_is_bounded(tmp_path: Path):
+    # queue three distinct high-confidence proposals, then a fourth different one;
+    # the backlog of non-queued proposals must stay <= max_proposed.
+    engine = ProactiveEngine(tmp_path, "tiny")
+    goals = [f"Research topic {i} and build a sandbox prototype." for i in range(4)]
+    def planner(model, messages, **kwargs):
+        # infer topic from the last queue maybe; simplest: return distinct goals
+        idx = planner._idx
+        planner._idx += 1
+        return proposal(goal=goals[idx % len(goals)])
+    planner._idx = 0
+    engine.chat = planner
+    statuses = [engine.tick(auto_queue=False)["status"] for _ in range(4)]
+    assert all(s == "proposed" for s in statuses)
+    # after capping, at most 3 remain proposed
+    remaining = [o for o in engine.store.list(100) if o.status == "proposed"]
+    assert len(remaining) <= 3
+    # the evicted one is DISMISSED (rejected-idea memory), not deleted
+    dismissed = [o for o in engine.store.list(100) if o.status == "dismissed"]
+    assert len(dismissed) >= 1
+
+
+def test_record_feedback_requires_queued_or_running(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    oid = engine.tick(auto_queue=False)["opportunity"]["opportunity_id"]
+    # proposed -> invalid for feedback
+    with pytest.raises(ProactiveError, match="Cannot record feedback"):
+        engine.record_feedback(oid, "tests_passed")
+    # put it in a queued state, then an invalid outcome is rejected
+    op = engine.store.find_any(oid)
+    op.status = "queued"
+    engine.store.save(op)
+    with pytest.raises(ProactiveError, match="outcome"):
+        engine.record_feedback(oid, "not-a-real-outcome")

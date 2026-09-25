@@ -44,6 +44,10 @@ class Opportunity:
     status: str = "proposed"
     job_id: str = ""
     rejection_reason: str = ""
+    result: str = ""          # evaluated outcome: "tests_passed" | "tests_failed" | "error" | ""
+    evidence: str = ""         # supporting detail: error output, file list, etc.
+    cost_effort: str = "small"  # "small" | "medium" | "large"
+    benefit: str = "medium"    # "low" | "medium" | "high"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -72,9 +76,47 @@ class OpportunityStore:
             raise ProactiveError("Proposal limit must be between 1 and 100")
         return self._load()[-limit:]
 
+    def find_any(self, opportunity_id: str) -> Optional[Opportunity]:
+        """Find an opportunity record by identity, regardless of status.
+
+        Used for rejected-idea suppression: a decided opportunity must not be
+        re-proposed as identical unless the goal text changes (new fingerprint).
+        """
+        return next((item for item in self._load()
+                     if item.opportunity_id == opportunity_id), None)
+
+    def find_suppressed(self, opportunity_id: str) -> Optional[Opportunity]:
+        """Return opportunity if it was already decided (stop condition met).
+
+        Suppressed statuses are completed, rejected, and dismissed.
+        Needs-input opportunities are NOT suppressed (user input unblocks them).
+        """
+        return next((item for item in self._load()
+                     if item.opportunity_id == opportunity_id
+                     and item.status in {"completed", "rejected", "dismissed"}), None)
+
     def find_active(self, fingerprint: str) -> Optional[Opportunity]:
         return next((item for item in self._load()
                      if item.opportunity_id == fingerprint and item.status in {"proposed", "queued", "running"}), None)
+
+    def find_any(self, opportunity_id: str) -> Optional[Opportunity]:
+        """Find an opportunity record by identity, regardless of status.
+
+        Used for rejected-idea suppression: a decided opportunity must not be
+        re-proposed as identical unless the goal text changes (new fingerprint).
+        """
+        return next((item for item in self._load()
+                     if item.opportunity_id == opportunity_id), None)
+
+    def find_suppressed(self, opportunity_id: str) -> Optional[Opportunity]:
+        """Return opportunity if it was already decided (stop condition met).
+
+        Suppressed statuses are completed, rejected, and dismissed.
+        Needs-input is NOT suppressed — user input unblocks them.
+        """
+        return next((item for item in self._load()
+                     if item.opportunity_id == opportunity_id
+                     and item.status in {"completed", "rejected", "dismissed"}), None)
 
     def save(self, opportunity: Opportunity) -> Opportunity:
         if opportunity.status not in {"proposed", "needs_input", "queued", "running", "completed", "dismissed", "rejected"}:
@@ -338,15 +380,68 @@ class ProactiveEngine:
         existing = self.store.find_active(proposal.opportunity_id)
         if existing:
             return {"status": "duplicate", "opportunity": asdict(existing)}
+        # Rejected-idea suppression (OJ09 S07): an identical decided idea must not
+        # reappear unchanged.  Needs-input is NOT suppressed — user input is an
+        # unblocked legitimate defer, not a rejection.
+        suppressed = self.store.find_suppressed(proposal.opportunity_id)
+        if suppressed:
+            return {"status": "suppressed", "opportunity": asdict(suppressed),
+                    "note": "This idea was already decided; it will not reappear unless context changes."}
         self.store.save(proposal)
+        job_id = ""
         if auto_queue and proposal.status == "proposed" and proposal.confidence >= 0.65 and proposal.kind != "focus":
             queued = self._queue(proposal)
             proposal.status = "queued"
             proposal.job_id = queued.job_id
+            job_id = queued.job_id
             proposal.updated_at = time.time()
             self.store.save(proposal)
-            return {"status": "queued", "opportunity": asdict(proposal), "job_id": queued.job_id}
-        return {"status": proposal.status, "opportunity": asdict(proposal)}
+        # Enforce bounded backlog whenever a proposal exists, whether it was
+        # queued or only recorded.  Queued/running are never evicted (they are
+        # not 'proposed'); only the low-confidence proposed tail is trimmed.
+        self._cap_backlog(max_proposed=3)
+        return {"status": proposal.status,
+                "opportunity": asdict(proposal),
+                **({"job_id": job_id} if job_id else {})}
+
+    def _cap_backlog(self, max_proposed: int = 3) -> None:
+        """Keep the proposed backlog bounded; evict lowest-confidence items."""
+        items = [item for item in self.store.list(100)
+                 if item.status == "proposed"]
+        if len(items) <= max_proposed:
+            return
+        # Sort by confidence; evict the lowest-confidence entries.
+        evict = sorted(items, key=lambda o: o.confidence)[:len(items) - max_proposed]
+        for item in evict:
+            self.dismiss(item.opportunity_id)
+
+    def record_feedback(self, opportunity_id: str, outcome: str,
+                       evidence: str = "") -> Opportunity:
+        """Record the evaluated result of a queued opportunity.
+
+        Updates the opportunity with the outcome (tests_passed | tests_failed | error)
+        and marks it with stop conditions so it does not reappear unchanged.
+        The evaluation uses the outcome string from the worker's verification result.
+        """
+        opportunity = self.store.find_any(opportunity_id)
+        if not opportunity:
+            raise ProactiveError("Opportunity not found for feedback")
+        if opportunity.status not in {"queued", "running"}:
+            raise ProactiveError(f"Cannot record feedback for status {opportunity.status}")
+        if outcome not in {"tests_passed", "tests_failed", "error"}:
+            raise ProactiveError("outcome must be one of: tests_passed, tests_failed, error")
+        opportunity.result = outcome
+        opportunity.evidence = evidence[:4000] if evidence else ""
+        opportunity.status = "completed" if outcome == "tests_passed" else "rejected"
+        if opportunity.status == "rejected":
+            opportunity.rejection_reason = evidence[:400] if evidence else outcome
+        opportunity.updated_at = time.time()
+        saved = self.store.save(opportunity)
+        EventBus(self.root).emit(Event("proactive.outcome",
+                                      {"opportunity_id": opportunity_id,
+                                       "outcome": outcome, "evidence": evidence},
+                                      source="proactive"))
+        return saved
 
     def _queue(self, opportunity: Opportunity):
         """Create one normal Ghost outcome; the existing worker remains executor."""
