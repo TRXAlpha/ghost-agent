@@ -9,6 +9,7 @@ from uuid import uuid4
 from ..runtime import EmergencyStop
 from ..security import redact_secrets
 from ..utils.storage import atomic_json, exclusive_lock
+from .authority import authorize_call, provision_lesson_search
 from .runtime import EngineSettings, IntegrationError, engine_session, require_upstream, state_root
 
 
@@ -46,7 +47,7 @@ class BoundedEngine:
         return result
 
 
-def memory_tool(root: Path):
+def memory_tool(root: Path, identity: str = "owner"):
     """Only this explicitly constructed tool enters the upstream executor."""
     from openjarvis.core.types import ToolResult
     from openjarvis.tools._stubs import BaseTool, ToolSpec
@@ -62,9 +63,11 @@ def memory_tool(root: Path):
 
         def execute(self, **params):
             # Recheck at dispatch as well as in the governance hook; no direct
-            # invocation can bypass revocation or gain filesystem/network tools.
-            if EmergencyStop(root).active() or set(params) != {"query"}:
-                return ToolResult(self.tool_id, "Search denied.", success=False)
+            # invocation can bypass revocation, a missing grant, or gain
+            # filesystem/network tools.
+            allowed, reason = authorize_call(root, identity, self.tool_id, params)
+            if not allowed:
+                return ToolResult(self.tool_id, reason, success=False)
             from .memory import ProjectMemory
             with ProjectMemory(root) as memory:
                 results = memory.search(params["query"], limit=3)
@@ -119,10 +122,17 @@ def ask(root: Path, prompt: str, model: str, *, memory=False, max_calls=6,
                 if len(history) >= 12:
                     break
             history.reverse()
-            tools = [memory_tool(root)] if memory else []
+            tools = [memory_tool(root, identity)] if memory else []
+            if memory:
+                # One durable, revocable grant enables only the read-only
+                # lesson search for this project. Default stays deny.
+                provision_lesson_search(root, identity, "read-only lesson search enabled for this project (explicit request)")
             def allowed(name, params):
-                return (memory and name == "lesson_search" and set(params) == {"query"}
-                        and not EmergencyStop(root).active())
+                # Single authority seam: upstream dispatch obeys Ghost grants.
+                if name not in {tool.tool_id for tool in tools}:
+                    return False
+                granted, _ = authorize_call(root, identity, name, params)
+                return granted
 
             with engine_session(settings or EngineSettings.from_env()) as engine:
                 bounded = BoundedEngine(engine, root, max_calls)
