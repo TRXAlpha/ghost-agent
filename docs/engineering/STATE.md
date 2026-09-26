@@ -2,12 +2,40 @@
 
 ## Repository
 - Branch: master
-- HEAD: cb6d282 — ledger: record OJ13/OJ16 blockers and completed OJ09-OJ12, OJ14, OJ15
-- Uncommitted changes: ghost_agent/cli.py, ghost_agent/self_repair.py, tests/test_self_repair.py
-- Untracked: docs/engineering/ (this STATE.md + task documents)
+- HEAD: a90ff65 — oj15: repair self-repair evidence verification (S08 trust boundary)
+- Working tree: CLEAN. OJ15-Recovery subsystem COMMITTED and ACCEPTED.
+
+## Accepted Subsystem Report: OJ15-Recovery
+- Owner-visible behavior: self-repair proposals verify ONLY through a real witnessed
+  subprocess evaluator run; hand-entered/forged/stale-replay evidence cannot promote;
+  apply/rollback bound to real promotion journal transactions.
+- Verification evidence (2026-09-27, Python 3.14.2, .venv): focused 39 passed (post-commit);
+  full suite 841 passed, 4 skipped, 2 pre-existing env failures, 0 collection errors.
+- Reviewer verdicts: Reviewer A PASS (0 findings), Reviewer B PASS (0 findings).
+- Resolved findings: OJ15-Recovery-A-1/2 (forgery via source=evaluator+digest), 
+  OJ15-Recovery-B-1 (stale-nonce replay against mutated bytes) — all closed with
+  regression tests.
+- Commit: a90ff65
+- Next dependency-ready task: TBD (see roadmap revalidation below)
 
 ## Active Task
-**OJ15-Recovery: Repair self-repair evidence verification patch** — IMPLEMENTATION COMPLETE, IN REVIEW
+**OJ09-FeedbackLoop: Close the proactive opportunity feedback loop (production wiring).**
+
+Task contract: docs/engineering/tasks/oj09-feedback-loop.md
+
+Confirmed defect (historical gap #2): `ProactiveEngine.record_feedback()` is only
+called from tests/test_proactive.py; no production caller. Finished proactive jobs
+leave their linked opportunities in `queued`/`running` indefinitely.
+
+Chosen approach: `_execute_queued_outcome` (cli.py) is the single shared worker
+handler (used by _cmd_worker and telegram worker loop). Add a feedback-closing helper
+in proactive.py that maps a job's real terminal result to the opportunity outcome
+(completed/tests_passed, rejected/tests_failed|error) and calls the existing
+record_feedback idempotently; add ProactiveEngine.reconcile() for restart
+reconciliation of opportunities whose job reached a terminal state while the loop
+was not watching. No new executor/loop; no authority change.
+
+Dependency-ready: YES (no external credentials/hardware required).
 
 Task contract: docs/engineering/tasks/oj15-recovery.md
 
@@ -52,13 +80,10 @@ to 11 collection errors across the suite.
   present before this task (openjarvis_bridge/runtime.py untouched).
 - Baseline BEFORE fix: 11 collection errors, 0 pass.
 
-### Current phase: ACCEPTED — READY TO COMMIT
-- Round-4 independent review: Reviewer A VERDICT=PASS (0 findings), Reviewer B VERDICT=PASS
-  (0 findings). All 3 prior P2 findings independently verified closed.
-  See docs/engineering/reviews/OJ15-Recovery-loop.md.
-- Candidate frozen = current uncommitted working tree on base cb6d282.
-- Next action: commit accepted subsystem (only task files + docs/engineering/), then update
-  this STATE.md with the commit ID and select the next dependency-ready subsystem.
+### Current phase: OJ09-FeedbackLoop — CONTRACT DEFINED, READY FOR WORKER
+- OJ15-Recovery committed at a90ff65 (HEAD), working tree clean, both reviewers PASS.
+- New active subsystem: OJ09-FeedbackLoop (contract: docs/engineering/tasks/oj09-feedback-loop.md).
+- Next action: dispatch implementation worker for OJ09-FeedbackLoop.
 
 ## Verification Commands
 - `python -m pytest tests/test_self_repair.py tests/test_self_repair_oj15.py -v`
