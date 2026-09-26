@@ -1675,7 +1675,8 @@ def main() -> None:
     repair_parser.add_argument("value", help="Diagnosis for propose or proposal ID otherwise")
     repair_parser.add_argument("--sandbox", default="", help="Candidate sandbox required for propose")
     repair_parser.add_argument("--goal-id", default="", help="Goal ID required for request-promotion")
-    repair_parser.add_argument("--passed", action="store_true", help="Record a passed local regression/benchmark verification")
+    repair_parser.add_argument("--command", default="python -m pytest -q",
+                               help="Evaluator command run inside the candidate to verify it")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
     device_parser.add_argument("action", choices=["list", "register"])
     device_parser.add_argument("device_id", nargs="?")
@@ -2722,8 +2723,13 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             proposal = manager.propose(args.value, Path(args.sandbox))
             print(json.dumps(proposal.__dict__, indent=2))
         elif args.action == "verify":
-            result = {"returncode": 0 if args.passed else 1, "source": "user-recorded local verification"}
-            proposal = manager.record_verification(args.value, [result], [result])
+            # Verification is tied to a REAL evaluator run against the exact
+            # candidate bytes. A user-supplied pass/fail flag is not accepted as
+            # evidence (S08): a manual note cannot impersonate independent checks.
+            def _evaluate(candidate: Path) -> dict:
+                return _run_bounded_evaluator(candidate, args.command)
+
+            proposal = manager.verify_from_evaluator(args.value, _evaluate)
             print(json.dumps(proposal.__dict__, indent=2))
         else:
             if not args.goal_id:
@@ -2733,6 +2739,47 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             print(json.dumps({"transaction_id": transaction, "approval_id": approval, "files": files}, indent=2))
     except (OSError, ValueError, PermissionError) as exc:
         print(f"Self-repair refused: {exc}")
+
+
+def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
+    """Run an evaluator command in the candidate, bounded, capturing output.
+
+    NOTE: This is an OPERATOR-triggered LOCAL evaluator. It is NOT
+    containerized and NOT host-isolated: the candidate runs as an ordinary
+    subprocess on the operator's machine. It only bounds the run with a timeout
+    and a sanitized environment so host credentials are not leaked and a
+    hostile/long-running candidate cannot run unattended. Use a real container
+    or sandbox if stronger isolation is required.
+
+    The working directory is the candidate and the environment is BUILT from a
+    minimal allowlist (PATH plus a few portable variables) rather than the full
+    inherited os.environ, so host secrets/tokens in the caller's environment are
+    not passed into the candidate process. Returns {returncode, output}.
+    """
+    import shlex
+    import subprocess
+
+    if not candidate.is_dir():
+        return {"returncode": 1, "output": "candidate directory is missing"}
+    deadline_s = float(os.environ.get("GHOST_EVALUATOR_TIMEOUT", "60"))
+    parts = shlex.split(command)
+    if not parts:
+        return {"returncode": 1, "output": "empty evaluator command"}
+    # Minimal sanitized environment: PATH so the command can find its binary,
+    # plus a small portable allowlist. Does NOT inherit the full os.environ, so
+    # host credentials / secrets are not leaked into the candidate process.
+    env = {"PATH": os.environ.get("PATH", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+    try:
+        proc = subprocess.run(
+            parts, cwd=str(candidate), capture_output=True, text=True,
+            timeout=deadline_s, env=env,
+        )
+    except FileNotFoundError:
+        return {"returncode": 1, "output": f"evaluator not found: {parts[0]}"}
+    except subprocess.TimeoutExpired as exc:
+        return {"returncode": 1, "output": f"evaluator timed out after {deadline_s}s"}
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return {"returncode": int(proc.returncode), "output": output[-4000:]}
 
 
 def _cmd_device(args: argparse.Namespace) -> None:
