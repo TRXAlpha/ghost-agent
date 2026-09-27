@@ -76,6 +76,14 @@ class OpportunityStore:
             raise ProactiveError("Proposal limit must be between 1 and 100")
         return self._load()[-limit:]
 
+    def list_all(self) -> list[Opportunity]:
+        """Return every recorded opportunity, oldest first, with no tail cap.
+
+        Used by restart reconciliation so queued/running opportunities beyond
+        the `list(100)` display window are still reconciled.
+        """
+        return self._load()
+
     def find_any(self, opportunity_id: str) -> Optional[Opportunity]:
         """Find an opportunity record by identity, regardless of status.
 
@@ -293,17 +301,20 @@ def feedback_outcome_for_job(job: OutcomeJob) -> Optional[str]:
     should be recorded). Never fabricates a verdict; it comes from the job's own
     durable state.
     """
+    # Only a terminal job produces a feedback verdict. A non-empty result on a
+    # job that is STILL active (queued/running/researching/implementing) is
+    # partial work product, never a terminal verdict, so it must not prematurely
+    # finalize the opportunity. Return None and let the scheduler-status branch
+    # in reconcile() decide.
+    terminal_statuses = {"completed", "failed", "needs_review"}
+    if job.status not in terminal_statuses:
+        return None
     if job.result == "tests_passed":
         return "tests_passed"
     if job.result == "tests_failed":
         return "tests_failed"
-    # Any other terminal outcome (failed, needs_review, or a concrete non-verdict
-    # result) is an error. Jobs still being worked (empty/unknown result, active
-    # status) produce no feedback yet.
-    terminal_statuses = {"completed", "failed", "needs_review"}
-    if job.status in terminal_statuses or (job.result and job.result != "unknown"):
-        return "error"
-    return None
+    # Reached a terminal status but no verdict branch matched -> error.
+    return "error"
 
 
 def _feedback_evidence(job: OutcomeJob) -> str:
@@ -503,7 +514,7 @@ class ProactiveEngine:
         Returns the number of opportunities closed.
         """
         closed = 0
-        for opportunity in self.store.list(100):
+        for opportunity in self.store.list_all():
             if opportunity.status not in {"queued", "running"} or not opportunity.job_id:
                 continue
             job = OutcomeStore(self.root).load(opportunity.job_id)
@@ -551,6 +562,7 @@ class ProactiveEngine:
         if type(interval) not in (int, float) or not 15 <= interval <= 86_400:
             raise ProactiveError("watch interval must be between 15 and 86400 seconds")
         while True:
+            self._reconcile_safe()
             result = self.tick(auto_queue=auto_queue, require_idle=True, idle_after=idle_after)
             print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
             if result.get("status") == "queued" and run_worker is not None:
@@ -560,3 +572,22 @@ class ProactiveEngine:
                                       "job_id": worker_result.job_id,
                                       "detail": worker_result.detail}, ensure_ascii=False), flush=True)
             time.sleep(interval)
+
+    def _reconcile_safe(self) -> None:
+        """Run restart reconciliation without ever breaking the watch loop.
+
+        Wired into watch() before each tick so recoverable proactive feedback
+        (a job that reached a terminal state while the loop was not watching)
+        is reconciled in production, not only in tests. Any reconcile failure
+        is logged as an event and swallowed so it can never halt or raise out
+        of the infinite watch loop; it only ever touches proactive opportunity
+        bookkeeping, never the worker or live project.
+        """
+        try:
+            self.reconcile()
+        except Exception as exc:  # noqa: BLE001 - must not break the loop
+            try:
+                EventBus(self.root).emit(Event("proactive.reconcile_error",
+                                               {"error": str(exc)}, source="proactive"))
+            except Exception:  # noqa: BLE001 - event emission must not break the loop either
+                pass

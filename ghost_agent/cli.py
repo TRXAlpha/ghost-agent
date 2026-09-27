@@ -2609,12 +2609,29 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
     store = OutcomeStore(project_root)
     job = store.load(scheduled.job_id)
     if not job:
+        # No outcome record -> no opportunity link exists, so there is nothing
+        # to close. Return the terminal result; the missing artifact is already
+        # durable in the scheduler. Nothing to reconcile (no job to inspect).
         return WorkerResult(scheduled.job_id, "failed", "outcome artifact is missing")
     if EmergencyStop(project_root).active():
+        # Terminal early return: the job exists and carries an opportunity link.
+        # Mark it terminal with a REAL result so feedback_outcome_for_job yields
+        # a genuine verdict, then close the linked proactive opportunity so the
+        # loop is durably closed instead of left queued/running forever.
+        job.status = "failed"
+        job.result = "cancelled"
+        store.save(job)
+        _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "cancelled", "emergency stop is engaged")
     from .models.chat import route_identity
     expected_route = job.acceptance_contract.get("inference_route", {"backend": "legacy"})
     if expected_route != route_identity():
+        # Terminal early return (route mismatch). Mark the job terminal with a
+        # real result and close the linked opportunity; no provider contacted.
+        job.status = "failed"
+        job.result = "route_mismatch"
+        store.save(job)
+        _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", "Inference route differs from the queued job. Start the matching worker/environment; no provider was contacted.")
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
     timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
@@ -2627,6 +2644,13 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
                                           graph_root=project_root / ".ghost" / "research")
             store.write_research(job, research)
         if EmergencyStop(project_root).active():
+            # Terminal early return after research. Mark the job terminal with a
+            # real result and close the linked opportunity so it isn't left
+            # queued/running forever.
+            job.status = "failed"
+            job.result = "cancelled"
+            store.save(job)
+            _close_proactive_feedback(project_root, job)
             return WorkerResult(job.job_id, "cancelled", "emergency stop engaged after research")
         payload = store.make_task_payload(job, research, job.iterations)
         payload["context"]["runtime_context"] = ContextAssembler(project_root).assemble(job.goal_id)
