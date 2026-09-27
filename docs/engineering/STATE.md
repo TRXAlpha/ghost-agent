@@ -2,9 +2,9 @@
 
 ## Repository
 - Branch: master
-- HEAD: 4f89c67 — feat: owner knowledge base + verified LoRA corpus + autonomous capability builder
+- HEAD: 6a4ed85 — improver: close capability-gap lifecycle on real job terminal results
 - Working tree: CLEAN except AGENTS.md (owner's rewritten swarm-model instructions, intentionally uncommitted — owner decision).
-- Prior accepted: cccc3ba (per-command timeout fix), c611b03 (health checks+integrations), 452b1c4 (MVP loop green).
+- Prior accepted: 4f89c67 (kbase+LoRA+capability builder), cccc3ba (per-command timeout fix), c611b03 (health checks+integrations), 452b1c4 (MVP loop green).
 
 ## Accepted Subsystem Report: OJ15-Recovery
 - Owner-visible behavior: self-repair proposals verify ONLY through a real witnessed
@@ -265,3 +265,13 @@ Subsystem: `kbase-lora-capability` — Commit: 4f89c67
 - No LoRA training (corpus is data-gated; requires llama.cpp/axolotl tooling later).
 - No live Telegram/Huawei/DeskSentinel (placeholders per c611b03).
 - AGENTS.md (owner's new swarm instructions) intentionally uncommitted.
+
+## Addendum to kbase-lora-capability: Gap lifecycle closure (2026-09-28)
+
+Commit: 6a4ed85. The stopped capability_improver worker's report correctly noted
+mark_resolved() had no production caller. Closed via the OJ09 pattern:
+- try_build binds gap_id into job acceptance_contract (fallback: goal match)
+- close_gap_feedback resolves on real tests_passed, rolls back to queued on
+  retryable failures, wired into _close_proactive_feedback (all terminal paths)
+- queue-failure in try_build rolls gap back to queued
+- Tests: 5 new; full suite 864 passed.
