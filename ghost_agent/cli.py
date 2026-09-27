@@ -1605,6 +1605,11 @@ def main() -> None:
     lora_list = lora_sub.add_parser("list", help="Show recent captured pairs (goal/model only)")
     lora_list.add_argument("--limit", type=int, default=10)
 
+    gaps_parser = sub.add_parser("gaps", help="Inspect/manage capability gap registry")
+    gaps_sub = gaps_parser.add_subparsers(dest="gap_action")
+    gaps_sub.add_parser("list", help="Show queued capability gaps")
+    gaps_sub.add_parser("stats", help="Show gap summary")
+
     search_parser = sub.add_parser("search", help="Search codebase via RAG")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--limit", type=int, default=10, help="Max results")
@@ -1746,6 +1751,7 @@ def main() -> None:
         "device": lambda: _cmd_device(args),
         "mcp": lambda: _cmd_mcp(args),
         "parallel": lambda: _cmd_parallel(args),
+        "gaps": lambda: _cmd_gaps(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -2404,6 +2410,26 @@ def _cmd_kbase(args: argparse.Namespace) -> None:
               f"{stats.chunk_count} chunks, {stats.total_chars} chars")
         print(f"last ingest: {stats.last_ingest_at}")
         print("Use: ghost kbase ingest <dir> | ghost kbase query \"<text>\"")
+
+
+def _cmd_gaps(args) -> None:
+    from .autonomy import CapabilityRegistry
+    reg = CapabilityRegistry(Path.cwd())
+    data = reg._load()
+    gaps = data.get("gaps", [])
+    action = getattr(args, "gap_action", None) or "list"
+    if action == "stats":
+        by_status = {}
+        for g in gaps:
+            by_status[g.get("status","unknown")] = by_status.get(g.get("status","unknown"),0)+1
+        print(f"Total gaps: {len(gaps)}")
+        for s,c in sorted(by_status.items()): print(f"  {s}: {c}")
+    else:
+        queued = [g for g in gaps if g.get("status")=="queued"]
+        print(f"Queued gaps: {len(queued)}")
+        for g in sorted(queued, key=lambda x: x.get("count",1), reverse=True):
+            print(f"  [{g['id']}] count={g.get('count')} {g.get('goal','')[:80]}")
+        if not queued: print("No queued gaps.")
 
 
 def _cmd_lora(args: argparse.Namespace) -> None:

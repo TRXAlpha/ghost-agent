@@ -24,6 +24,7 @@ from .kernel import GoalStore
 from .models.chat import chat
 from .models.chat import route_identity
 from .runtime import EmergencyStop, Event, EventBus, ScheduledJob, Scheduler
+from .autonomy_improver import CapabilityImprover
 from .security import SECRET_PATTERNS
 from .utils.storage import atomic_json, exclusive_lock
 
@@ -235,7 +236,7 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
     blocked = next((marker for marker in _BLOCKED_GOAL_MARKERS if marker in clean_goal.casefold()), "")
     if blocked:
         raise ProactiveError(f"Sandbox request contains a blocked side effect: {blocked}")
-    if source not in {"proactive", "telegram"}:
+    if source not in {"proactive", "telegram", "capability_improver"}:
         raise ProactiveError("Unknown sandbox request source")
     if type(priority) is not int or not 0 <= priority <= 100:
         raise ProactiveError("Sandbox priority must be between 0 and 100")
@@ -460,9 +461,20 @@ class ProactiveEngine:
         # queued or only recorded.  Queued/running are never evicted (they are
         # not 'proposed'); only the low-confidence proposed tail is trimmed.
         self._cap_backlog(max_proposed=3)
-        return {"status": proposal.status,
-                "opportunity": asdict(proposal),
-                **({"job_id": job_id} if job_id else {})}
+        result = {"status": proposal.status, "opportunity": asdict(proposal)}
+        if job_id:
+            result["job_id"] = job_id
+        # Autonomous capability improvement (only on deep idle, low-priority)
+        idle = idle_seconds()
+        if idle and idle >= 300:  # 5+ min idle
+            try:
+                improver = CapabilityImprover(self.root, self.model)
+                capability_gap_built = improver.try_build()
+                if capability_gap_built:
+                    result["capability_gap_built"] = capability_gap_built
+            except Exception:
+                pass  # Never block the tick on improvement failures
+        return result
 
     def _cap_backlog(self, max_proposed: int = 3) -> None:
         """Keep the proposed backlog bounded; evict lowest-confidence items."""

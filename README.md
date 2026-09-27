@@ -4,20 +4,19 @@ Ghost is a local-first outcome agent in active development. It can research a go
 
 ## What works today
 
-- OpenJarvis-backed inference for Ghost's existing coding/research loop, plus an upstream read-only assistant, persistent sessions, Rust/FTS5 document retrieval, and owner-paired Telegram transport. See [setup and current limits](docs/openjarvis.md). The full personal-AI-OS roadmap is not complete.
-- MVP proactive loop: `proactive tick` observes durable goals, declared devices, queued work, and explicit project-context files; it proposes one bounded experiment, deduplicates it, and can queue it for the existing sandbox worker. It does not infer health, control hardware, message people, or modify the live project.
-- Local Ollama model routing: a coding model plus a dedicated research model (`gemma4:e4b-Claude` by default).
-- Source-grounded research with source credibility tiers, exact-quote claim gating, conservative verification, evidence gaps, related research leads, and per-run provenance graphs.
-- Academic and web discovery preserve DOI/work identity and publisher diversity. Metadata-only paper listings must yield source text before they can support claims. See [research verification](outputs/audit-2026-09-06/research-progress.md).
-- HTML source downloads have a 2 MiB default body cap and at most five redirects. Oversized, interrupted, compressed, and non-HTML responses are declined; network isolation and total download deadlines remain incomplete. See [download limits](outputs/audit-2026-09-06/research-download-limits.md).
-- Sandboxed coding runs: Ghost copies the project, uses only constrained tools, and keeps live source untouched.
-- Plan -> implement -> verify -> repair state machine with logs, audits, RAG code context, memories, and a knowledge graph.
-- Focused-test completion gates: a task that explicitly requests tests must write `test_*.py` or `*_test.py` coverage and run it before broad verification can pass. Source-only Python projects no longer implicitly substitute a syntax check for behavioral verification.
-- Durable outcome jobs via `ghost accomplish`, with research dossiers, sandbox paths, results, and capability-gap follow-ups under `.ghost/`.
-- Outcome acceptance contracts: every autonomous outcome records its deliverable, sandbox boundary, verification requirements, and explicit promotion requirement before implementation starts.
-- Model routing based on measured verification reputation; device registry and opt-in read-only filesystem/process observations feed the world model.
-- Persistent intent records keep user request, inferred outcome, plan, and authorization distinct; every tool action receives a generic provenance record.
-- A reviewed MCP add-on scaffold can declare missing capabilities without silently installing or executing a server.
+- **End-to-end usable loop**: `ghost accomplish --model gemma4:26b --command-timeout-seconds 120 "<goal>"` → real Ollama inference → sandbox tool execution → real pytest gates → durable outcome with `tests_passed`. Run with a model large enough for multi-step reasoning (gemma4:26b recommended; `--command-timeout-seconds` is the per-command timeout, default 30s, increase for heavyweight test suites).
+- **`ghost doctor`**: real Ollama (localhost:11434) + Docker daemon health probes; all integrations report as `not_configured` until credentials/hardware exist.
+- **Owner knowledge base**: `ghost kbase ingest <dir>` indexes your Zim/notes/docs; `ghost kbase query "<text>"` retrieves relevant chunks injected into the model's context — stop re-inventing API facts.
+- **LoRA corpus capture**: every passing job auto-captures a verified (goal → reference context → passing code) triple in `.ghost/lora/training_pairs.jsonl`; `ghost lora list` shows what's accumulated. Nothing trained yet — the corpus is ready for a future fine-tune.
+- **Autonomous improvement**: `ghost proactive tick/watch` + `ghost worker --watch` — Ghost observes goals, devices, and context files, proposes one bounded experiment per tick, queues it for the worker, and closes the loop on results. Idle-time gating (`idle_seconds()` + emergency stop) ensures owner work is never interrupted.
+- **Autonomous adapter building**: capability gaps from repeated failures are tracked (`ghost gaps list`); Ghost uses the model to assess whether a gap is autonomously addressable, queues sandbox implementation work, and marks the gap resolved on tests_passed. All changes are sandbox-only; promotion requires owner approval.
+- **Capability gap registry**: `ghost gaps list` / `ghost gaps stats` — see queued high-count gaps and their followup goals.
+- **Proactive feedback loop**: queued/running opportunities are reconciled on restart and closed on terminal outcomes (completed/tests_failed/error/cancelled).
+- Source-grounded research with credibility tiers, exact-quote claim gating, and per-run provenance graphs.
+- Sandboxed coding runs, plan → implement → verify → repair state machine, and durable outcome jobs via `ghost accomplish`.
+- Outcome acceptance contracts, persistent intent records, and model routing based on measured reputation.
+- Reviewable MCP extension scaffold, explicit approval gates, and loopback-only API (`ghost api`).
+- Promoted artifacts use atomic per-file replacement with a recovery journal.
 
 ## Honest limits
 
@@ -113,22 +112,25 @@ connection or live data.
 ghost                              # Interactive mode
 ghost research "topic"             # Source-grounded research
 ghost accomplish "desired outcome" # Research -> sandbox build -> test/repair
+ghost kbase ingest <dir>           # Index owner reference docs (Zim/notes/docs)
+ghost kbase query "text"           # Retrieve relevant reference chunks
+ghost kbase status                 # Show indexed document/chunk counts
+ghost lora list                    # Show captured verified training pairs
+ghost lora status                  # Corpus summary and next step hint
+ghost gaps list                    # Show queued capability gaps
+ghost gaps stats                   # Gap counts by status
 ghost run task.json                 # Sandboxed task-file run
 ghost audit                         # Inspect saved artifacts
 ghost knowledge                     # Inspect learned task history
-ghost doctor                        # Check local runtime health
-ghost emergency-stop status         # Inspect consequential-action stop state
-ghost emergency-stop engage         # Stop scheduler dispatch
-ghost extension scaffold telegram-bridge --goal "Approved Telegram adapter"
-ghost extension test telegram-bridge  # Mark reviewed adapter tests complete
-ghost extension request-enable telegram-bridge
-ghost approval list                 # Review pending consequential actions
-ghost approval approve <id> --note "approved for this scope"
-ghost promote request .ghost/outcomes/<job>/run/sandbox --goal-id <goal_id>
-ghost control-plane                 # Structured local state for UI/API clients
-ghost api --port 8765               # Loopback-only JSON control-plane API
-ghost integration plan telegram     # User-owned setup plan; makes no provider calls
-ghost integration propose telegram  # Create only a reviewable local extension proposal
+ghost doctor                        # Check local runtime health (ollama, docker, integrations)
+ghost proactive tick --model <model> --context-file <file>  # Propose one experiment
+ghost proactive watch --model <model> --run-worker          # Continuous proactive loop
+ghost worker --watch                # Claim and execute queued outcomes
+ghost accomplish "build a small game" --model qwen2.5-coder:1.5b
+ghost accomplish "investigate X and prototype Y" --research-model gemma4:e4b-Claude
+ghost accomplish "fix the parser" --iterations 20 --command-timeout-seconds 120
+ghost accomplish "local-only code task" --skip-research
+ghost accomplish "research then build this overnight" --queue
 ```
 
 When `ghost api` is running, open `http://127.0.0.1:8765/` for the local dashboard. It reads the same loopback-only control-plane snapshot; it does not expose a public web service.

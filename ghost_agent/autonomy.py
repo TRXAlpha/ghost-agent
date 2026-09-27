@@ -215,3 +215,23 @@ class CapabilityRegistry:
         data["queue"].append({"gap_id": fingerprint, "goal": followup, "status": "queued"})
         self._save(data)
         return gap
+
+    def get_queued_gaps(self, min_count: int = 2) -> list[dict]:
+        """Return gaps with 2+ failures that are still queued — candidates for autonomous build."""
+        data = self._load()
+        return [g for g in data.get("gaps", []) if g.get("count", 1) >= min_count and g.get("status") == "queued"]
+
+    def mark_in_progress(self, gap_id: str) -> None:
+        data = self._load()
+        for g in data.get("gaps", []):
+            if g["id"] == gap_id:
+                g["status"] = "in_progress"
+        self._save(data)
+
+    def mark_resolved(self, gap_id: str, resolution: str) -> None:
+        data = self._load()
+        for g in data.get("gaps", []):
+            if g["id"] == gap_id:
+                g["status"] = "resolved"
+                g["resolution"] = resolution[:500]
+        self._save(data)
