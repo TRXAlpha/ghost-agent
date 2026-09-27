@@ -33,7 +33,10 @@ def test_output_token_limit_is_sent_to_backend(monkeypatch):
     value.max_output_tokens = 512
     log = Log()
     value._model_turn([], "Implement", log, "")
-    assert captured[0]["options"] == {"num_predict": 512}
+    # num_ctx is derived from input size (never below 4096) so Ollama does not
+    # silently truncate the prompt; num_predict carries the output budget.
+    assert captured[0]["options"]["num_predict"] == 512
+    assert captured[0]["options"]["num_ctx"] >= 4096
     assert log.records[0]["max_output_tokens"] == 512
 
 

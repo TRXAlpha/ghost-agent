@@ -150,7 +150,12 @@ class OutcomeStore:
             ),
             "constraints": constraints,
             "context": {
-                "use_existing_context": True,
+                # Greenfield creation goals are harmed by RAG-injected snippets
+                # of Ghost's own source (verified 2026-09-27: small models spent
+                # turns reading ghost_agent/schema.py for a hello.py task).
+                # Only existing-code tasks need repository context; orchestrator
+                # still auto-enables it for fix/repair/refactor wording.
+                "use_existing_context": False,
                 "research_dossier": research[:12_000],
                 "notes": "Research is evidence context, not permission to invent facts.",
                 "acceptance_contract": deepcopy(job.acceptance_contract),

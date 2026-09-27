@@ -61,6 +61,8 @@ RULES:
 - Output ONLY a JSON object. No markdown fences, no prose, no explanation outside JSON.
 - No placeholder values. Use real file paths and commands.
 - Use pytest-style tests unless the task says otherwise.
+- Tests belong in their OWN file named test_*.py (e.g. test_add.py), never inside
+  the implementation file. A file that does not start with test_ is not a test file.
 - Stay inside the workspace root. Use only allowed commands.
 - If no actions needed: {"thought": "...", "actions": []}
 
@@ -933,13 +935,21 @@ class Orchestrator:
             raise ValueError("Model input budget cannot fit the task, policies, prompt, and feedback; reduce optional task context or increase max_input_chars")
         llm_log.log({"request": turn_messages})
 
+        # Ollama's default context window (num_ctx, ~4096 tokens) silently
+        # truncates long prompts: a ~21K-char task context produced EMPTY
+        # responses from gemma4:e2b (verified by replaying the exact request).
+        # Request a window large enough for the whole prompt: ~4 chars/token
+        # plus headroom for the response itself.
+        num_ctx = max(4096, (input_chars // 3) + 2048)
+        num_ctx = min(num_ctx, 32768)
         # Use streaming when TUI is available for real-time display
         response_text = ""
         try:
             result = ollama_chat(
                 self.model,
                 turn_messages,
-                options={"num_predict": getattr(self, "max_output_tokens", 2048)},
+                options={"num_predict": getattr(self, "max_output_tokens", 2048),
+                         "num_ctx": num_ctx},
                 base_url=self.base_url,
                 timeout=self.timeout,
                 stream=bool(self.tui),
@@ -957,7 +967,8 @@ class Orchestrator:
             response_text = ollama_chat(
                 self.model,
                 turn_messages,
-                options={"num_predict": getattr(self, "max_output_tokens", 2048)},
+                options={"num_predict": getattr(self, "max_output_tokens", 2048),
+                         "num_ctx": num_ctx},
                 base_url=self.base_url,
                 timeout=self.timeout,
             )
