@@ -94,15 +94,52 @@ class MemoryStore:
 
         return results
 
+    # Tokens so common across lessons that they carry no discriminating
+    # signal. Matching on these alone caused retrieval to inject unrelated
+    # past-task goals into prompts (small models then imitated the wrong
+    # goal), so they are excluded from scoring entirely.
+    _STOP_TOKENS = frozenset({
+        "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "with",
+        "is", "are", "was", "be", "it", "this", "that", "as", "at", "by",
+        "task", "tasks", "test", "tests", "create", "created", "file",
+        "files", "write", "written", "run", "runs", "add", "added", "use",
+        "using", "focused", "minimal", "keep", "must", "should", "goal",
+        "result", "strategy", "iteration", "iterations", "plan", "notes",
+        "none", "noted", "failed", "success", "work", "worked", "insight",
+        "key", "touched", "structured", "lesson", "ghost", "limited",
+    })
+
     def _keyword_retrieve(self, query: str, limit: int = 3) -> List[str]:
-        """Original keyword-based retrieval."""
+        """Keyword retrieval with IDF weighting and a relevance threshold.
+
+        Raw token-overlap scoring ranked lessons by generic tokens shared by
+        every lesson (metadata words such as "task" or "test"), so unrelated
+        past goals were injected into new prompts. Score each indexed note by
+        the sum of IDF weights of its shared tokens with the query, drop
+        stop/common tokens, and return nothing when no note shares a
+        sufficiently distinctive token. Empty results are correct behavior:
+        injecting an unrelated lesson is worse than no memory at all.
+        """
         index = self._load_index()
-        tokens = self._tokenize(query)
-        scores: Dict[str, int] = {}
+        total_docs = len({path for paths in index.values() for path in paths})
+        if total_docs == 0 or not index:
+            return []
+        tokens = {token for token in self._tokenize(query) if len(token) >= 3}
+        tokens -= self._STOP_TOKENS
+        scores: Dict[str, float] = {}
         for token in tokens:
-            for path in index.get(token, []):
-                scores[path] = scores.get(path, 0) + 1
-        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+            paths = index.get(token)
+            if not paths:
+                continue
+            idf = 1.0 + (total_docs / len(paths))
+            for path in paths:
+                scores[path] = scores.get(path, 0.0) + idf
+        # Require at least one distinctive shared token (idf weight > 1 means
+        # the token appears in fewer than all documents).
+        ranked = sorted(
+            ((path, score) for path, score in scores.items() if score > 1.0),
+            key=lambda item: item[1], reverse=True,
+        )
         note_results = []
         for path, _score in ranked[:limit]:
             note_path = self.base_dir / path
