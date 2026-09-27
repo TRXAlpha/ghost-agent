@@ -17,7 +17,7 @@ class CmdError(ValueError):
 
 DEFAULT_ALLOWLIST = {"python", "python.exe", "pytest", "git", "ruff", "node", "node.exe"}
 BLOCKLIST_TOKENS = {"sudo", "rm -rf", "curl", "wget"}
-COMMAND_ENV_KEYS = {"PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL"}
+COMMAND_ENV_KEYS = {"PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"}
 
 
 def _split_cmd(cmd: str) -> list[str]:
