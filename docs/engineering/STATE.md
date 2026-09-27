@@ -2,9 +2,9 @@
 
 ## Repository
 - Branch: master
-- HEAD: c611b03 — mvp: service health checks (ollama/docker) + integration placeholders
-- Working tree: CLEAN. MVP health/integration subsystem COMMITTED and ACCEPTED.
-- Prior accepted subsystems unchanged (OJ15-Recovery, OJ09-FeedbackLoop, MVP loop green).
+- HEAD: cccc3ba — fix: configurable per-command timeout (default 30s) via command_timeout_seconds constraint
+- Working tree: CLEAN (cccc3ba committed). In-flight: capability_improver worker building autonomous gap-filling loop; accomplish job with --command-timeout-seconds 120 running in background to confirm tests_passed end-to-end.
+- Prior accepted subsystems: c611b03 (health checks+integrations), a83b6e8 (STATE update), 452b1c4 (MVP loop green).
 
 ## Accepted Subsystem Report: OJ15-Recovery
 - Owner-visible behavior: self-repair proposals verify ONLY through a real witnessed
