@@ -165,6 +165,10 @@ class Orchestrator:
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
+        # Per-command execution timeout. Default preserves historical 30s;
+        # OutcomeWorker payloads may override via task constraint
+        # "command_timeout_seconds" (bounded 5..86400) for heavyweight runs.
+        self._command_timeout = 30
         self.verbose = verbose
         self.tui = tui
         self._goal_prints = False
@@ -233,6 +237,11 @@ class Orchestrator:
     def run_task_with_roots(
         self, task: Task, workspace_root: Path, artifacts_root: Path
     ) -> None:
+        # Per-command timeout from task constraints (bounded); total command
+        # budget remains governed by command_budget_seconds.
+        raw_ct = task.constraints.get("command_timeout_seconds", 30)
+        if type(raw_ct) in (int, float) and 5 <= raw_ct <= 86400:
+            self._command_timeout = raw_ct
         self._provenance_parent_id = self.provenance.record(
             "outcome.started", {"task_id": task.task_id, "goal": task.goal, "model": self.model}
         ).record_id
@@ -249,6 +258,9 @@ class Orchestrator:
 
     def resume_task_with_roots(self, task: Task, artifacts_root: Path) -> None:
         """Operator-requested continuation of a preserved outcome workspace."""
+        raw_ct = task.constraints.get("command_timeout_seconds", 30)
+        if type(raw_ct) in (int, float) and 5 <= raw_ct <= 86400:
+            self._command_timeout = raw_ct
         artifacts = Path(artifacts_root).absolute()
         if artifacts.resolve() != artifacts or artifacts == self.repo_root or not artifacts.is_relative_to(self.repo_root):
             raise ValueError("Invalid outcome artifact path")
@@ -464,6 +476,19 @@ class Orchestrator:
                 "role": "user",
                 "content": "Relevant memories:\n" + "\n\n".join(memory_notes),
             })
+
+        # Inject owner reference docs (Zim/notes exports) if any are indexed.
+        # Always applies (even to greenfield tasks): it is the owner's own
+        # reference knowledge, not unrelated repository history.
+        try:
+            from .knowledge_base import OwnerKnowledgeBase
+            kb_text = OwnerKnowledgeBase(self.repo_root).retrieve_context(
+                f"{task.title} {task.goal}"
+            )
+        except Exception:
+            kb_text = ""
+        if kb_text:
+            messages.append({"role": "user", "content": kb_text})
 
         last_feedback = state.get("last_feedback", "")
         strategy = "default"
@@ -1136,12 +1161,17 @@ class Orchestrator:
 
     def _run_command(self, command: str, cwd: str, workspace: Path) -> Dict[str, Any]:
         budget = getattr(self, "_command_budget", None)
+        # Per-command timeout: task-configurable (command_timeout_seconds), so
+        # heavyweight broad-suite runs (e.g. a copied repo's full pytest) are
+        # not capped at the historical 30s default under load. The TOTAL
+        # command budget (command_budget_seconds) still bounds cumulative use.
+        per_command = getattr(self, "_command_timeout", 30)
         def execute(timeout):
             return cmd_tools.run_cmd(command, cwd, root=workspace, timeout=timeout,
                 should_stop=lambda: EmergencyStop(self.repo_root).active())
         if budget is None:
-            return execute(30)
-        with budget.slot() as timeout:
+            return execute(per_command)
+        with budget.slot(timeout=per_command) as timeout:
             return execute(timeout)
 
     def _format_results(self, results: List[Dict[str, Any]]) -> str:

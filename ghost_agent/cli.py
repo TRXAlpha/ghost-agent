@@ -1591,6 +1591,20 @@ def main() -> None:
     knowledge_parser = sub.add_parser("knowledge", help="Show knowledge graph report")
     knowledge_parser.add_argument("--strategy", action="store_true", help="Strategy effectiveness")
 
+    kbase_parser = sub.add_parser("kbase", help="Owner reference knowledge base (Zim/notes/docs)")
+    kbase_sub = kbase_parser.add_subparsers(dest="kb_action")
+    kbase_ingest = kbase_sub.add_parser("ingest", help="Index a directory of reference docs")
+    kbase_ingest.add_argument("path", help="File or directory to index")
+    kbase_sub.add_parser("status", help="Show knowledge base stats")
+    kbase_query = kbase_sub.add_parser("query", help="Retrieve relevant reference chunks")
+    kbase_query.add_argument("text", nargs="+", help="Query text")
+
+    lora_parser = sub.add_parser("lora", help="Verified training-pair corpus (future fine-tune)")
+    lora_sub = lora_parser.add_subparsers(dest="lora_action")
+    lora_sub.add_parser("status", help="Number of verified pairs captured")
+    lora_list = lora_sub.add_parser("list", help="Show recent captured pairs (goal/model only)")
+    lora_list.add_argument("--limit", type=int, default=10)
+
     search_parser = sub.add_parser("search", help="Search codebase via RAG")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--limit", type=int, default=10, help="Max results")
@@ -1615,6 +1629,8 @@ def main() -> None:
     accomplish_parser.add_argument("--iterations", type=int, default=12)
     accomplish_parser.add_argument("--command-budget-seconds", type=float, default=300)
     accomplish_parser.add_argument("--command-budget-calls", type=int, default=32)
+    accomplish_parser.add_argument("--command-timeout-seconds", type=float, default=30,
+        help="Max seconds per command (default 30; increase for heavyweight test suites)")
     accomplish_parser.add_argument("--require-file", action="append", default=[],
                                    help="Required relative deliverable path; repeat for multiple files")
     accomplish_parser.add_argument("--skip-research", action="store_true")
@@ -1709,6 +1725,8 @@ def main() -> None:
         "init": lambda: _cmd_init(args.path),
         "index": lambda: _cmd_index(args),
         "knowledge": lambda: _cmd_knowledge(args),
+        "kbase": lambda: _cmd_kbase(args),
+        "lora": lambda: _cmd_lora(args),
         "search": lambda: _cmd_search(args),
         "research": lambda: _cmd_research(args),
         "accomplish": lambda: _cmd_accomplish(args),
@@ -2364,6 +2382,48 @@ def _cmd_research(args: argparse.Namespace) -> None:
     print(f"\n{report}")
 
 
+def _cmd_kbase(args: argparse.Namespace) -> None:
+    """Ingest / status / query for the owner reference knowledge base."""
+    from .knowledge_base import OwnerKnowledgeBase
+    kb = OwnerKnowledgeBase(Path.cwd())
+    action = getattr(args, "kb_action", None)
+    if action == "ingest":
+        stats = kb.ingest(args.path)
+        print(f"Indexed: {stats.document_count} documents, {stats.chunk_count} chunks, "
+              f"{stats.total_chars} chars.")
+    elif action == "query":
+        query = " ".join(args.text).strip()
+        hits = kb.retrieve(query, limit=4)
+        for chunk in hits:
+            print(f"[{chunk.source}]\n{chunk.content}\n")
+        if not hits:
+            print("No relevant reference chunks found.")
+    else:  # status or bare
+        stats = kb.stats()
+        print(f"knowledge base: {stats.document_count} documents, "
+              f"{stats.chunk_count} chunks, {stats.total_chars} chars")
+        print(f"last ingest: {stats.last_ingest_at}")
+        print("Use: ghost kbase ingest <dir> | ghost kbase query \"<text>\"")
+
+
+def _cmd_lora(args: argparse.Namespace) -> None:
+    """Show the verified training-pair corpus (captures only; never trains)."""
+    from .training_capture import TrainingPairStore
+    store = TrainingPairStore(Path.cwd())
+    action = getattr(args, "lora_action", None)
+    if action == "list":
+        for raw in store.list(limit=getattr(args, "limit", 10)):
+            print(f"{raw.get('job_id','?')} | {raw.get('model','?')} | "
+                  f"{raw.get('goal','')[:80]}")
+        if store.count() == 0:
+            print("No verified training pairs captured yet.")
+    else:  # status or bare
+        print(f"Verified training-pair corpus: {store.count()} pairs")
+        print("  corpus: .ghost/lora/training_pairs.jsonl")
+        print("  These are captured from passing jobs; nothing trained yet.")
+        print("  Use: ghost lora list")
+
+
 def _cmd_accomplish(args: argparse.Namespace) -> None:
     """Execute an outcome as a durable research → sandbox → verification job."""
     project_root = Path.cwd().resolve()
@@ -2376,6 +2436,10 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
         Task("preview", "preview", goal, {"iteration_limit": args.iterations}, {})
         command_seconds = getattr(args, "command_budget_seconds", 300)
         command_calls = getattr(args, "command_budget_calls", 32)
+        command_timeout = getattr(args, "command_timeout_seconds", 30)
+        if type(command_timeout) not in (int, float) or not 5 <= command_timeout <= 86400:
+            print("Outcome contract refused: command_timeout_seconds must be between 5 and 86400.")
+            return
         CommandBudget(project_root / ".ghost" / "budget-validation", command_seconds, command_calls)
     except ValueError as exc:
         print(f"Outcome contract refused: {exc}")
@@ -2439,7 +2503,7 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
     job.acceptance_contract["required_files"] = list(required_files)
     from .models.chat import route_identity
     job.acceptance_contract["inference_route"] = route_identity()
-    job.acceptance_contract.update(command_budget_seconds=command_seconds, command_budget_calls=command_calls)
+    job.acceptance_contract.update(command_budget_seconds=command_seconds, command_budget_calls=command_calls, command_timeout_seconds=command_timeout)
     job.coding_model = coding_model
     job.research_model = research_model
     job.goal_id = goal_record.goal_id
@@ -2684,6 +2748,19 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         job.sandbox_path = str(run_dir / "sandbox")
         job.status = "completed" if job.result == "tests_passed" else "needs_review"
         store.save(job)
+        if job.status == "completed":
+            # Capture a verified (goal -> context -> passing code) training pair
+            # for a future LoRA fine-tune. Durable, idempotent, never trains here.
+            try:
+                from .training_capture import TrainingPairStore, build_pair
+                from .knowledge_base import OwnerKnowledgeBase
+                kb = OwnerKnowledgeBase(project_root).retrieve_context(job.goal)
+                pair = build_pair(job.job_id, job.goal, job.coding_model, job.result,
+                                  context=kb, sandbox_path=Path(job.sandbox_path))
+                TrainingPairStore(project_root).capture(pair)
+            except Exception:
+                # Capturing pairs is best-effort and must never fail the job.
+                pass
         ModelReputationStore(project_root).record(job.coding_model, "coding", job.status == "completed",
                                                    verification_failure=job.status != "completed")
         GoalStore(project_root).set_status(job.goal_id, "completed" if job.status == "completed" else "blocked")
