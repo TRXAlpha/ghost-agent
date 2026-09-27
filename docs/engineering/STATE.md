@@ -2,8 +2,8 @@
 
 ## Repository
 - Branch: master
-- HEAD: (to be set on commit) — MVP health checks + integration placeholders
-- Working tree: pending MVP subsystem commit (health checks, adapters, tests).
+- HEAD: c611b03 — mvp: service health checks (ollama/docker) + integration placeholders
+- Working tree: CLEAN. MVP health/integration subsystem COMMITTED and ACCEPTED.
 - Prior accepted subsystems unchanged (OJ15-Recovery, OJ09-FeedbackLoop, MVP loop green).
 
 ## Accepted Subsystem Report: OJ15-Recovery
@@ -235,4 +235,4 @@ Subsystem: `mvp-health-and-integrations`
 - Docker: running daemon (used for execution isolation infra where configured).
 
 ### Commit
-- (set on commit)
+- c611b03
