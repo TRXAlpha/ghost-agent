@@ -135,6 +135,17 @@ to 11 collection errors across the suite.
   competence (multi-step planning, import correctness), not Ghost wiring.
   Bigger models (gemma4:26b) expected to pass the smoke test.
 
+## MVP LOOP GREEN (2026-09-27 19:08) — commit `452b1c4` stack
+- Job outcome_20260927_190856_36c910b5_99d6055e: gemma4:26b, 3 iterations.
+- Result: **tests_passed**. Focused gate passed, suite gate passed (full
+  sandbox suite 825/825 including the model's deliverables).
+- Verified chain: goal -> ghost accomplish -> model routing -> real Ollama
+  inference -> sandbox tool execution -> real pytest gates -> durable outcome.
+- Recommended default model for accomplish: gemma4:26b (passed in 3 iters).
+  Small models work but need more turns (qwen2.5-coder:1.5b best JSON
+  compliance among 1.5-2B).
+- Launch: ./.venv/Scripts/python -m ghost_agent.cli accomplish --skip-research --model gemma4:26b "goal"
+
 ## Verification Commands
 - `python -m pytest tests/test_self_repair.py tests/test_self_repair_oj15.py -v`
 - `python -m pytest tests/ -q` (full suite; 2 pre-existing env failures expected in
