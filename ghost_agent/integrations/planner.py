@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .extensions import ExtensionManager
+from ..extensions import ExtensionManager
 
 
 @dataclass

@@ -84,6 +84,29 @@ pip install -e .
 
 Run Ollama locally, then select models installed on your machine.
 
+Check runtime health with `ghost doctor`. It reports Ghost storage state plus a
+`SERVICES:` section for real service availability (Ollama at localhost:11434 and
+Docker daemon) with detected Ollama model names, and reports the optional
+integrations (`telegram`, `huawei`, `desksentinel`) as `not_configured` until you
+provide credentials/hardware. Health checks are read-only probes; Ghost never
+starts or configures services for you.
+
+## External integrations (all optional — Ghost runs without any of them)
+
+Telegram, Huawei, and DeskSentinel are gated behind clearly-marked placeholder
+adapters under `ghost_agent/integrations/`. Without credentials/hardware they
+raise `ConnectionError` and report `not_configured`; they never fake a live
+connection or live data.
+
+- **Telegram**: set `TELEGRAM_BOT_TOKEN` and pair via `ghost integration plan telegram`,
+  review the extension proposal, and approve enablement. Until then, messaging is
+  unavailable.
+- **Huawei**: requires Huawei Developer Console credentials (AppID/AppSecret) and
+  user authorization. Until then, no live health data is fetched.
+- **DeskSentinel**: the ESP32 firmware and serial/BLE protocol do not exist yet.
+  `connect`/`set_target_height` raise `ConnectionError`; `get_status()` returns a
+  clearly-labeled mock — not live telemetry.
+
 ## Core commands
 
 ```powershell

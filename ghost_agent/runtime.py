@@ -5,11 +5,12 @@ import json
 import hashlib
 import os
 import shutil
+import subprocess
 import time
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .utils.storage import atomic_json, exclusive_lock
 
@@ -396,6 +397,9 @@ class AttentionManager:
 
 class Doctor:
     """Local health checks without attempting repairs or external side effects."""
+
+    OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+
     def __init__(self, project_root: Path) -> None:
         self.root = Path(project_root)
 
@@ -427,7 +431,60 @@ class Doctor:
         status["secret_references"] = "ok" if not secret_file.exists() or self._valid_json(secret_file) else "degraded"
         status["api"] = "loopback_only"  # Transport is intentionally not auto-started.
         status["execution_isolation"] = "not_implemented_host_user_access"
+        status["ollama"] = self._probe_ollama()
+        status["docker"] = self._probe_docker()
+        # Integration adapters (read-only probes, no credentials required for status check)
+        from .integrations import telegram_health_check, huawei_health_check, sentinel_health_check
+        status["telegram"] = telegram_health_check()["status"]
+        status["huawei"] = huawei_health_check()["status"]
+        status["desksentinel"] = sentinel_health_check()["status"]
         return status
+
+    def available_models(self, timeout: float = 3.0) -> List[str]:
+        """Return the names of installed Ollama models ([] if unreachable)."""
+        import requests
+        try:
+            response = requests.get(self.OLLAMA_TAGS_URL, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.exceptions.RequestException, OSError, ValueError):
+            return []
+        return [m.get("name") for m in data.get("models", []) if m.get("name")]
+
+    @staticmethod
+    def _probe_ollama(timeout: float = 3.0) -> str:
+        """Probe the local Ollama daemon. 'ok' | 'not_running' | 'error'."""
+        try:
+            import requests
+            response = requests.get(Doctor.OLLAMA_TAGS_URL, timeout=timeout)
+            response.raise_for_status()
+            return "ok"
+        except requests.exceptions.ConnectionError:
+            return "not_running"
+        except (requests.exceptions.RequestException, OSError, ValueError, ImportError):
+            return "error"
+
+    @staticmethod
+    def _probe_docker(timeout: float = 3.0) -> str:
+        """Probe the Docker daemon via `docker info`. 'ok' | 'not_running' | 'error'."""
+        try:
+            proc = subprocess.run(
+                ["docker", "info"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return "error"
+        except OSError:
+            return "error"
+        if proc.returncode == 0:
+            return "ok"
+        err = (proc.stderr or "").lower()
+        if "cannot connect to the docker daemon" in err or "is the docker daemon running" in err:
+            return "not_running"
+        return "error"
 
     @staticmethod
     def _valid_extension(path: Path) -> bool:

@@ -2,8 +2,9 @@
 
 ## Repository
 - Branch: master
-- HEAD: a90ff65 — oj15: repair self-repair evidence verification (S08 trust boundary)
-- Working tree: CLEAN. OJ15-Recovery subsystem COMMITTED and ACCEPTED.
+- HEAD: (to be set on commit) — MVP health checks + integration placeholders
+- Working tree: pending MVP subsystem commit (health checks, adapters, tests).
+- Prior accepted subsystems unchanged (OJ15-Recovery, OJ09-FeedbackLoop, MVP loop green).
 
 ## Accepted Subsystem Report: OJ15-Recovery
 - Owner-visible behavior: self-repair proposals verify ONLY through a real witnessed
@@ -156,3 +157,82 @@ to 11 collection errors across the suite.
 ## Environment
 - Windows, Python 3.x (venv at .venv; current interpreter is 3.14.2)
 - No external dependencies beyond pytest for the self-repair tests
+
+## Accepted Subsystem Report: MVP Health Checks + Integration Placeholders (2026-09-27)
+
+Subsystem: `mvp-health-and-integrations`
+
+### Owner-visible behavior
+- `ghost doctor` now reports real service availability in a `SERVICES:` section:
+  - `ollama: ok|not_running|error` (probes localhost:11434/api/tags, 3s timeout)
+  - `docker: ok|not_running|error` (runs `docker info`, 3s timeout)
+  - Installed Ollama model names are listed (auto-detected, not hardcoded).
+- `ghost doctor` also reports the three optional integrations in `STORAGE:`:
+  `telegram`, `huawei`, `desksentinel` — all `not_configured` by default.
+- New integration adapters live under `ghost_agent/integrations/` (a package):
+  - `telegram.py` — placeholder; `send_message`/`get_updates` raise ConnectionError
+    until TELEGRAM_BOT_TOKEN + pairing exist. No fake connection.
+  - `huawei.py` — placeholder; `get_health_summary` raises ConnectionError until
+    Huawei Health Kit credentials/authorization exist. No fake health data.
+  - `desksentinel.py` — placeholder; ESP32 firmware does not exist. `get_status()`
+    returns a clearly-marked MOCKUP `DeskSentinelStatus` (not live telemetry);
+    `connect`/`set_target_height` raise ConnectionError.
+  - `planner.py` — verbatim move of the pre-existing `IntegrationPlanner`/
+    `IntegrationBlueprint` (formerly `ghost_agent/integrations.py`), kept for
+    `from .integrations import IntegrationPlanner` consumers (cli.py, tests).
+- Existing `integrations.py` module converted to an `integrations/` package to avoid
+  the module/package name collision created by adding adapter submodules. Verified
+  functionally equivalent (test_integrations.py passes unchanged).
+
+### Integrity / anti-fabrication guarantees
+- No live Telegram/Huawei calls are made without credentials — adapters raise
+  ConnectionError and health_check() returns `not_configured` with a `note`/
+  `instructions` string explicitly saying no live calls are made.
+- DeskSentinel returns only a clearly-labeled mock; the module docstring states
+  the ESP32 firmware does not exist. Not presented as live telemetry.
+
+### Verification (2026-09-27, Python 3.14.2, .venv)
+- Live `ghost doctor` on this machine: ollama=ok (8 models listed), docker=ok,
+  integrations all not_configured.
+- Focused new tests: `pytest tests/test_mvp_health_and_adapters.py` = 14 passed.
+- Existing integration/doctor/runtime tests: 16 passed.
+- Full suite: `pytest tests/ -q` = 839 passed, 0 failed.
+- PLACEHOLDER CADENCE: worker subagents showed unreliable prose reports on this
+  provider; all behavior was re-verified in root context (import probes, git diff,
+  live doctor, full pytest). Test file for adapters was authored directly in root
+  context.
+
+### End-to-end MVP loop status
+- The full usable loop (user request -> ghost accomplish -> real local Ollama
+  inference -> sandbox tool execution -> real pytest gates -> durable outcome) was
+  already proven GREEN with gemma4:26b -> tests_passed in commit 452b1c4
+  (STATE.md "MVP LOOP GREEN").
+- Re-run today: gemma4:e2b (2B) did real inference and wrote hello.py to the sandbox
+  but hit iteration_limit (model-competence, not wiring). gemma4:26b cold-load timed
+  out on the 60s read timeout in one attempt — a model-speed/timeout tuning issue,
+  not a wiring fault; the proven path remains `--model gemma4:26b`.
+- Recommended launch: ./.venv/Scripts/python -m ghost_agent.cli accomplish
+  --skip-research --model gemma4:26b "<goal>"
+
+### Lora / autonomous-learning boundary (decision)
+- Autonomous EXECUTION: lives in the existing proactive loop (`proactive tick/watch`
+  + `ghost worker --watch`, gated by idle_seconds() and emergency-stop) — no new
+  executor added (single-owner invariant).
+- Durable LEARNING (no fine-tune): memory store, learner.py spaced-repetition +
+  assessment oracles, models/routing.py per-model verification reputation, proactive
+  feedback/reconcile. This is the MVP-scope learning path.
+- LoRA/fine-tuning: deferred and data-gated. Recommended design is to accumulate
+  verified input/target training pairs during idle work (e.g. a .ghost/lora/
+  training_pairs.jsonl store fed by tests_passed outcomes) and only fit a LoRA on
+  local Ollama once a sufficient curated corpus exists. Not in MVP scope; would
+  require llama.cpp/axolotl-style tooling and risks forgetting on small models.
+
+### External prerequisites (unchanged, all optional)
+- Telegram: TELEGRAM_BOT_TOKEN + BotFather pairing -> integration plan/propose.
+- Huawei: Developer Console AppID/AppSecret + user authorization.
+- DeskSentinel: ESP32 firmware + serial/BLE protocol definition (does not exist yet).
+- Ollama: running at localhost:11434 with at least one installed model.
+- Docker: running daemon (used for execution isolation infra where configured).
+
+### Commit
+- (set on commit)

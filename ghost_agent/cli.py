@@ -2473,8 +2473,21 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
 
 def _cmd_doctor() -> None:
     """Report local runtime health without changing state."""
-    for name, status in Doctor(Path.cwd()).check().items():
-        print(f"{name}: {status}")
+    doctor = Doctor(Path.cwd())
+    checks = doctor.check()
+    service_names = {"ollama", "docker"}
+    storage = {k: v for k, v in checks.items() if k not in service_names}
+    services = {k: v for k, v in checks.items() if k in service_names}
+    print("STORAGE:")
+    for name, status in storage.items():
+        print(f"  {name}: {status}")
+    print("SERVICES:")
+    for name, status in services.items():
+        print(f"  {name}: {status}")
+        if name == "ollama" and status == "ok":
+            models = doctor.available_models()
+            if models:
+                print(f"    models: {', '.join(models)}")
 
 
 def _cmd_emergency_stop(args: argparse.Namespace) -> None:
