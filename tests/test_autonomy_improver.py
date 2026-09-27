@@ -238,3 +238,69 @@ def test_queue_sandbox_outcome_accepts_capability_improver_source(tmp_path: Path
     job = queue_sandbox_outcome(tmp_path, "Implement the gap workaround",
                                "fake-model", source="capability_improver", priority=10)
     assert job.job_id  # job was created
+
+# ------------------------------------------------------------------
+# Gap feedback closure (worker -> gap lifecycle; OJ09-pattern)
+# ------------------------------------------------------------------
+
+def _finished_job(tmp_path, *, status, result, gap_id="", goal="Build adapter"):
+    from ghost_agent.autonomy import OutcomeJob
+    job = OutcomeJob(job_id="job-gap-1", goal=goal, status=status, result=result)
+    job.acceptance_contract["source"] = "capability_improver"
+    if gap_id:
+        job.acceptance_contract["gap_id"] = gap_id
+    return job
+
+
+def test_close_gap_resolves_on_tests_passed(tmp_path):
+    from ghost_agent.autonomy_improver import close_gap_feedback
+    reg = CapabilityRegistry(tmp_path)
+    gap = reg.record_gap("Build adapter", "Missing adapter")
+    reg.mark_in_progress(gap["id"])
+    job = _finished_job(tmp_path, status="completed", result="tests_passed", gap_id=gap["id"])
+    assert close_gap_feedback(tmp_path, job) == gap["id"]
+    data = reg._load()
+    updated = next(g for g in data["gaps"] if g["id"] == gap["id"])
+    assert updated["status"] == "resolved"
+    assert "tests_passed" in updated["resolution"]
+
+
+def test_close_gap_rolls_back_on_failure(tmp_path):
+    from ghost_agent.autonomy_improver import close_gap_feedback
+    reg = CapabilityRegistry(tmp_path)
+    gap = reg.record_gap("Build adapter", "Missing adapter")
+    reg.mark_in_progress(gap["id"])
+    job = _finished_job(tmp_path, status="needs_review", result="iteration_limit", gap_id=gap["id"])
+    assert close_gap_feedback(tmp_path, job) == gap["id"]
+    updated = next(g for g in reg._load()["gaps"] if g["id"] == gap["id"])
+    assert updated["status"] == "queued"
+
+
+def test_close_gap_noop_for_unlinked_jobs(tmp_path):
+    from ghost_agent.autonomy_improver import close_gap_feedback
+    reg = CapabilityRegistry(tmp_path)
+    gap = reg.record_gap("Build adapter", "Missing adapter")
+    reg.mark_in_progress(gap["id"])
+    # No gap_id and non-matching goal -> nothing closed
+    job = _finished_job(tmp_path, status="completed", result="tests_passed", goal="unrelated goal")
+    assert close_gap_feedback(tmp_path, job) is None
+    updated = next(g for g in reg._load()["gaps"] if g["id"] == gap["id"])
+    assert updated["status"] == "in_progress"
+
+
+def test_close_gap_non_terminal_job_is_ignored(tmp_path):
+    from ghost_agent.autonomy_improver import close_gap_feedback
+    reg = CapabilityRegistry(tmp_path)
+    gap = reg.record_gap("Build adapter", "Missing adapter")
+    reg.mark_in_progress(gap["id"])
+    job = _finished_job(tmp_path, status="implementing", result="", gap_id=gap["id"])
+    assert close_gap_feedback(tmp_path, job) is None
+    updated = next(g for g in reg._load()["gaps"] if g["id"] == gap["id"])
+    assert updated["status"] == "in_progress"
+
+
+def test_registry_reset_to_queued_only_touches_in_progress(tmp_path):
+    reg = CapabilityRegistry(tmp_path)
+    gap = reg.record_gap("G", "R")
+    reg.reset_to_queued(gap["id"])  # still queued; must stay queued, not error
+    assert next(g for g in reg._load()["gaps"] if g["id"] == gap["id"])["status"] == "queued"

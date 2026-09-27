@@ -235,3 +235,10 @@ class CapabilityRegistry:
                 g["status"] = "resolved"
                 g["resolution"] = resolution[:500]
         self._save(data)
+
+    def reset_to_queued(self, gap_id: str) -> None:
+        data = self._load()
+        for g in data.get("gaps", []):
+            if g["id"] == gap_id and g.get("status") == "in_progress":
+                g["status"] = "queued"
+        self._save(data)

@@ -2705,6 +2705,16 @@ def _close_proactive_feedback(project_root: Path, job) -> None:
         EventBus(project_root).emit(Event("proactive.feedback_error",
                                           {"job_id": job.job_id, "error": str(exc)},
                                           source="proactive"))
+    # Capability-improver jobs close their gap on the same terminal result
+    # (resolved on tests_passed, rolled back to queued on retryable failure).
+    from .autonomy_improver import close_gap_feedback
+    try:
+        close_gap_feedback(project_root, job)
+    except Exception as exc:
+        from .runtime import EventBus, Event
+        EventBus(project_root).emit(Event("capability.feedback_error",
+                                          {"job_id": job.job_id, "error": str(exc)},
+                                          source="capability_improver"))
 
 
 def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> WorkerResult:

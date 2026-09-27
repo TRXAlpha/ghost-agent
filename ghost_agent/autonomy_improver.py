@@ -81,13 +81,86 @@ class CapabilityImprover:
         try:
             # Import here to avoid circular import with proactive.py
             from .proactive import queue_sandbox_outcome
-            queue_sandbox_outcome(
+            job = queue_sandbox_outcome(
                 self.root,
                 gap["followup_goal"],
                 self.model,
                 source="capability_improver",
                 priority=10,   # low priority — owner work comes first
             )
+            # Bind the gap identity into the job contract so the worker can
+            # close the gap on the job's real terminal result (OJ09 pattern).
+            try:
+                job.acceptance_contract["gap_id"] = gap["id"]
+                from .autonomy import OutcomeStore
+                OutcomeStore(self.root).save(job)
+            except Exception:
+                pass  # best-effort binding; closure falls back to goal match
             return gap["id"]
         except Exception:
+            # Roll the gap back to queued so it stays a candidate rather than
+            # being stuck in_progress forever after a queueing failure.
+            try:
+                self.gaps.reset_to_queued(gap["id"])
+            except Exception:
+                pass
             return None
+
+def gap_outcome_for_job(job) -> Optional[tuple]:
+    """Map a terminal outcome job to a gap verdict.
+
+    Returns (verdict, resolution) for genuinely terminal jobs, else None.
+    Verdict mirrors the real job result; never fabricated.
+    """
+    terminal = {"tests_passed", "tests_failed", "error", "cancelled",
+                "iteration_limit", "route_mismatch", "worker_failed"}
+    result = str(getattr(job, "result", "") or "")
+    status = str(getattr(job, "status", "") or "")
+    if status == "completed" and result == "tests_passed":
+        return ("resolved", f"job={job.job_id} tests_passed")
+    if status in {"needs_review", "failed"} and result in terminal:
+        # Failed attempts roll the gap back to queued so the improver can
+        # retry later with fresh context; not resolved, not silently dropped.
+        return ("retry", f"job={job.job_id} {result}")
+    return None
+
+
+def close_gap_feedback(root, job) -> Optional[str]:
+    """Idempotently close the capability gap linked to a finished outcome job.
+
+    Uses the job's real terminal result. Resolves the gap on tests_passed;
+    rolls it back to queued on retryable failure. No-ops for jobs without a
+    gap link (bound via acceptance_contract['gap_id'], with a followup-goal
+    fallback for contracts saved before that binding existed).
+    """
+    root = Path(root).resolve()
+    gap_id = ""
+    try:
+        gap_id = str((getattr(job, "acceptance_contract", {}) or {}).get("gap_id", "") or "")
+    except Exception:
+        gap_id = ""
+    verdict = gap_outcome_for_job(job)
+    if verdict is None:
+        return None
+    registry = CapabilityRegistry(root)
+    outcome, resolution = verdict
+    if outcome == "resolved":
+        if not gap_id:
+            # Fallback: find the single in_progress gap whose followup goal
+            # matches this job's goal (legacy contracts without gap_id).
+            goal = str(getattr(job, "goal", "") or "").strip().casefold()
+            for gap in registry.get_queued_gaps(min_count=1):
+                if gap.get("status") == "in_progress" and str(gap.get("followup_goal", "")).strip().casefold() == goal:
+                    gap_id = gap["id"]
+                    break
+        if gap_id:
+            registry.mark_resolved(gap_id, resolution)
+            EventBus(root).emit(Event("capability.resolved", {"gap_id": gap_id, "resolution": resolution}, source="capability_improver"))
+            return gap_id
+        return None
+    # retryable failure: roll back only the linked gap
+    if gap_id:
+        registry.reset_to_queued(gap_id)
+        EventBus(root).emit(Event("capability.retry_queued", {"gap_id": gap_id, "result": resolution}, source="capability_improver"))
+        return gap_id
+    return None
