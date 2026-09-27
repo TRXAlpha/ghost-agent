@@ -119,6 +119,22 @@ to 11 collection errors across the suite.
   hits iteration_limit. Next lever: strengthen the system prompt's test-style
   instruction or relax the guard for simple tasks.
 
+## Small-model smoke tests (2026-09-27 evening) — commit `5e93421`
+- gemma4:e2b (2B): returned EMPTY responses on the full 21K-char prompt. Root
+  cause: Ollama default num_ctx (~4096 tokens) silently truncates the prompt.
+  Verified by replaying the exact logged request (19995 chars -> len 0).
+  Fix: num_ctx derived from input size in _model_turn.
+- qwen2.5-coder:1.5b: better JSON/schema compliance; with num_ctx fixed it
+  writes hello.py + test_add.py. With Ghost run under .venv python, real
+  pytest gates now execute; last run reached VERIFY with a genuine test
+  failure (missing import) surfaced and fed back.
+- Earlier runs also exposed: repo RAG context injected into greenfield goals
+  (models read ghost_agent/schema.py pointlessly) — now disabled by default
+  for outcome payloads.
+- VERDICT: MVP loop is wired end-to-end; remaining failures are small-model
+  competence (multi-step planning, import correctness), not Ghost wiring.
+  Bigger models (gemma4:26b) expected to pass the smoke test.
+
 ## Verification Commands
 - `python -m pytest tests/test_self_repair.py tests/test_self_repair_oj15.py -v`
 - `python -m pytest tests/ -q` (full suite; 2 pre-existing env failures expected in
