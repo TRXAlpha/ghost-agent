@@ -2,9 +2,9 @@
 
 ## Repository
 - Branch: master
-- HEAD: cccc3ba — fix: configurable per-command timeout (default 30s) via command_timeout_seconds constraint
-- Working tree: CLEAN (cccc3ba committed). In-flight: capability_improver worker building autonomous gap-filling loop; accomplish job with --command-timeout-seconds 120 running in background to confirm tests_passed end-to-end.
-- Prior accepted subsystems: c611b03 (health checks+integrations), a83b6e8 (STATE update), 452b1c4 (MVP loop green).
+- HEAD: 4f89c67 — feat: owner knowledge base + verified LoRA corpus + autonomous capability builder
+- Working tree: CLEAN except AGENTS.md (owner's rewritten swarm-model instructions, intentionally uncommitted — owner decision).
+- Prior accepted: cccc3ba (per-command timeout fix), c611b03 (health checks+integrations), 452b1c4 (MVP loop green).
 
 ## Accepted Subsystem Report: OJ15-Recovery
 - Owner-visible behavior: self-repair proposals verify ONLY through a real witnessed
@@ -236,3 +236,32 @@ Subsystem: `mvp-health-and-integrations`
 
 ### Commit
 - c611b03
+
+## Accepted Subsystem Report: Knowledge Base + LoRA Corpus + Capability Builder (2026-09-28)
+
+Subsystem: `kbase-lora-capability` — Commit: 4f89c67
+
+### Owner-visible behavior
+- `ghost kbase ingest <dir>` indexes owner reference docs (Zim/notes), IDF-weighted
+  retrieval with morphology matching feeds model context each task.
+- `ghost lora list/status`: verified (goal->context->passing code) triples captured
+  from every tests_passed job to .ghost/lora/training_pairs.jsonl. First pair
+  captured live from a real gemma4:26b end-to-end run.
+- `ghost gaps list/stats`: capability gap registry inspection.
+- CapabilityImprover: on 300s+ idle, model-assesses queued high-count gaps and
+  queues sandboxed implementation; gap marked resolved on tests_passed.
+- `ghost accomplish --command-timeout-seconds N`: per-command timeout (default 30),
+  fixes the broad-gate 30s timeout under load that caused most iteration_limit
+  failures on 2026-09-27.
+
+### Verification
+- Full suite: 859 passed (2026-09-28, Python 3.14.2, .venv).
+- New tests: 9 (kbase/capture) + 13 (improver/gap registry).
+- Live: kbase ingest/query, lora status/list, gaps list/stats all verified via CLI.
+- Live end-to-end: outcome_20260928_004400 completed tests_passed with
+  command_timeout_seconds=120; pair captured with owner-doc context and sandbox files.
+
+### Not included (deliberate)
+- No LoRA training (corpus is data-gated; requires llama.cpp/axolotl tooling later).
+- No live Telegram/Huawei/DeskSentinel (placeholders per c611b03).
+- AGENTS.md (owner's new swarm instructions) intentionally uncommitted.
