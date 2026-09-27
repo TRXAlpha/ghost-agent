@@ -80,7 +80,16 @@ to 11 collection errors across the suite.
   present before this task (openjarvis_bridge/runtime.py untouched).
 - Baseline BEFORE fix: 11 collection errors, 0 pass.
 
-### Current phase: OJ09-FeedbackLoop — IMPLEMENTATION COMPLETE, READY FOR REVIEW
+### OJ09 — COMPLETE ✓
+**Commit:** `3960869` ("OJ09: wire reconcile into watch(), close feedback on terminal early-returns, fix premature verdict")
+- `ProactiveEngine.watch()` calls `reconcile()` via `_reconcile_safe()` before each tick
+- `OpportunityStore.list_all()` returns all opps (not just last 100) for restart reconciliation
+- `_execute_queued_outcome` early-returns (emergency-stop, route-mismatch, post-research stop) now mark the job terminal and call `_close_proactive_feedback`
+- `feedback_outcome_for_job()` only yields verdicts for genuinely terminal jobs
+- Regression tests added: `test_emergency_stop_closes_opportunity`, `test_reconcile_with_stale_opportunities`
+- All 42 proactive/cli tests pass
+**Status:** DONE — move to OJ12 (Scheduler Migration, dependency-ready: NO — credentials blocked)
+**Next:** OJ12 requires credentials; identify dependency-ready task first
 - Implementation done (in working tree, uncommitted) + new tests/test_proactive_feedback.py.
 - Changes: ghost_agent/proactive.py (close_opportunity_feedback, feedback_outcome_for_job,
   _feedback_evidence, ProactiveEngine.reconcile), ghost_agent/cli.py
