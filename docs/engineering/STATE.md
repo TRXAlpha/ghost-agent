@@ -103,6 +103,22 @@ to 11 collection errors across the suite.
   (opportunity stays 'queued' instead of 'completed').
 - Next action: dispatch independent reviewers (correctness + architecture).
 
+## MVP Smoke Test Finding (2026-09-27) — memory retrieval poisoned runs — FIXED
+**Commit:** `1d6918d` ("memory: IDF-weighted retrieval with relevance threshold")
+- Root cause: `_keyword_retrieve` scored by raw token overlap; generic metadata
+  tokens ('task', 'test', 'iteration') made unrelated failed lessons match any
+  coding query. Retrieved lessons injected the FULL goal text of unrelated past
+  tasks (LRU cache, fizzbuzz); the small local model implemented the wrong goal.
+- Fix: IDF-weighted scoring, stop/common-token blocklist, distinctiveness
+  threshold (score > 1.0). Generic queries now return no lessons.
+- Regression tests: tests/test_memory_retrieval_relevance.py (3 tests).
+- Full suite: 854 passed, 4 skipped.
+- Verified by run 3 (outcome_20260927_164623): model then worked on the CORRECT
+  goal (hello.py/add written correctly). Remaining failure is small-model quality:
+  it writes unittest-style tests, which Ghost's pytest-only guard rejects, so it
+  hits iteration_limit. Next lever: strengthen the system prompt's test-style
+  instruction or relax the guard for simple tasks.
+
 ## Verification Commands
 - `python -m pytest tests/test_self_repair.py tests/test_self_repair_oj15.py -v`
 - `python -m pytest tests/ -q` (full suite; 2 pre-existing env failures expected in
