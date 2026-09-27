@@ -2587,6 +2587,23 @@ def _cmd_integration(args: argparse.Namespace) -> None:
         print(f"Integration unavailable: {exc}")
 
 
+def _close_proactive_feedback(project_root: Path, job) -> None:
+    """Close the proactive opportunity linked to a finished outcome job.
+
+    Wired into _execute_queued_outcome so the real worker closes the loop. Uses
+    the job's real terminal result; idempotent; never masks the job's primary
+    result if feedback bookkeeping fails.
+    """
+    from .proactive import close_opportunity_feedback
+    try:
+        close_opportunity_feedback(project_root, job)
+    except Exception as exc:  # feedback bookkeeping must not break the worker result
+        from .runtime import EventBus, Event
+        EventBus(project_root).emit(Event("proactive.feedback_error",
+                                          {"job_id": job.job_id, "error": str(exc)},
+                                          source="proactive"))
+
+
 def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> WorkerResult:
     """Resume a durable queued outcome inside the worker-owned sandbox."""
     store = OutcomeStore(project_root)
@@ -2639,6 +2656,7 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
             ExtensionManager(project_root).propose(f"workaround-{gap['id']}", gap["followup_goal"])
         EventBus(project_root).emit(Event("outcome.completed", {"job_id": job.job_id,
                                        "result": job.result, "status": job.status}))
+        _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "completed" if job.status == "completed" else "failed", job.result)
     except Exception as exc:
         job.status = "failed"
@@ -2648,6 +2666,7 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
             GoalStore(project_root).set_status(job.goal_id, "blocked")
         gap = CapabilityRegistry(project_root).record_gap(job.goal, "worker_failed", str(exc))
         ExtensionManager(project_root).propose(f"workaround-{gap['id']}", gap["followup_goal"])
+        _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", str(exc))
 
 

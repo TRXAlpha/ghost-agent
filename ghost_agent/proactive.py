@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .autonomy import OutcomeStore
+from .autonomy import OutcomeJob, OutcomeStore
 from .devices import DeviceRegistry
 from .intent import IntentStore
 from .kernel import GoalStore
@@ -265,6 +265,55 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
     return job
 
 
+def close_opportunity_feedback(root: Path, job: OutcomeJob) -> Optional[Opportunity]:
+    """Idempotently close the linked opportunity for a finished outcome job.
+
+    Uses the job's real terminal result (never fabricated). No-ops when the job
+    has no opportunity link or no terminal verdict, and when the linked
+    opportunity is already finalized. Returns the updated Opportunity or None.
+    """
+    root = Path(root).resolve()
+    opportunity_id = job.acceptance_contract.get("opportunity_id", "")
+    if not opportunity_id:
+        return None  # non-proactive job
+    outcome = feedback_outcome_for_job(job)
+    if outcome is None:
+        return None  # job has not reached a terminal verdict; nothing to record
+    engine = ProactiveEngine(root, job.coding_model or "local")
+    opportunity = engine.store.find_any(opportunity_id)
+    if not opportunity or opportunity.status not in {"queued", "running"}:
+        return None  # already finalized or not awaiting feedback
+    return engine.record_feedback(opportunity_id, outcome, evidence=_feedback_evidence(job))
+
+
+def feedback_outcome_for_job(job: OutcomeJob) -> Optional[str]:
+    """Map a finished OutcomeJob's real terminal result to an opportunity outcome.
+
+    Returns None when the job has not yet reached a terminal verdict (no feedback
+    should be recorded). Never fabricates a verdict; it comes from the job's own
+    durable state.
+    """
+    if job.result == "tests_passed":
+        return "tests_passed"
+    if job.result == "tests_failed":
+        return "tests_failed"
+    # Any other terminal outcome (failed, needs_review, or a concrete non-verdict
+    # result) is an error. Jobs still being worked (empty/unknown result, active
+    # status) produce no feedback yet.
+    terminal_statuses = {"completed", "failed", "needs_review"}
+    if job.status in terminal_statuses or (job.result and job.result != "unknown"):
+        return "error"
+    return None
+
+
+def _feedback_evidence(job: OutcomeJob) -> str:
+    """Real job-derived evidence for an opportunity outcome."""
+    detail = f"job={job.job_id} status={job.status} result={job.result}"
+    if job.errors:
+        detail += " errors=" + " | ".join(str(error) for error in job.errors[:3])
+    return detail
+
+
 class ProactiveEngine:
     """Observe, propose, and queue one low-risk sandbox outcome."""
 
@@ -442,6 +491,44 @@ class ProactiveEngine:
                                        "outcome": outcome, "evidence": evidence},
                                       source="proactive"))
         return saved
+
+    def reconcile(self) -> int:
+        """Close opportunities left queued/running while their job reached a terminal state.
+
+        Restart reconciliation: after a worker crash or when the proactive loop was
+        not watching, a job may have reached a terminal state without its opportunity
+        receiving feedback. For each queued/running opportunity whose linked job is
+        terminal in the scheduler (completed/failed/cancelled) or reached a terminal
+        verdict in its outcome record, record the real outcome to close the loop.
+        Returns the number of opportunities closed.
+        """
+        closed = 0
+        for opportunity in self.store.list(100):
+            if opportunity.status not in {"queued", "running"} or not opportunity.job_id:
+                continue
+            job = OutcomeStore(self.root).load(opportunity.job_id)
+            if not job:
+                continue
+            scheduler_status: Optional[str] = None
+            try:
+                scheduler_status = next((entry.status for entry in Scheduler(self.root).list()
+                                         if entry.job_id == opportunity.job_id), None)
+            except (OSError, ValueError):
+                scheduler_status = None
+            outcome = feedback_outcome_for_job(job)
+            if outcome is None and scheduler_status in {"completed", "failed", "cancelled"}:
+                # Scheduler reached a terminal state even if the outcome record does
+                # not expose a verdict; treat that as an error outcome for feedback.
+                outcome = "error"
+            if outcome is None:
+                continue
+            current = self.store.find_any(opportunity.opportunity_id)
+            if not current or current.status not in {"queued", "running"}:
+                continue
+            self.record_feedback(opportunity.opportunity_id, outcome,
+                                 evidence=_feedback_evidence(job))
+            closed += 1
+        return closed
 
     def _queue(self, opportunity: Opportunity):
         """Create one normal Ghost outcome; the existing worker remains executor."""

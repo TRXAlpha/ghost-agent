@@ -80,10 +80,19 @@ to 11 collection errors across the suite.
   present before this task (openjarvis_bridge/runtime.py untouched).
 - Baseline BEFORE fix: 11 collection errors, 0 pass.
 
-### Current phase: OJ09-FeedbackLoop — CONTRACT DEFINED, READY FOR WORKER
-- OJ15-Recovery committed at a90ff65 (HEAD), working tree clean, both reviewers PASS.
-- New active subsystem: OJ09-FeedbackLoop (contract: docs/engineering/tasks/oj09-feedback-loop.md).
-- Next action: dispatch implementation worker for OJ09-FeedbackLoop.
+### Current phase: OJ09-FeedbackLoop — IMPLEMENTATION COMPLETE, READY FOR REVIEW
+- Implementation done (in working tree, uncommitted) + new tests/test_proactive_feedback.py.
+- Changes: ghost_agent/proactive.py (close_opportunity_feedback, feedback_outcome_for_job,
+  _feedback_evidence, ProactiveEngine.reconcile), ghost_agent/cli.py
+  (_close_proactive_feedback wired into both success and exception paths of
+  _execute_queued_outcome).
+- Focused: 34 passed (12 new + existing proactive/cli_outcomes).
+- Full suite: 853 passed, 4 skipped, 2 FAILED (both pre-existing Python 3.14 env
+  failures in test_openjarvis_authority.py — unrelated).
+- Regression test verified: removing the wiring makes
+  test_worker_completes_proactive_opportunity_when_tests_pass fail
+  (opportunity stays 'queued' instead of 'completed').
+- Next action: dispatch independent reviewers (correctness + architecture).
 
 ## Verification Commands
 - `python -m pytest tests/test_self_repair.py tests/test_self_repair_oj15.py -v`
