@@ -272,6 +272,47 @@ class HuaweiRoute:
         return False
 
     # -- privacy (S02: health data excluded from unauthorized endpoints) ------
+
+    # Default-deny policy: only these endpoint classes are allow-listed.
+    # Raw health values (step counts, heart rate, sleep minutes) must NEVER
+    # enter model context or be forwarded to external systems by default.
+    # Allow-listed paths produce only aggregate statistics (e.g. daily step
+    # COUNT, not individual values) or summaries that preserve privacy.
+    ALLOWED_ENDPOINT_CLASSES: frozenset[str] = frozenset({
+        # Internal summarisation that never emits raw values
+        "ghost_daily_aggregate",
+        # Privacy-preserving aggregates: count/sum without identifiers
+        "aggregate_daily_step_count",
+        "aggregate_weekly_activity_sum",
+    })
+
+    def _privacy_policy(self, endpoint: str) -> tuple[str, str]:
+        """Evaluate routing policy for a health-data request.
+
+        Returns (decision, reason_code):
+          - ("allow", "policy_explicit")   — endpoint class is in the allow-list
+          - ("deny",  "policy_default")   — default-deny; not allow-listed
+        """
+        if endpoint in self.ALLOWED_ENDPOINT_CLASSES:
+            return "allow", "policy_explicit"
+        return "deny", "policy_default"
+
+    def _log_privacy_event(self, route_action: str, endpoint: str,
+                           decision: str, reason_code: str) -> None:
+        """Append a privacy event to .ghost/privacy/events.jsonl (no raw values)."""
+        event = {
+            "ts": time.time(),
+            "route": route_action,
+            "endpoint": endpoint,
+            "decision": decision,
+            "reason_code": reason_code,
+        }
+        events_path = self.root / ".ghost" / "privacy" / "events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with exclusive_lock(events_path.with_suffix(".lock")):
+            with open(events_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+
     def _load_privacy(self) -> list[str]:
         return self._load_list(self.privacy_path)
 
@@ -286,12 +327,28 @@ class HuaweiRoute:
                 self._save_list(self.privacy_path, allowed)
 
     def privacy_allowed(self, endpoint: str) -> bool:
-        """Health data may flow only to authorized endpoints (never by default)."""
-        return endpoint in self._load_privacy()
+        """Health data may flow only to authorized endpoints (never by default).
 
-    def forward(self, endpoint: str, observations: Optional[list[HealthObservation]] = None) -> list[dict]:
-        """Export observations to an authorized endpoint; refuse unauthorized ones."""
-        if not self.privacy_allowed(endpoint):
+        Policy: explicit allow-list only. Endpoint classes that do not appear
+        in ALLOWED_ENDPOINT_CLASSES are denied. Unauthorised requests are logged
+        to .ghost/privacy/events.jsonl without any raw health values.
+        """
+        decision, reason_code = self._privacy_policy(endpoint)
+        if decision == "deny":
+            self._log_privacy_event("privacy_allowed", endpoint, decision, reason_code)
+        return endpoint in self.ALLOWED_ENDPOINT_CLASSES
+
+    def forward(self, endpoint: str,
+                observations: Optional[list[HealthObservation]] = None) -> list[dict]:
+        """Export observations to an authorized endpoint; refuse unauthorized ones.
+
+        Health values never reach model context or external calls by default.
+        Only allow-listed aggregate endpoints (policy-class permits) pass.
+        Each routing decision is recorded in the privacy event log.
+        """
+        decision, reason_code = self._privacy_policy(endpoint)
+        self._log_privacy_event("forward", endpoint, decision, reason_code)
+        if decision == "deny":
             raise HuaweiRouteError(
                 f"Health data is not authorized for endpoint '{endpoint}'")
         items = [asdict(o) for o in (observations or

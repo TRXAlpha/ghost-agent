@@ -1607,8 +1607,17 @@ def main() -> None:
 
     gaps_parser = sub.add_parser("gaps", help="Inspect/manage capability gap registry")
     gaps_sub = gaps_parser.add_subparsers(dest="gap_action")
-    gaps_sub.add_parser("list", help="Show queued capability gaps")
     gaps_sub.add_parser("stats", help="Show gap summary")
+
+    memory_parser = sub.add_parser("memory",
+        help="Manage validated memories (retract/purge)")
+    memory_parser.add_argument(
+        "action", choices=["retract", "purge"],
+        help="retract: mark retracted (soft delete); purge: hard-delete with cascade")
+    memory_parser.add_argument("memory_id", help="Memory ID to retract or purge")
+    memory_parser.add_argument(
+        "--reason", default="user requested",
+        help="Reason for retraction or purge (defaults to 'user requested')")
 
     search_parser = sub.add_parser("search", help="Search codebase via RAG")
     search_parser.add_argument("query", help="Search query")
@@ -1752,6 +1761,7 @@ def main() -> None:
         "mcp": lambda: _cmd_mcp(args),
         "parallel": lambda: _cmd_parallel(args),
         "gaps": lambda: _cmd_gaps(args),
+        "memory": lambda: _cmd_memory(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -2953,6 +2963,22 @@ def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
         return {"returncode": 1, "output": f"evaluator timed out after {deadline_s}s"}
     output = (proc.stdout or "") + (proc.stderr or "")
     return {"returncode": int(proc.returncode), "output": output[-4000:]}
+
+
+def _cmd_memory(args: argparse.Namespace) -> None:
+    """Retract (soft-delete) or purge (hard-delete with cascade) validated memories."""
+    from .context_manager import ValidatedMemoryStore
+    store = ValidatedMemoryStore(Path.cwd())
+    try:
+        if args.action == "retract":
+            record = store.retract(args.memory_id, args.reason)
+            print(json.dumps({"action": "retracted", "memory_id": record.memory_id,
+                              "validation": record.validation}, indent=2))
+        elif args.action == "purge":
+            record = store.purge(args.memory_id, args.reason)
+            print(json.dumps({"action": "purged", "memory_id": record.memory_id}, indent=2))
+    except ValueError as exc:
+        print(f"Memory operation refused: {exc}")
 
 
 def _cmd_device(args: argparse.Namespace) -> None:

@@ -138,6 +138,38 @@ class ValidatedMemoryStore:
                 active[record.memory_id] = record
         return list(active.values())
 
+    def retract(self, memory_id: str, reason: str) -> MemoryRecord:
+        """Mark a memory as retracted (soft delete, no cascade).
+
+        Subsequent retrievals exclude retracted records.  The record remains
+        on disk with validation='retracted' so the action is auditable.
+        """
+        return self.invalidate(memory_id, reason)
+
+    def purge(self, memory_id: str, reason: str) -> MemoryRecord:
+        """Hard-delete a memory and all its transitive dependents.
+
+        Any record that cites `memory_id` (directly or through a chain) in its
+        ``depends_on`` field is also purged.  Purged records are removed from
+        the store entirely; the root record is returned for confirmation.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Memory purge requires a reason")
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            data = self._load()
+            root = next((item for item in data if item["memory_id"] == memory_id), None)
+            if root is None:
+                raise ValueError("Memory not found")
+            # Transitive cascade via depends_on (append-only order guarantees
+            # descendants appear after their ancestors in the data list).
+            to_purge: set[str] = {memory_id}
+            for raw in data:
+                if to_purge.intersection(raw.get("depends_on", [])):
+                    to_purge.add(raw["memory_id"])
+            data = [item for item in data if item["memory_id"] not in to_purge]
+            self._save(data)
+            return MemoryRecord(**root)
+
     def active(self, validation: Optional[str] = None) -> list[MemoryRecord]:
         if validation is not None and validation not in self.VALIDATIONS:
             raise ValueError("Unknown memory validation filter")

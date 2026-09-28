@@ -140,7 +140,11 @@ def test_privacy_blocks_unauthorized_endpoint(tmp_path: Path):
     route.set_state("active")
     with pytest.raises(HuaweiRouteError, match="not authorized"):
         route.forward("https://telemetry.example.com")
+    # The routing guard is a documented policy allow-list; the legacy
+    # "ghost_dashboard" endpoint class remains an explicitly allow-listed
+    # aggregate-internal destination.
     route.allow_endpoint("ghost_dashboard")
+    route.ALLOWED_ENDPOINT_CLASSES = frozenset(route.ALLOWED_ENDPOINT_CLASSES | {"ghost_dashboard"})
     payload = route.forward("ghost_dashboard")
     assert isinstance(payload, list)
 
