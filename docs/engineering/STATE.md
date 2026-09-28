@@ -2,8 +2,53 @@
 
 ## Repository
 - Branch: master
-- HEAD: 6a4ed85 — improver: close capability-gap lifecycle on real job terminal results
+- HEAD: 6457ce7 — OJ15/S08 trace-based learning (2026-09-28 evening)
 - Working tree: CLEAN except AGENTS.md (owner's rewritten swarm-model instructions, intentionally uncommitted — owner decision).
+
+## 2026-09-28 evening session — 9 accepted commits
+- 8e559af OJ06: container isolation on real Docker (POSIX mount contract, sandbox image)
+- ae7a4ff OJ04/S01: Telegram live-readiness (credential-aware health, fingerprint rotation, live-check)
+- d120c9f docs STATE.md
+- f15b273 isolated_execution: catch IntegrationError
+- b26957c OJ05/S02: health-data privacy guard + ValidatedMemoryStore retract/purge
+- 954840f docs STATE.md
+- 42fb973 OJ11/S06: OvernightRunner (unattended proactive+worker loop, `ghost overnight`, `ghost digest`)
+- a607eec test_overnight: counted side_effect fix
+- 6457ce7 OJ15/S08: trace-based learning (`ghost trace-learning run/report`)
+
+## Live verified (real execution, not mocks)
+- Container isolation: file content round-trips through the sandbox boundary; network blocked; timeout enforced; host-escape blocked (openjarvis venv, 8 passed)
+- OvernightRunner: real JSONL cycles written to .ghost/overnight/log.jsonl (proactive honestly "suppressed" w/o Ollama); digest mechanism verified
+- trace-learning REAL RUN on 18 on-disk outcomes: 16 failed; [14x] result_iteration_limit → capability gap dd0f449d87 auto-registered (review-only); [2x] ollama_read_timeout → flagged for orchestrator review; last_report.json persisted
+- memory retract/purge: honest errors; cascade verified in tests
+- Telegram: token-absent path network-free; pairing/fingerprint logic tested
+
+## Test status
+- Focused suites green: overnight 21, trace_learning 19, health_privacy 8, telegram_readiness 13, autonomy 29+, huawei_route + mvp_health + self_repair 56
+- Full suite (~926 tests): all focused/affected areas pass; full-suite single runs stall in this session's terminal environment (suspect an environment hang, not a test failure — same suite ran 885-passed at b26957c). Needs one clean full run on next session start to re-baseline.
+
+## How to run the MVP
+```bash
+python -m ghost_agent.cli doctor                              # health check
+python -m ghost_agent.cli proactive watch                     # autonomous idle loop
+python -m ghost_agent.cli worker --watch                      # job queue
+python -m ghost_agent.cli accomplish "task text"              # real Ollama inference
+python -m ghost_agent.cli overnight run --interval 300        # unattended loop
+python -m ghost_agent.cli overnight until-idle-ends           # single idle pass
+python -m ghost_agent.cli digest                              # latest overnight digest
+python -m ghost_agent.cli trace-learning run                  # mine failure traces
+python -m ghost_agent.cli trace-learning report               # last analysis
+python -m ghost_agent.cli telegram status                     # credential-aware
+python -m ghost_agent.cli memory retract <id>                 # privacy deletion
+python -m ghost_agent.cli gaps stats                          # capability gaps
+# Container isolation (requires Docker + openjarvis venv):
+#   ./workspaces/openjarvis-venv/Scripts/python.exe -m pytest tests/test_openjarvis_isolated_execution.py
+```
+
+## Remaining placeholders (honest, by design)
+- Telegram live send: needs TELEGRAM_BOT_TOKEN + pairing (runbook: docs/engineering/telegram-live-qualification.md)
+- Huawei live backend: needs HiCare credentials
+- DeskSentinel: needs ESP32 firmware/protocol spec
 ## Post-OJ09 State Update (2026-09-28)
 
 **HEAD:** b26957c (3 new accepted commits)
