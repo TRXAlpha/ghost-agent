@@ -157,6 +157,16 @@ def run_in_isolation(
         data.setdefault("_timeout_seconds", int(timeout))
 
     try:
+        require_upstream()  # raises IntegrationError (version) or ImportError (missing pkg)
+    except (ImportError, Exception) as exc:
+        return {
+            "available": False,
+            "error": True,
+            "error_type": "openjarvis_unavailable",
+            "isolated": False,
+            "error": str(exc),
+        }
+    try:
         return _run_in_container(command, sandbox, env or {}, timeout, data,
                                  artifacts_dir=artifacts_dir)
     except Exception as exc:
