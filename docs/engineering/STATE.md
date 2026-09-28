@@ -6,27 +6,27 @@
 - Working tree: CLEAN except AGENTS.md (owner's rewritten swarm-model instructions, intentionally uncommitted — owner decision).
 ## Post-OJ09 State Update (2026-09-28)
 
-**HEAD:** ae7a4ff (2 new accepted commits)
-- 8e559af: OJ06 Docker isolation (container with real Docker, correct POSIX mount contract, output capture, read-only source mount, network block, timeout)
-- ae7a4ff: OJ04/S01 Telegram live-readiness (credential-aware health, SHA-256 fingerprint rotation check, live-check gated on pairing/emergency-stop, runbook)
+**HEAD:** b26957c (3 new accepted commits)
+- f15b273: isolated_execution: catch IntegrationError from require_upstream
+- b26957c: OJ05/S02 health-data privacy guard + ValidatedMemoryStore retract/purge
 
-**Full suite:** 877 passed, 0 failed (baseline was 864)
+**Full suite:** 885 passed, 0 failed (baseline 864 at ecaab2a)
 
 **Live verified:**
-- `ghost-jarvis.exe openjarvis doctor --probe`: all green
 - `ghost doctor`: Ollama + Docker + credential-aware Telegram/Huawei/DeskSentinel
 - Container isolation: `cat hello.txt` returns `'hello'` through the sandbox boundary
 - Telegram: `ghost-jarvis openjarvis telegram status` → honest token_absent + next_step; `ghost integration plan telegram` → runbook link
+- `ghost memory retract/purge`: honest ValueError on missing id
+- Health-data guard: default-deny to model context, event log without raw values
 
 **Placeholder (honest not_configured):**
 - Huawei live backend (no credentials)
 - DeskSentinel live backend (no ESP32 firmware)
 - Telegram live send/receive (no bot token)
 
-**Delegated (3 workers running in parallel):**
+**Delegated (2 workers running in parallel):**
 - OJ11/S06 OvernightRunner (overnight.py + `ghost overnight` CLI)
 - OJ15/S08 Trace learning (trace_learning.py + `ghost trace-learning` CLI)
-- OJ05/S02 Privacy + deletion (health-data guard + `ghost memory retract/purge` CLI)
 
 **How to run MVP:**
 ```bash
@@ -34,8 +34,11 @@ python -m ghost_agent.cli doctor                              # health check
 python -m ghost_agent.cli proactive watch                     # autonomous idle loop
 python -m ghost_agent.cli worker --watch                      # job queue
 python -m ghost_agent.cli accomplish "hello world"            # real Ollama inference
-python -m ghost_agent.cli openjarvis sandbox run -- echo ok  # requires Docker
+python -m ghost_agent.cli openjarvis sandbox run -- echo ok   # requires Docker + openjarvis venv
 python -m ghost_agent.cli telegram status                     # credential-aware
+python -m ghost_agent.cli memory retract <id>                 # privacy deletion
+python -m ghost_agent.cli gaps list                           # capability gaps
+python -m ghost_agent.cli gaps stats                          # gap stats
 ```
 
 ## Accepted Subsystem Report: OJ15-Recovery
