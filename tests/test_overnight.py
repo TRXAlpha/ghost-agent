@@ -238,8 +238,8 @@ class TestRun:
         r = OvernightRunner(tmp_path, "gemma4:26b",
                             proactive_tick=fake_tick(),
                             worker_fn=lambda: None)
-        # Real run() loop with the real EmergencyStop (no stop file = active
-        # False), but cycles and sleeps are mocked so the test is instant.
+        # Drive the real run() logic without its infinite-loop risks: cycle
+        # execution is a counted fake and EmergencyStop is patched inactive.
         call_count = {"n": 0}
 
         def counted_cycle(*, now=None):
@@ -248,6 +248,9 @@ class TestRun:
 
         with patch.object(r, "run_cycle", side_effect=counted_cycle), \
              patch.object(r, "_sleep_between"):
-            cycles = r.run(max_cycles=3)
+            # Patch the module-level EmergencyStop used inside run()
+            with patch("ghost_agent.overnight.EmergencyStop") as mock_es:
+                mock_es.return_value.active.return_value = False
+                cycles = r.run(max_cycles=3)
         assert cycles == 3
         assert call_count["n"] == 3

@@ -1736,6 +1736,12 @@ def main() -> None:
     overnight_idle = overnight_sub.add_parser("until-idle-ends", help="One cycle when the owner goes idle")
     overnight_idle.add_argument("--idle-after-seconds", type=float, default=900)
     digest_parser = sub.add_parser("digest", help="Print the latest overnight digest (OJ11/S06)")
+    trace_parser = sub.add_parser("trace-learning", help="Mine outcome traces for recurring failure signatures (OJ15/S08)")
+    trace_sub = trace_parser.add_subparsers(dest="trace_action")
+    trace_run_parser = trace_sub.add_parser("run", help="Analyze traces and propose improvements")
+    trace_run_parser.add_argument("--min-count", type=int, default=2,
+                                  help="Minimum recurrence count to act on (default 2)")
+    trace_sub.add_parser("report", help="Print the last trace-learning analysis")
 
     args = parser.parse_args()
 
@@ -1777,6 +1783,7 @@ def main() -> None:
         "memory": lambda: _cmd_memory(args),
         "overnight": lambda: _cmd_overnight(args),
         "digest": lambda: _cmd_digest(args),
+        "trace-learning": lambda: _cmd_trace_learning(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -2995,6 +3002,34 @@ def _cmd_overnight(args: argparse.Namespace) -> None:
                              idle_after=getattr(args, "idle_after_seconds", 900.0))
     cycles = runner.run(max_cycles=getattr(args, "max_cycles", None))
     print(json.dumps({"cycles": cycles, "log": str(runner.log_path)}, indent=2))
+
+
+def _cmd_trace_learning(args: argparse.Namespace) -> None:
+    """Mine real outcome traces for recurring failure signatures (OJ15/S08)."""
+    from .trace_learning import run_trace_learning
+    root = Path.cwd()
+    if getattr(args, "trace_action", "") == "report":
+        report_path = root / ".ghost" / "trace_learning" / "last_report.json"
+        if not report_path.exists():
+            print("No trace-learning report yet. Run: ghost trace-learning run")
+            return
+        print(report_path.read_text(encoding="utf-8"))
+        return
+    min_count = max(1, int(getattr(args, "min_count", 2)))
+    summary = run_trace_learning(root, min_count=min_count)
+    analysis = summary["analysis"]
+    print(f"Scanned {analysis['scanned']} outcomes, {analysis['failed']} failed.")
+    print(f"Top failure signatures (min count {min_count}):")
+    for sig in analysis["top_signatures"][:10]:
+        print(f"  [{sig['count']}x] {sig['error_type']} / {sig['subsystem']}: "
+              f"{sig['normalized_error'][:90]}")
+    if summary["actions"]:
+        print("Proposed actions (never auto-applied):")
+        for action in summary["actions"]:
+            print(f"  - {action['action']}: {action['signature']['error_type']} "
+                  f"({action['signature']['count']}x)")
+    else:
+        print("No recurring signatures met the threshold.")
 
 
 def _cmd_digest(args: argparse.Namespace) -> None:
