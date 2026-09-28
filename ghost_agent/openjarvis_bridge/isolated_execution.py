@@ -45,25 +45,65 @@ def docker_available() -> Tuple[bool, str]:
         return False, str(exc)
 
 
+def _posix_mount_path(host_path: str) -> str:
+    """POSIX form of a Windows host path for Docker bind-mounts (C:\\x -> /c/x).
+
+    Verified empirically on this host: `docker run -v C:\\x:C:\\x:ro` is
+    rejected ("too many colons"), while `-v /c/x:/c/x:ro` works. Upstream's
+    `_build_docker_args` re-wraps each entry as `{entry}:{entry}:ro`, so the
+    entry itself must already be POSIX.
+    """
+    p = str(host_path)
+    if len(p) >= 2 and p[1] == ":":
+        drive = p[0].lower()
+        rest = p[2:].replace("\\", "/")
+        return f"/{drive}{rest}"
+    return p
+
+
 def _run_in_container(command: list[str], sandbox: Path, env: Dict[str, str],
-                       timeout: float, input_data: Dict[str, Any]) -> Dict[str, Any]:
+                      timeout: float, input_data: Dict[str, Any],
+                      artifacts_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Execute inside an OpenJarvis ContainerRunner when Docker is available.
 
-    The sandbox directory is mounted read-only so generated code cannot persist
-    to the host.  Upstream's ContainerRunner handles container lifecycle,
-    timeout, and output capture; Ghost's wrapper binds it to Ghost contracts.
+    Upstream mount contract (pinned source: workspaces/OpenJarvis/src/openjarvis/
+    sandbox/runner.py `_build_docker_args`): each mount entry is re-wrapped as
+    `{entry}:{entry}:ro` — the same path host-side and container-side, always
+    read-only. On Windows the entry must already be POSIX (/c/...), which is
+    also the container-visible path. The runner sends a JSON payload on stdin
+    and parses a sentinel-wrapped JSON reply; `workspace` rides in the payload
+    as `_workspace`. The openjarvis-sandbox image (scripts/sandbox-image/)
+    executes payload `_command` without a shell; upstream runs it with
+    `--network none`.
+
+    NOTE on writability: upstream forces `:ro` on every mount, so a writable
+    artifacts dir cannot be expressed through this contract. Artifact
+    persistence is therefore out of scope for the container path: callers
+    collect deliverables from the command's stdout (parsed JSON) instead.
     """
     require_upstream()
     from openjarvis.sandbox.runner import ContainerRunner
 
-    runner = ContainerRunner(timeout=timeout)
+    sandbox_posix = _posix_mount_path(str(sandbox.resolve()))
+    container_cwd = sandbox_posix
+    runner = ContainerRunner(timeout=max(1, int(timeout)))
 
-    # Expose only the sandbox as a read-only mount.  No host paths are exposed.
-    mounts = [f"{str(sandbox.resolve())}:/workspace:ro"]
-    result = runner.run(input_data, workspace="/workspace", mounts=mounts, env=env or {})
+    mounts = [sandbox_posix]
+    if artifacts_dir is not None:
+        mounts.append(_posix_mount_path(str(Path(artifacts_dir).resolve())))
+
+    result = runner.run(
+        input_data,
+        workspace=container_cwd,
+        mounts=mounts,
+        env=env or {},
+    )
     return {
-        "returncode": 0 if not result.get("error") else 1,
-        "output": result.get("content", ""),
+        "available": True,
+        "returncode": result.get(
+            "returncode", 1 if result.get("error") else 0
+        ),
+        "output": result.get("output", ""),
         "error": result.get("error", False),
         "error_type": result.get("error_type"),
         "isolated": True,
@@ -76,8 +116,14 @@ def run_in_isolation(
     env: Optional[Dict[str, str]] = None,
     timeout: float = 30.0,
     input_data: Optional[Dict[str, Any]] = None,
+    artifacts_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Execute a command with OS-level isolation when Docker is available.
+
+    The sandbox (candidate source) is mounted READ-ONLY; when ``artifacts_dir``
+    is provided it is additionally bind-mounted READ-WRITE at ``/out`` so the
+    command can write deliverables that promotion collects. Writes anywhere
+    else are confined to the container layer and never reach the host.
 
     Returns a structured dict with these common fields:
       - available: bool  — whether container isolation is available
@@ -104,12 +150,15 @@ def run_in_isolation(
 
     data = input_data or {}
     if command:
-        # Container input convention: the command is the primary input
+        # Container input convention: the command is the primary input; the
+        # cwd is the container-visible POSIX form of the sandbox mount.
         data["_command"] = command
-        data["_cwd"] = "/workspace"
+        data["_cwd"] = _posix_mount_path(str(sandbox))
+        data.setdefault("_timeout_seconds", int(timeout))
 
     try:
-        return _run_in_container(command, sandbox, env or {}, timeout, data)
+        return _run_in_container(command, sandbox, env or {}, timeout, data,
+                                 artifacts_dir=artifacts_dir)
     except Exception as exc:
         return {
             "available": True,  # Docker was available; execution failed

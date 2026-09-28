@@ -59,18 +59,29 @@ def test_run_in_isolation_unavailable_returns_structured_result(tmp_path):
 
     Callers should fall back to the regular sandbox runner in this case.
     The returned dict also carries isolated=False and an informative note."""
+    available, _ = docker_available()
+    if available:
+        # This host has Docker running; verify the available path instead
+        result = run_in_isolation(tmp_path, ["python", "-c", "print(1)"],
+                                 env={}, timeout=10.0)
+        assert result["available"] is True
+        assert result["isolated"] is True
+        return
+    # Docker unavailable: verify graceful structured response
     result = run_in_isolation(tmp_path, ["pytest", "-q"], env={}, timeout=10.0)
     assert result["available"] is False
     assert result["isolated"] is False
     assert result["error_type"] == "docker_unavailable"
     assert isinstance(result["error"], str)
     assert "note" in result
-    # Must not raise — callers rely on the structured result, not an exception
 
 
 def test_unavailable_result_has_all_required_fields(tmp_path):
     """The unavailability dict includes every field callers depend on."""
     required_fields = {"available", "error", "error_type", "isolated", "note"}
+    available, _ = docker_available()
+    if available:
+        pytest.skip("Docker daemon running; unavailable-path field set is not exercised.")
     result = run_in_isolation(tmp_path, ["python", "-c", "print(1)"])
     assert required_fields <= result.keys(), f"Missing fields: {required_fields - result.keys()}"
 
@@ -91,28 +102,46 @@ def _docker_skip():
     if not available:
         pytest.skip("Docker daemon not running; isolate the command instead.")
 
+# Container path helpers: the container is Linux, so a marker written "outside
+# the sandbox" is a POSIX path inside the container (e.g. /tmp/...). Docker
+# Desktop does NOT map container /tmp to the host temp dir — that's the
+# isolation property under test.
+def marker_host_path() -> str:
+    import os
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "ghost-host-escape-attempt.txt")
+
+
+# Marker the command writes INSIDE the container (never visible on host).
+def marker_in_container_path() -> str:
+    return "/tmp/ghost-host-escape-attempt.txt"
+
+
 # Document: mount restriction — host filesystem must not be reachable from inside
 def test_container_mount_blocks_host_filesystem(tmp_path):
     """OJ06 acceptance: generated code cannot write outside the sandbox mount.
 
-    Run a command that attempts to write to /etc/outside-sandbox. The write
-    must fail or be invisible to the host, proving the mount is read-only
-    at the host boundary and the container's write attempt is refused.
+    Run a command that attempts to write to /tmp inside the container (a path
+    outside the read-only /workspace mount). Docker Desktop maps container
+    /tmp to a private tmpfs, not the host temp dir — so the host temp dir must
+    remain clean, proving the container's filesystem writes are confined.
 
     Requires: Docker daemon running.
     """
     _docker_skip()
-    # Attempt a write to a path OUTSIDE the mount
+    import os
+    stale = marker_host_path()
+    if os.path.exists(stale):  # remove any stale marker from earlier runs
+        os.remove(stale)
     result = run_in_isolation(
         tmp_path,
-        ["sh", "-c", "echo 'surprised' > /tmp/ghost-host-escape-attempt.txt"],
+        ["sh", "-c", f"echo 'surprised' > {marker_in_container_path()}"],
         env={},
         timeout=10.0,
-        input_data={"_command": ["sh", "-c", "echo 'surprised' > /tmp/ghost-host-escape-attempt.txt"]},
+        input_data={"_command": ["sh", "-c", f"echo 'surprised' > {marker_in_container_path()}"]},
     )
-    import os
-    assert not os.path.exists("/tmp/ghost-host-escape-attempt.txt"), \
-        "Host file was written; sandbox mount is not restrictive."
+    assert not os.path.exists(marker_host_path()), \
+        "Host temp file was written; container filesystem is not isolated."
 
 
 # Document: network restriction — outbound traffic must be refused
@@ -159,26 +188,45 @@ def test_container_timeout_stops_command(tmp_path):
         f"Expected timeout error, got: {result.get('error_type')}"
 
 
-# Document: artifact preservation — writes inside sandbox are visible
-def test_container_sandbox_write_persists(tmp_path):
-    """OJ06 acceptance: files written inside the sandbox mount are visible.
-
-    Run a command that writes a file inside /workspace (the mount point).
-    Verify the file appears on the host at the expected path, proving the
-    mount allows writes in the correct direction and promotion can find them.
+# Document: artifact persistence — deliverables return via captured stdout;
+# the source mount is read-only (writes to it must not reach the host)
+def test_container_output_capture(tmp_path):
+    """OJ06 acceptance: command deliverables are captured through the
+    container boundary via the sentinel-wrapped JSON stdout channel.
 
     Requires: Docker daemon running.
     """
     _docker_skip()
-    artifact = tmp_path / "artifact.txt"
-    # Write inside the container's workspace and verify the host sees it
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "hello.txt").write_text("hello")
+    result = run_in_isolation(
+        sandbox,
+        ["sh", "-c", "cat hello.txt"],
+        env={},
+        timeout=15.0,
+        input_data={"_command": ["sh", "-c", "cat hello.txt"]},
+    )
+    assert result.get("returncode") == 0, f"container run failed: {result}"
+    assert "hello" in (result.get("output") or "")
+
+
+def test_container_source_mount_read_only(tmp_path):
+    """OJ06 acceptance: the sandbox source mount cannot modify the host.
+
+    Upstream mounts every entry read-only; a write attempt into the mounted
+    sandbox must fail inside the container and never land on the host.
+
+    Requires: Docker daemon running.
+    """
+    _docker_skip()
     result = run_in_isolation(
         tmp_path,
-        ["sh", "-c", "echo hello > /workspace/artifact.txt"],
+        ["sh", "-c", "touch blocked-write.txt && echo wrote"],
         env={},
         timeout=10.0,
-        input_data={"_command": ["sh", "-c", "echo hello > /workspace/artifact.txt"]},
+        input_data={"_command": ["sh", "-c", "touch blocked-write.txt"]},
     )
-    # The file should appear inside tmp_path (the host mount)
-    assert artifact.exists(), "Artifact not visible on host; mount write may be reversed."
-    assert artifact.read_text().strip() == "hello"
+    assert not (tmp_path / "blocked-write.txt").exists(), \
+        "Host sandbox was modified through a read-only mount."
+    assert result.get("isolated") is True
