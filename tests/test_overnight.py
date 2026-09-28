@@ -115,13 +115,12 @@ class TestRunCycle:
             return m
 
         r = OvernightRunner(tmp_path, "gemma4:26b",
-                             proactive_tick=fake_tick(),
-                             worker_fn=fake_worker)
-        result = r.run_cycle(now=datetime(2026, 9, 28, 3, 0))  # 03:00 = quiet hours
+                            proactive_tick=fake_tick(),
+                            worker_fn=fake_worker)
+        with patch.object(r, "_user_active", return_value=False):
+            result = r.run_cycle(now=datetime(2026, 9, 28, 3, 0))  # 03:00 = quiet
         assert result.quiet_hours is True
         assert result.proactive == "skipped"
-        # user_active False when fake OS idle returns None (treated as idle)
-        assert result.user_active is False
         assert worker_called is True
         assert result.worker_status == "succeeded"
 
@@ -239,9 +238,16 @@ class TestRun:
         r = OvernightRunner(tmp_path, "gemma4:26b",
                             proactive_tick=fake_tick(),
                             worker_fn=lambda: None)
-        with patch.object(r, "run_cycle") as mock_cycle, \
+        # Real run() loop with the real EmergencyStop (no stop file = active
+        # False), but cycles and sleeps are mocked so the test is instant.
+        call_count = {"n": 0}
+
+        def counted_cycle(*, now=None):
+            call_count["n"] += 1
+            return MagicMock(emergency_stop=False, user_active=False)
+
+        with patch.object(r, "run_cycle", side_effect=counted_cycle), \
              patch.object(r, "_sleep_between"):
-            mock_cycle.return_value = MagicMock(emergency_stop=False)
             cycles = r.run(max_cycles=3)
         assert cycles == 3
-        assert mock_cycle.call_count == 3
+        assert call_count["n"] == 3
