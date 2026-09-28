@@ -1724,6 +1724,19 @@ def main() -> None:
     parallel_parser.add_argument("--verbose", "-v", action="store_true")
     parallel_parser.add_argument("--dry-run", action="store_true", help="Show decomposition only")
 
+    overnight_parser = sub.add_parser("overnight", help="Unattended overnight proactive+worker loop (OJ11/S06)")
+    overnight_sub = overnight_parser.add_subparsers(dest="overnight_action")
+    overnight_run = overnight_sub.add_parser("run", help="Run the overnight loop")
+    overnight_run.add_argument("--interval", type=float, default=300,
+                               help="Seconds between cycles (default 300)")
+    overnight_run.add_argument("--idle-after-seconds", type=float, default=900,
+                               help="OS idle threshold below which the owner counts as active")
+    overnight_run.add_argument("--max-cycles", type=int, default=None,
+                               help="Stop after N cycles (default: until emergency stop)")
+    overnight_idle = overnight_sub.add_parser("until-idle-ends", help="One cycle when the owner goes idle")
+    overnight_idle.add_argument("--idle-after-seconds", type=float, default=900)
+    digest_parser = sub.add_parser("digest", help="Print the latest overnight digest (OJ11/S06)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -1762,6 +1775,8 @@ def main() -> None:
         "parallel": lambda: _cmd_parallel(args),
         "gaps": lambda: _cmd_gaps(args),
         "memory": lambda: _cmd_memory(args),
+        "overnight": lambda: _cmd_overnight(args),
+        "digest": lambda: _cmd_digest(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -2963,6 +2978,36 @@ def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
         return {"returncode": 1, "output": f"evaluator timed out after {deadline_s}s"}
     output = (proc.stdout or "") + (proc.stderr or "")
     return {"returncode": int(proc.returncode), "output": output[-4000:]}
+
+
+def _cmd_overnight(args: argparse.Namespace) -> None:
+    """Run the unattended overnight loop (OJ11/S06) over existing subsystems."""
+    from .overnight import OvernightRunner
+    root = Path.cwd()
+    if getattr(args, "overnight_action", None) == "until-idle-ends":
+        runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
+                                 idle_after=args.idle_after_seconds)
+        result = runner.run_until_idle()
+        print(json.dumps(result.__dict__, indent=2, ensure_ascii=False, default=str))
+        return
+    runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
+                             interval=getattr(args, "interval", 300.0),
+                             idle_after=getattr(args, "idle_after_seconds", 900.0))
+    cycles = runner.run(max_cycles=getattr(args, "max_cycles", None))
+    print(json.dumps({"cycles": cycles, "log": str(runner.log_path)}, indent=2))
+
+
+def _cmd_digest(args: argparse.Namespace) -> None:
+    """Print the most recent overnight digest file, if any."""
+    digest_dir = Path.cwd() / ".ghost" / "digest"
+    if not digest_dir.is_dir():
+        print("No digests yet.")
+        return
+    digests = sorted(digest_dir.glob("*.md"))
+    if not digests:
+        print("No digests yet.")
+        return
+    print(digests[-1].read_text(encoding="utf-8"))
 
 
 def _cmd_memory(args: argparse.Namespace) -> None:
