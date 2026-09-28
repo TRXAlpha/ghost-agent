@@ -47,18 +47,22 @@ def test_doctor_available_models_is_list(tmp_path: Path) -> None:
 # ── Optional integration adapters reported by Doctor ──
 
 def test_doctor_reports_integration_placeholders(tmp_path: Path) -> None:
-    """Doctor must surface all three integration adapters as not_configured."""
+    """Doctor surfaces integration adapters without credentials or network."""
     check = Doctor(tmp_path).check()
-    assert check["telegram"] == "not_configured"
+    # Telegram is credential-aware: not_ready + absent credentials without env token.
+    assert check["telegram"] in {"not_ready", "ready"}
+    assert check["telegram_credentials"] == "absent"
     assert check["huawei"] == "not_configured"
     assert check["desksentinel"] == "not_configured"
 
 
 # ── Telegram placeholder ──
 
-def test_telegram_not_configured() -> None:
+def test_telegram_not_configured(monkeypatch) -> None:
+    monkeypatch.delenv("GHOST_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     assert telegram.is_configured() is False
-    assert telegram.health_check()["status"] == "not_configured"
+    assert telegram.health_check()["status"] == "not_ready"
 
 
 def test_telegram_send_raises_connection_error() -> None:
@@ -66,10 +70,14 @@ def test_telegram_send_raises_connection_error() -> None:
         telegram.send_message("123", "hi")
 
 
-def test_telegram_health_check_not_fake() -> None:
+def test_telegram_health_check_not_fake(monkeypatch, tmp_path) -> None:
     """We must not fabricate a successful Telegram connection."""
-    note = telegram.health_check()["note"]
-    assert "No live Telegram" in note
+    monkeypatch.delenv("GHOST_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    h = telegram.health_check(tmp_path)
+    assert h["token_present"] is False
+    assert "set GHOST_TELEGRAM_BOT_TOKEN" in h["next_step"]
+    assert h["status"] == "not_ready"
 
 
 # ── Huawei placeholder ──

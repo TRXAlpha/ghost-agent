@@ -34,8 +34,9 @@ def add_parser(sub):
         item.add_argument("path")
     search = actions.add_parser("search", help="Search explicitly imported documents")
     search.add_argument("query")
-    telegram = actions.add_parser("telegram", help="Pair/revoke or explicitly serve Telegram")
-    telegram.add_argument("action", choices=["pair", "revoke", "status", "serve"])
+    telegram = actions.add_parser("telegram", help="Pair/revoke/serve Telegram or check credentials")
+    telegram.add_argument("action", choices=["pair", "revoke", "status", "serve",
+                                              "rotate-token-check", "live-check"])
     telegram.add_argument("--user-id", default="")
     telegram.add_argument("--chat-id", default="")
     telegram.add_argument("--model", default="")
@@ -58,13 +59,27 @@ def dispatch(args):
         return
     require_upstream()
     if args.oj_action == "telegram":
-        from .telegram import pair, pairing, revoke, serve
+        from .telegram import (live_check, pair, pairing, revoke, serve,
+                               token_health, check_token_rotation,
+                               record_token_fingerprint)
+        from ..integrations.telegram import token_value
         if args.action == "pair":
             result = pair(root, args.user_id, args.chat_id)
         elif args.action == "revoke":
             result = revoke(root)
         elif args.action == "status":
-            result = pairing(root)
+            result = {**pairing(root), **token_health(root)}
+        elif args.action == "rotate-token-check":
+            token = token_value()
+            if not token:
+                raise IntegrationError("Set the NEW TELEGRAM_BOT_TOKEN in the environment, then rerun rotate-token-check.")
+            result = check_token_rotation(token, root)
+            if result.get("well_formed") and result.get("changed"):
+                result["recorded"] = record_token_fingerprint(token, root)["fingerprint"]
+        elif args.action == "live-check":
+            if not args.chat_id:
+                raise IntegrationError("live-check requires --chat-id (the paired owner chat).")
+            result = live_check(root, args.chat_id)
         else:
             if not args.model:
                 raise IntegrationError("Telegram serve requires --model.")

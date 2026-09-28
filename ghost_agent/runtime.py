@@ -435,7 +435,12 @@ class Doctor:
         status["docker"] = self._probe_docker()
         # Integration adapters (read-only probes, no credentials required for status check)
         from .integrations import telegram_health_check, huawei_health_check, sentinel_health_check
-        status["telegram"] = telegram_health_check()["status"]
+        telegram_status = telegram_health_check(self.root)["status"]
+        status["telegram"] = telegram_status
+        if telegram_status != "not_ready":
+            status["telegram_credentials"] = "present"
+        else:
+            status["telegram_credentials"] = "absent"
         status["huawei"] = huawei_health_check()["status"]
         status["desksentinel"] = sentinel_health_check()["status"]
         return status

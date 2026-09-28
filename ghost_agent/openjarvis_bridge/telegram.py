@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from ..proactive import queue_sandbox_outcome
 from ..runtime import EmergencyStop
@@ -46,6 +47,124 @@ def pairing(root: Path) -> dict:
             int(value["user_id"]) <= 0 or value.get("chat_id") != value["user_id"]):
         raise IntegrationError("Invalid Telegram owner identity.")
     return value
+
+
+def token_fingerprint(token: str) -> str:
+    """SHA-256 prefix (16 hex chars) — safe to store/display; never the token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def check_token_rotation(new_token: str, root: Path) -> dict:
+    """BotFather-format sanity check plus stored-fingerprint comparison.
+
+    No network call. The fingerprint file stores only a SHA-256 prefix; the
+    token itself is never written or echoed.
+    """
+    from ..integrations.telegram import token_format_error
+
+    error = token_format_error(new_token)
+    if error:
+        return {"well_formed": False, "error": error}
+    fingerprint = token_fingerprint(new_token)
+    stored = ""
+    path = state_root(root) / "telegram-token-fingerprint.json"
+    try:
+        stored = str(json.loads(path.read_text(encoding="utf-8")).get("fingerprint", ""))
+    except FileNotFoundError:
+        stored = ""
+    except (OSError, ValueError):
+        return {"well_formed": True,
+                "error": "Stored fingerprint file is unreadable; delete it and re-record."}
+    return {"well_formed": True, "changed": fingerprint != stored,
+            "same_as_recorded": fingerprint == stored, "fingerprint": fingerprint}
+
+
+def record_token_fingerprint(token: str, root: Path) -> dict:
+    """Persist the SHA-256 prefix of the (new) token; never the token itself."""
+    from ..integrations.telegram import token_format_error
+
+    error = token_format_error(token)
+    if error:
+        raise IntegrationError(f"Refusing to record: {error}")
+    fingerprint = token_fingerprint(token)
+    atomic_json(state_root(root) / "telegram-token-fingerprint.json", {"fingerprint": fingerprint})
+    return {"fingerprint": fingerprint}
+
+
+def token_health(root: Path) -> dict:
+    """Credential-aware, network-free health snapshot for the bridge.
+
+    token_present is bool-only (never the value). pairing_present mirrors the
+    bridge pairing file. next_step names the single missing setup step. With no
+    token in the environment no Bot API contact of any kind is attempted.
+    """
+    from ..integrations.telegram import token_present
+
+    owner = pairing(root)
+    token_ok = token_present()
+    emergency = EmergencyStop(root).active()
+    if not token_ok:
+        next_step = "set TELEGRAM_BOT_TOKEN"
+    elif not owner["enabled"]:
+        next_step = "pair owner id"
+    elif emergency:
+        next_step = "clear the emergency stop"
+    else:
+        next_step = "ready for authorized live test"
+    return {"token_present": token_ok, "pairing_present": bool(owner["enabled"]),
+            "emergency_stop": emergency, "next_step": next_step}
+
+
+def _bot_api_send(token: str, chat_id: str, text: str) -> dict:
+    """One real Bot API sendMessage. Returns the parsed JSON response.
+
+    Uses requests (already a Ghost dependency) against the official endpoint;
+    raises on network errors and non-200 responses.
+    """
+    import requests
+
+    response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                             json={"chat_id": chat_id, "text": text}, timeout=15)
+    if response.status_code != 200:
+        raise IntegrationError(f"Telegram Bot API returned HTTP {response.status_code}.")
+    return response.json()
+
+
+def live_check(root: Path, chat_id: str, *, requester: Callable[[], dict] | None = None) -> dict:
+    """Authorized single-ping live qualification.
+
+    Refuses (IntegrationError, no network) unless ALL of: token present, owner
+    pairing enabled, chat_id equals the paired chat, emergency stop clear.
+    Sends exactly ONE harmless message and records the real result.
+    """
+    owner = pairing(root)
+    if not owner["enabled"]:
+        raise IntegrationError("Pair the owner first: ghost openjarvis telegram pair --user-id <id> --chat-id <id>.")
+    if chat_id != owner["chat_id"]:
+        raise IntegrationError("live-check only sends to the paired owner chat.")
+    if EmergencyStop(root).active():
+        raise IntegrationError("Emergency stop is engaged; clear it before a live check.")
+    token = os.environ.get("GHOST_TELEGRAM_BOT_TOKEN", "").strip() or os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise IntegrationError("Set TELEGRAM_BOT_TOKEN before a live check.")
+
+    if requester is None:
+        requester = lambda: _bot_api_send(token, owner["chat_id"], "Ghost live qualification ping")
+    try:
+        response = requester()
+        ok = bool(response.get("ok")) and response.get("result", {}).get("message_id") is not None
+        outcome = "success" if ok else "failure"
+        detail = "" if ok else f"Bot API ok=false: {json.dumps(response)[:200]}"
+    except Exception as exc:
+        outcome = "failure"
+        detail = f"{type(exc).__name__}: {exc}"
+    record = {"outcome": outcome, "detail": detail, "chat_id": chat_id,
+              "checked_at": time.time(),
+              "fingerprint": token_fingerprint(token)}
+    atomic_json(state_root(root) / "telegram-live-check.json", record)
+    if outcome != "success":
+        raise IntegrationError(f"live-check failed: {detail or 'non-ok Bot API response'}")
+    return record
 
 
 def revoke(root: Path) -> dict:

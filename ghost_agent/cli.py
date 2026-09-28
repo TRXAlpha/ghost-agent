@@ -2686,6 +2686,10 @@ def _cmd_integration(args: argparse.Namespace) -> None:
     try:
         blueprint = planner.blueprint(args.name) if args.action == "plan" else planner.propose(args.name)
         print(json.dumps(planner.as_dict(blueprint), indent=2))
+        if args.name.strip().lower().replace("_", "-") == "telegram":
+            print("\nLive qualification runbook: docs/engineering/telegram-live-qualification.md")
+            print("Credential-aware status: ghost openjarvis telegram status")
+            print("Authorized single-ping test: ghost openjarvis telegram live-check --chat-id <id>")
     except ValueError as exc:
         print(f"Integration unavailable: {exc}")
 
