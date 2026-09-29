@@ -1609,6 +1609,29 @@ def main() -> None:
     gaps_sub = gaps_parser.add_subparsers(dest="gap_action")
     gaps_sub.add_parser("stats", help="Show gap summary")
 
+    capability_parser = sub.add_parser("capability", help="Capability acquisition lifecycle (OJ10)")
+    capability_sub = capability_parser.add_subparsers(dest="capability_action")
+    capability_list = capability_sub.add_parser("list", help="List acquisition records")
+    capability_list.add_argument("--status", default=None, help="Filter by lifecycle status")
+    capability_propose = capability_sub.add_parser("propose", help="Register a discovered capability")
+    capability_propose.add_argument("capability", help="Short capability name")
+    capability_propose.add_argument("--symptom", default="", help="Observed symptom / motivation")
+    capability_propose.add_argument("--gap-id", default="", help="Link to a trace-learning gap id")
+    capability_decide = capability_sub.add_parser("decide", help="Record a researched decision")
+    capability_decide.add_argument("record_id", help="Acquisition record id")
+    capability_decide.add_argument("decision", choices=["reuse", "configure", "adapt", "build", "defer"], help="Decision")
+    capability_decide.add_argument("--rationale", default="", help="Decision rationale")
+    capability_decide.add_argument("--reuse-target", default="", help="Existing integration for reuse")
+    capability_activate = capability_sub.add_parser("activate", help="Activate a ready capability")
+    capability_activate.add_argument("record_id", help="Acquisition record id")
+    capability_activate.add_argument("--candidate", default="", help="Path to the built candidate")
+    capability_health = capability_sub.add_parser("health", help="Record capability health")
+    capability_health.add_argument("record_id", help="Acquisition record id")
+    capability_health.add_argument("--status", default="ok", help="Health status (ok/degraded)")
+    capability_retire = capability_sub.add_parser("retire", help="Retire an active capability")
+    capability_retire.add_argument("record_id", help="Acquisition record id")
+    capability_retire.add_argument("--reason", default="", help="Retirement reason")
+
     memory_parser = sub.add_parser("memory",
         help="Manage validated memories (retract/purge)")
     memory_parser.add_argument(
@@ -1784,6 +1807,7 @@ def main() -> None:
         "mcp": lambda: _cmd_mcp(args),
         "parallel": lambda: _cmd_parallel(args),
         "gaps": lambda: _cmd_gaps(args),
+        "capability": lambda: _cmd_capability(args),
         "memory": lambda: _cmd_memory(args),
         "overnight": lambda: _cmd_overnight(args),
         "digest": lambda: _cmd_digest(args),
@@ -2466,6 +2490,57 @@ def _cmd_gaps(args) -> None:
         for g in sorted(queued, key=lambda x: x.get("count",1), reverse=True):
             print(f"  [{g['id']}] count={g.get('count')} {g.get('goal','')[:80]}")
         if not queued: print("No queued gaps.")
+
+
+def _cmd_capability(args: argparse.Namespace) -> None:
+    """OJ10: drive the CapabilityAcquisition lifecycle from the CLI."""
+    from .capability_acquisition import CapabilityAcquisition, AcquisitionError
+    store = CapabilityAcquisition(Path.cwd())
+    try:
+        action = args.capability_action
+        if action == "list":
+            records = store.list(status=getattr(args, "status", None))
+            print(json.dumps([{**r.__dict__} for r in records], indent=2))
+        elif action == "propose":
+            record = store.discover(args.capability, args.symptom or "")
+            if getattr(args, "gap_id", ""):
+                record = store.set_prerequisite(record.record_id, f"gap:{args.gap_id}", False)
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "decide":
+            record = store.research(args.record_id, args.decision, args.rationale or "",
+                                    getattr(args, "reuse_target", "") or "")
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "activate":
+            record = store.get(args.record_id)
+            if record is None:
+                raise ValueError("Acquisition record not found")
+            if record.status != "ready_to_activate":
+                raise ValueError(f"Only ready_to_activate records can activate (status: {record.status})")
+            blocked = [name for name, resolved in record.prerequisites.items() if resolved is False]
+            if blocked:
+                raise ValueError(f"Unresolved prerequisites: {sorted(blocked)}")
+            store.bind_candidate(args.record_id, args.candidate or "")
+            record = store.advance(args.record_id, "active")
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "health":
+            record = store.mark_health(args.record_id, args.health or "unknown")
+            if args.health == "degraded":
+                EventBus(Path.cwd()).emit(Event("capability.degraded",
+                                                {"record_id": args.record_id, "health": args.health}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "retire":
+            record = store.get(args.record_id)
+            if record is None:
+                raise ValueError("Acquisition record not found")
+            if record.status == "active":
+                # active -> disabled -> retired is the lifecycle path.
+                store.advance(args.record_id, "disabled")
+            record = store.retire(args.record_id, args.reason or "")
+            print(json.dumps(record.__dict__, indent=2))
+        else:
+            raise ValueError(f"Unknown capability action: {action}")
+    except (AcquisitionError, ValueError, OSError) as exc:
+        print(f"Capability operation refused: {exc}")
 
 
 def _cmd_lora(args: argparse.Namespace) -> None:

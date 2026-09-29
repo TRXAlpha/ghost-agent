@@ -156,6 +156,23 @@ def close_gap_feedback(root, job) -> Optional[str]:
         if gap_id:
             registry.mark_resolved(gap_id, resolution)
             EventBus(root).emit(Event("capability.resolved", {"gap_id": gap_id, "resolution": resolution}, source="capability_improver"))
+            # OJ10: advance the acquisition pipeline on a real tests_passed.
+            try:
+                from .capability_acquisition import CapabilityAcquisition
+                acq = CapabilityAcquisition(root)
+                for record in acq.list():
+                    if record.status == "building":
+                        acq.advance(record.record_id, "testing")
+                        EventBus(root).emit(Event("capability.lifecycle",
+                                                  {"record_id": record.record_id, "from": "building", "to": "testing"},
+                                                  source="capability_improver"))
+                    elif record.status == "testing":
+                        acq.advance(record.record_id, "ready_to_activate")
+                        EventBus(root).emit(Event("capability.lifecycle",
+                                                  {"record_id": record.record_id, "from": "testing", "to": "ready_to_activate"},
+                                                  source="capability_improver"))
+            except Exception:
+                pass  # acquisition pipeline stays secondary to gap resolution
             return gap_id
         return None
     # retryable failure: roll back only the linked gap
