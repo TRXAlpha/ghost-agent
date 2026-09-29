@@ -5,6 +5,7 @@ import json
 import re
 import math
 import hashlib
+import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -120,6 +121,41 @@ class ModelReputationStore:
         verification_penalty = item["verification_failures"] / runs
         latency = item["latency_seconds_total"] / runs
         return success - 0.5 * verification_penalty - min(latency / 3600, 0.1)
+
+    def record_transport_failure(self, model: str, task_class: str = "transport",
+                                 *, failed_at: float | None = None) -> bool:
+        """OJ08: additive transport-failure counter, independent of run accounting.
+
+        Lives outside the runs/successes invariants (a transport failure never
+        reached the model, so it must not count as a run). Setdefault-defaulted
+        so old records load unchanged.
+        """
+        if (not isinstance(model, str) or not model.strip() or "|" in model
+                or not isinstance(task_class, str) or not task_class.strip() or "|" in task_class):
+            raise ValueError("Model and task class must be nonempty identities without '|'")
+        timestamp = failed_at if isinstance(failed_at, (int, float)) and not isinstance(failed_at, bool) else time.time()
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            data = self._load()
+            key = f"{model}|{task_class}"
+            item = data.setdefault(key, {"model": model, "task_class": task_class,
+                                         "runs": 0, "successes": 0, "verification_failures": 0,
+                                         "latency_seconds_total": 0.0, "context_chars_total": 0,
+                                         "repair_attempts": 0, "estimated_cost_total": 0.0})
+            history = item.setdefault("transport_failures", [])
+            history.append(float(timestamp))
+            del history[:-64]  # bound the window: recent failures only
+            atomic_json(self.path, data)
+            return True
+
+    def recent_transport_failures(self, model: str, task_class: str = "transport",
+                                  *, window_seconds: float = 3600.0) -> int:
+        """Count transport failures inside the recent window (router tie-break input)."""
+        item = self._load().get(f"{model}|{task_class}")
+        if not item:
+            return 0
+        now = time.time()
+        return sum(1 for ts in item.get("transport_failures", [])
+                   if isinstance(ts, (int, float)) and 0 <= now - ts <= window_seconds)
 
 
 class ModelRouter:

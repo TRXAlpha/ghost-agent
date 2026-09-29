@@ -215,9 +215,14 @@ def chat(model, messages, options=None, base_url=None, timeout=60, stream=False,
 
 
 def doctor(root: Path, *, probe=False) -> dict:
+    from ..models.chat import RETRY_ATTEMPTS, RETRY_BACKOFF_BASE, RETRY_BACKOFF_CAP  # OJ08 policy source
     report = {"expected_commit": UPSTREAM_COMMIT, "python": sys.version.split()[0],
               "state_root": str(state_root(root)), "executor": "ghost-compatibility",
-              "automatic_provider_fallback": False, "external_analytics": False}
+              "automatic_provider_fallback": False, "external_analytics": False,
+              "retry_policy": {"attempts": RETRY_ATTEMPTS, "backoff_base_seconds": RETRY_BACKOFF_BASE,
+                               "backoff_cap_seconds": RETRY_BACKOFF_CAP,
+                               "retryable": ["ConnectionError", "Timeout", "HTTP_5xx", "OSError"],
+                               "never_retried": ["IntegrationError", "ValueError", "HTTP_4xx"]}}
     try:
         report["version"] = require_upstream()
         settings = EngineSettings.from_env(timeout=3)
