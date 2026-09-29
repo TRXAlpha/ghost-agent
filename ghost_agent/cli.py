@@ -1653,8 +1653,12 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check Ghost runtime health")
     jobs_parser = sub.add_parser("jobs", help="Inspect jobs and control queued/paused work")
-    jobs_parser.add_argument("action", choices=["list", "pause", "resume", "retry", "cancel"])
+    jobs_parser.add_argument("action", choices=["list", "add", "remove", "pause", "resume", "retry", "cancel"])
     jobs_parser.add_argument("job_id", nargs="?", default="")
+    jobs_parser.add_argument("--goal-id", default="", help="jobs add: goal id the recurring job serves")
+    jobs_parser.add_argument("--recurrence", default="", help="jobs add: interval:SECONDS for a recurring job")
+    jobs_parser.add_argument("--priority", type=int, default=50, help="jobs add: job priority (higher first)")
+    jobs_parser.add_argument("--iterations", type=int, default=3, help="jobs add: iteration budget for the job")
     emergency_parser = sub.add_parser("emergency-stop", help="Stop or resume consequential jobs")
     emergency_parser.add_argument("action", choices=["engage", "clear", "status"])
     emergency_parser.add_argument("--reason", default="user requested emergency stop")
@@ -2896,7 +2900,37 @@ def _cmd_jobs(args: argparse.Namespace) -> None:
     scheduler = Scheduler(Path.cwd())
     try:
         if args.action == "list":
-            print(json.dumps([job.__dict__ for job in scheduler.list()], indent=2))
+            jobs = scheduler.list()
+            now = time.time()
+            payload = []
+            for job in jobs:
+                record = job.__dict__.copy()
+                record["next_due"] = job.due_at if (job.recurrence and job.status in {"queued", "paused"}) else None
+                payload.append(record)
+            print(json.dumps(payload, indent=2))
+            return
+        if args.action == "add":
+            recurrence = None
+            due_at = None
+            if args.recurrence:
+                kind, _, raw_seconds = args.recurrence.partition(":")
+                if kind != "interval" or not raw_seconds.isdigit():
+                    raise ValueError("--recurrence must be interval:SECONDS with SECONDS a positive integer")
+                seconds = int(raw_seconds)
+                if seconds <= 0:
+                    raise ValueError("--recurrence interval must be > 0 seconds")
+                recurrence = {"kind": "interval", "interval_seconds": seconds}
+                due_at = time.time()  # due immediately; requeues after each settle
+            goal_id = args.goal_id or "scheduler-own"
+            job = ScheduledJob(job_id=f"rec-{int(time.time())}-{os.getpid()}", goal_id=goal_id,
+                               priority=args.priority, recurrence=recurrence, due_at=due_at,
+                               budget={"iterations": args.iterations})
+            scheduler.enqueue(job)
+            print(json.dumps(job.__dict__, indent=2))
+            return
+        if args.action == "remove":
+            job = scheduler.remove(args.job_id)
+            print(json.dumps(job.__dict__, indent=2))
             return
         if not args.job_id:
             raise ValueError("A job ID is required")

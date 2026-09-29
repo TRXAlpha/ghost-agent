@@ -109,6 +109,9 @@ class ScheduledJob:
     owner: Optional[str] = None
     attempts: int = 0
     claimed_at: Optional[float] = None
+    # Recurrence (OJ07): absent = one-shot job, byte-for-byte legacy behavior.
+    recurrence: Optional[Dict[str, Any]] = None  # {"kind": "interval", "interval_seconds": N}
+    due_at: Optional[float] = None               # epoch seconds; recurring jobs claim only when due
 
 
 class ResourceMonitor:
@@ -159,6 +162,15 @@ class Scheduler:
                 if ((job.owner is not None and not isinstance(job.owner, str))
                         or not isinstance(job.attempts, int) or job.attempts < 0 or not isinstance(job.budget, dict)):
                     raise ValueError("Invalid ownership or budget state")
+                if job.recurrence is not None:
+                    if (not isinstance(job.recurrence, dict)
+                            or job.recurrence.get("kind") != "interval"
+                            or not isinstance(job.recurrence.get("interval_seconds"), int)
+                            or isinstance(job.recurrence.get("interval_seconds"), bool)
+                            or job.recurrence["interval_seconds"] <= 0):
+                        raise ValueError("Invalid recurrence record")
+                    if job.due_at is not None and (not isinstance(job.due_at, (int, float)) or isinstance(job.due_at, bool)):
+                        raise ValueError("Invalid due_at record")
                 ids.add(job.job_id)
             return data
         except FileNotFoundError:
@@ -188,7 +200,10 @@ class Scheduler:
         if EmergencyStop(self.path.parents[1]).active():
             return None
         available = available or {}
+        now = time.time()
         candidates = [ScheduledJob(**raw) for raw in self._load() if raw.get("status") == "queued"]
+        # Recurring jobs are only eligible once due (OJ07); one-shot jobs as before.
+        candidates = [job for job in candidates if job.due_at is None or job.due_at <= now]
         candidates = [job for job in candidates if self._goal_eligible(job)]
         candidates = [job for job in candidates if self._fits_budget(job, available)]
         return sorted(candidates, key=lambda job: (-job.priority, job.created_at))[0] if candidates else None
@@ -249,11 +264,65 @@ class Scheduler:
                     raw["owner"] = None
                     raw["claimed_at"] = None
                 raw["status"] = status
+                recurrence_event: Optional[Event] = None
+                if status in {"completed", "failed"} and raw.get("recurrence"):
+                    # OJ07: a recurring job settles terminal AND re-queues in the
+                    # SAME locked save — no window for a duplicate claim.
+                    next_due, missed = self._next_due(raw["recurrence"], raw.get("due_at"), time.time())
+                    if missed > 0:
+                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed})
+                    raw["due_at"] = next_due
+                    raw["status"] = "queued"
+                    raw["owner"] = None
+                    raw["claimed_at"] = None
+                    raw["attempts"] = 0
                 self._save(jobs)
                 job = ScheduledJob(**raw)
                 self.events.emit(Event(f"job.{status}", {"job_id": job_id, "goal_id": job.goal_id}))
+                if recurrence_event is not None:
+                    self.events.emit(recurrence_event)
+                if raw.get("recurrence") and status in {"completed", "failed"}:
+                    self.events.emit(Event("job.recurrence.requeued",
+                                           {"job_id": job_id, "goal_id": job.goal_id, "due_at": raw["due_at"]}))
                 return job
         raise ValueError("Scheduled job not found")
+
+    @staticmethod
+    def _next_due(recurrence: Any, due_at: Any, now: float) -> tuple[float, int]:
+        """Next due epoch for a recurring job, with catch-up capped at 64 periods."""
+        if not isinstance(recurrence, dict) or recurrence.get("kind") != "interval":
+            raise ValueError("Recurring job requires recurrence kind 'interval'")
+        interval = recurrence.get("interval_seconds")
+        if not isinstance(interval, int) or isinstance(interval, bool) or interval <= 0:
+            raise ValueError("Recurring job requires interval_seconds > 0")
+        base = due_at if isinstance(due_at, (int, float)) and not isinstance(due_at, bool) else now
+        nxt = float(base) + interval
+        missed = 0
+        while nxt <= now:
+            missed += 1
+            if missed > 64:
+                # Sustained downtime: snap to the next future period, never replay the backlog.
+                return now + interval, missed
+            nxt += interval
+        return nxt, missed
+
+    def remove(self, job_id: str) -> ScheduledJob:
+        """Remove a recurring or terminal job; refused otherwise (OJ07)."""
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            jobs = self._load()
+            for index, raw in enumerate(jobs):
+                if raw.get("job_id") == job_id:
+                    status = raw.get("status")
+                    if status == "running":
+                        raise ValueError("Refusing to remove a running job")
+                    if not raw.get("recurrence") and status not in {"completed", "failed", "cancelled"}:
+                        raise ValueError("Only recurring or terminal jobs can be removed")
+                    removed = ScheduledJob(**raw)
+                    del jobs[index]
+                    self._save(jobs)
+                    self.events.emit(Event("job.removed", {"job_id": job_id, "goal_id": removed.goal_id}))
+                    return removed
+            raise ValueError("Scheduled job not found")
 
     def pause(self, job_id: str) -> ScheduledJob:
         return self.mark(job_id, "paused", expected={"queued"})
