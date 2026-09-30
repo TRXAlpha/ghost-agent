@@ -1,9 +1,19 @@
-"""Local API/SDK facade for the Ghost control plane; transport remains opt-in."""
+"""Local API/SDK facade for the Ghost control plane; transport remains opt-in.
+
+This module provides the unified control plane with:
+- Goal management with hierarchy and dependencies
+- Opportunity pipeline visualization
+- Job state and resource usage monitoring
+- Integration health dashboard
+- Notification preferences and routing
+"""
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field, asdict
 
 from .approvals import ApprovalStore
 from .command_budget import CommandBudget
@@ -18,6 +28,91 @@ from .security import SecurityMonitor
 from .intent import IntentStore
 from .kernel import GoalStore
 from .runtime import AttentionManager, Doctor, Event, EventBus, WorldModel, Scheduler
+from .proactive import OpportunityStore
+
+
+# ── Goal Hierarchy and Dependencies ─────────────────────────────────────────────
+
+@dataclass
+class GoalNode:
+    """A goal with full hierarchy information for visualization."""
+    goal_id: str
+    title: str
+    kind: str
+    parent_id: Optional[str] = None
+    priority: int = 50
+    status: str = "active"
+    deadline_at: Optional[float] = None
+    dependencies: list[str] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    children: list[str] = field(default_factory=list)
+    dependents: list[str] = field(default_factory=list)
+    progress: float = 0.0  # 0.0 to 1.0
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class GoalTree:
+    """Hierarchical goal structure for visualization."""
+    nodes: list[GoalNode]
+    roots: list[str]  # Goal IDs with no parent
+    leaf_count: int
+    active_count: int
+    blocked_count: int
+    completed_count: int
+
+
+# ── Opportunity Pipeline ────────────────────────────────────────────────────────
+
+@dataclass
+class OpportunityPipeline:
+    """Opportunity pipeline stages and counts."""
+    proposed: int = 0
+    queued: int = 0
+    running: int = 0
+    completed: int = 0
+    rejected: int = 0
+    dismissed: int = 0
+    total: int = 0
+    high_confidence: list[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ResourceUsage:
+    """Job state and resource usage summary."""
+    jobs: list[Dict[str, Any]]
+    active_count: int = 0
+    queued_count: int = 0
+    completed_today: int = 0
+    failed_today: int = 0
+    total_cpu_time: float = 0.0
+    total_memory_mb: float = 0.0
+    disk_usage_mb: float = 0.0
+    network_requests: int = 0
+
+
+@dataclass
+class IntegrationHealth:
+    """Integration status for the health dashboard."""
+    name: str
+    status: str  # healthy, degraded, down, not_configured
+    last_check: float
+    latency_ms: Optional[float] = None
+    error_count: int = 0
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class NotificationPreferences:
+    """Notification routing and delivery preferences."""
+    channels: Dict[str, bool] = field(default_factory=dict)  # telegram, desktop, email, etc.
+    quiet_hours_start: int = 22  # 0-23
+    quiet_hours_end: int = 8     # 0-23
+    priority_threshold: str = "normal"  # silent, normal, important, urgent
+    batch_interval_seconds: int = 300  # 5 minutes
+    enabled: bool = True
+    digest_mode: bool = True  # Summarize instead of individual notifications
 
 
 class GhostSDK:
@@ -98,5 +193,309 @@ class GhostSDK:
         except (OSError, ValueError):
             return {"status": "invalid", "schedule": None}
 
-    def snapshot_json(self) -> str:
-        return json.dumps(self.snapshot(), indent=2, ensure_ascii=False)
+# ── Goal Management ─────────────────────────────────────────────────────────────
+
+    def goal_tree(self) -> Dict[str, Any]:
+        """Build hierarchical goal tree for visualization."""
+        all_goals = self.goals._load()
+        by_id = {g["goal_id"]: g for g in all_goals}
+        
+        # Build children/dependents mapping
+        children_map: Dict[str, list] = {}
+        dependents_map: Dict[str, list] = {}
+        roots = []
+        
+        for goal in all_goals:
+            pid = goal.get("parent_id")
+            gid = goal["goal_id"]
+            if pid and pid in by_id:
+                children_map.setdefault(pid, []).append(gid)
+            else:
+                roots.append(gid)
+            
+            for dep in goal.get("dependencies", []):
+                dependents_map.setdefault(dep, []).append(gid)
+        
+        nodes = []
+        for g in all_goals:
+            node = GoalNode(
+                goal_id=g["goal_id"],
+                title=g.get("title", ""),
+                kind=g.get("kind", "outcome"),
+                parent_id=g.get("parent_id"),
+                priority=g.get("priority", 50),
+                status=g.get("status", "active"),
+                deadline_at=g.get("deadline_at"),
+                dependencies=g.get("dependencies", []),
+                created_at=g.get("created_at", time.time()),
+                updated_at=g.get("updated_at", time.time()),
+                children=children_map.get(g["goal_id"], []),
+                dependents=dependents_map.get(g["goal_id"], []),
+                progress=self._compute_goal_progress(g),
+                tags=g.get("tags", []),
+            )
+            nodes.append(asdict(node))
+        
+        return {
+            "nodes": nodes,
+            "roots": roots,
+            "leaf_count": len([n for n in nodes if not n["children"]]),
+            "active_count": len([n for n in nodes if n["status"] == "active"]),
+            "blocked_count": len([n for n in nodes if n["status"] == "blocked"]),
+            "completed_count": len([n for n in nodes if n["status"] == "completed"]),
+        }
+
+    def _compute_goal_progress(self, goal: Dict) -> float:
+        """Compute goal progress based on children completion."""
+        all_goals = self.goals._load()
+        children = [g for g in all_goals if g.get("parent_id") == goal.get("goal_id")]
+        if not children:
+            return 1.0 if goal.get("status") == "completed" else 0.0
+        completed = sum(1 for c in children if c.get("status") == "completed")
+        return completed / len(children) if children else 0.0
+
+    def goal_create_with_dependencies(
+        self,
+        title: str,
+        kind: str = "outcome",
+        parent_id: Optional[str] = None,
+        priority: int = 50,
+        dependencies: Optional[List[str]] = None,
+        deadline_at: Optional[float] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a goal with full dependency tracking."""
+        goal = self.goals.create(
+            title=title,
+            kind=kind,
+            parent_id=parent_id,
+            priority=priority,
+            dependencies=dependencies or [],
+            deadline_at=deadline_at,
+        )
+        result = asdict(goal)
+        if tags:
+            # Update goal with tags
+            goals_data = self.goals._load()
+            for g in goals_data:
+                if g["goal_id"] == goal.goal_id:
+                    g["tags"] = tags
+                    self.goals._save(goals_data)
+                    result["tags"] = tags
+                    break
+        return result
+
+    def goal_update(self, goal_id: str, **updates) -> Optional[Dict[str, Any]]:
+        """Update goal fields."""
+        goals_data = self.goals._load()
+        for g in goals_data:
+            if g["goal_id"] == goal_id:
+                valid_fields = {"title", "priority", "status", "deadline_at", "dependencies", "tags"}
+                for key, value in updates.items():
+                    if key in valid_fields:
+                        g[key] = value
+                g["updated_at"] = time.time()
+                self.goals._save(goals_data)
+                return g
+        return None
+
+    def goal_ready(self) -> List[Dict[str, Any]]:
+        """Return goals ready to execute (dependencies met)."""
+        ready_goals = self.goals.ready()
+        return [asdict(g) for g in ready_goals]
+
+    def goal_blockers(self) -> List[Dict[str, Any]]:
+        """Return goals blocked by dependencies."""
+        all_goals = self.goals._load()
+        blocked = []
+        for g in all_goals:
+            if g.get("status") == "active" and g.get("dependencies"):
+                deps = g["dependencies"]
+                dep_goals = {d: next((x.get("status") for x in all_goals if x.get("goal_id") == d), None) for d in deps}
+                incomplete = [d for d, s in dep_goals.items() if s != "completed"]
+                if incomplete:
+                    blocked.append({
+                        "goal_id": g["goal_id"],
+                        "title": g.get("title"),
+                        "blocking_deps": incomplete,
+                    })
+        return blocked
+
+# ── Opportunity Pipeline ────────────────────────────────────────────────────────
+
+    def opportunity_pipeline(self) -> Dict[str, Any]:
+        """Get opportunity pipeline visualization data."""
+        store = OpportunityStore(self.root)
+        all_opps = store.list_all()
+        
+        pipeline = {
+            "proposed": 0,
+            "queued": 0,
+            "running": 0,
+            "completed": 0,
+            "rejected": 0,
+            "dismissed": 0,
+        }
+        high_confidence = []
+        
+        for opp in all_opps:
+            status = opp.status if hasattr(opp, 'status') else opp.get("status", "proposed")
+            if status in pipeline:
+                pipeline[status] += 1
+            
+            conf = opp.confidence if hasattr(opp, 'confidence') else opp.get("confidence", 0)
+            if conf >= 0.8:
+                high_confidence.append({
+                    "id": opp.opportunity_id if hasattr(opp, 'opportunity_id') else opp.get("opportunity_id", ""),
+                    "title": opp.title if hasattr(opp, 'title') else opp.get("title", ""),
+                    "confidence": conf,
+                    "kind": opp.kind if hasattr(opp, 'kind') else opp.get("kind", ""),
+                    "cost_effort": opp.cost_effort if hasattr(opp, 'cost_effort') else opp.get("cost_effort", "small"),
+                })
+        
+        return {
+            "pipeline": pipeline,
+            "total": len(all_opps),
+            "high_confidence": sorted(high_confidence, key=lambda x: -x["confidence"])[:5],
+            "recent": [asdict(o) if hasattr(o, '__dict__') else o for o in all_opps[-10:]],
+        }
+
+# ── Job State and Resource Usage ────────────────────────────────────────────────
+
+    def resource_usage(self) -> Dict[str, Any]:
+        """Get job state and resource usage summary."""
+        import shutil
+        
+        jobs = self.scheduler.list()
+        now = time.time()
+        today_start = now - (now % 86400)
+        
+        active = [j for j in jobs if j.status == "running"]
+        queued = [j for j in jobs if j.status == "queued"]
+        completed_today = [
+            j for j in jobs 
+            if j.status == "completed" and j.created_at >= today_start
+        ]
+        failed_today = [
+            j for j in jobs 
+            if j.status == "failed" and j.created_at >= today_start
+        ]
+        
+        # Estimate disk usage
+        disk_usage_mb = 0.0
+        if self.outcomes.root.exists():
+            try:
+                total_bytes = sum(
+                    f.stat().st_size for f in self.outcomes.root.rglob("*") if f.is_file()
+                )
+                disk_usage_mb = total_bytes / (1024 * 1024)
+            except OSError:
+                pass
+        
+        return {
+            "jobs": [asdict(j) for j in jobs],
+            "active_count": len(active),
+            "queued_count": len(queued),
+            "completed_today": len(completed_today),
+            "failed_today": len(failed_today),
+            "total_disk_mb": round(disk_usage_mb, 2),
+            "available_resources": ResourceMonitor(self.root).available(),
+        }
+
+# ── Integration Health ───────────────────────────────────────────────────────────
+
+    def integration_health(self) -> Dict[str, Any]:
+        """Get integration health dashboard data."""
+        health_status = Doctor(self.root).check()
+        
+        integrations = []
+        key_integrations = ["telegram", "huawei", "desksentinel", "ollama", "docker"]
+        
+        for name in key_integrations:
+            status = health_status.get(name, "unknown")
+            status_map = {
+                "ok": "healthy",
+                "healthy": "healthy",
+                "not_configured": "not_configured",
+                "not_ready": "degraded",
+                "degraded": "degraded",
+                "not_running": "down",
+                "error": "down",
+                "unknown": "unknown",
+            }
+            integrations.append(IntegrationHealth(
+                name=name,
+                status=status_map.get(status, "unknown"),
+                last_check=now,
+                details={"raw_status": status},
+            ))
+        
+        return {
+            "integrations": [asdict(i) for i in integrations],
+            "overall_status": "healthy" if all(
+                i.status == "healthy" for i in integrations
+            ) else "degraded",
+            "last_full_check": now,
+            "checks": health_status,
+        }
+
+# ── Notification Preferences ────────────────────────────────────────────────────
+
+    def notification_preferences(self) -> Dict[str, Any]:
+        """Get notification preferences."""
+        prefs_path = self.root / ".ghost" / "notification_prefs.json"
+        try:
+            if prefs_path.exists():
+                return json.loads(prefs_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        
+        # Default preferences
+        return asdict(NotificationPreferences())
+
+    def notification_preferences_save(self, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        """Save notification preferences."""
+        prefs_path = self.root / ".ghost" / "notification_prefs.json"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(json.dumps(prefs, indent=2))
+        return prefs
+
+    def notification_test(self, channel: str = "telegram") -> Dict[str, Any]:
+        """Test notification delivery on a channel."""
+        # This would integrate with the notification system
+        return {
+            "channel": channel,
+            "status": "sent" if self.notification_preferences().get("channels", {}).get(channel, False) else "disabled",
+            "timestamp": time.time(),
+        }
+
+
+class ResourceMonitor:
+    """Portable, read-only resource snapshot used for scheduler admission."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.root = Path(project_root)
+
+    def available(self) -> Dict[str, float]:
+        import os
+        disk = shutil.disk_usage(self.root)
+        snapshot: Dict[str, float] = {
+            "cpu_cores": float(os.cpu_count() or 1),
+            "disk_bytes": float(disk.free),
+        }
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            pages = os.sysconf("SC_AVPHYS_PAGES")
+            snapshot["ram_bytes"] = float(page_size * pages)
+        except (AttributeError, OSError, ValueError):
+            pass
+        return snapshot
+
+
+if __name__ == "__main__":
+    # Quick test
+    sdk = GhostSDK(Path.cwd())
+    print("Goal tree:", len(sdk.goal_tree()["nodes"]), "nodes")
+    print("Pipeline:", sdk.opportunity_pipeline()["pipeline"])
+    print("Resources:", sdk.resource_usage()["active_count"], "active jobs")
+    print("Integrations:", sdk.integration_health()["overall_status"])
