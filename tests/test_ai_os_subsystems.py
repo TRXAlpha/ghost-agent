@@ -197,11 +197,25 @@ class TestNotifications:
 
     def test_quiet_hours(self, root):
         store = NotificationStore(root)
-        qh = QuietHours(enabled=True, start_hour=22, end_hour=8)
+        # suppress_urgent=True so urgent notifications DO bypass quiet hours.
+        qh = QuietHours(enabled=True, start_hour=22, end_hour=8, suppress_urgent=True)
         store.set_quiet_hours(qh)
         assert store.get_quiet_hours().enabled is True
-        notif = Notification(notification_id="n1", title="T", body="B", priority="normal")
-        assert store.should_deliver(notif) is False  # suppressed in quiet hours
+        prefs = ChannelPreferences(channel="telegram", enabled=True, priority_min="low")
+        store.set_channel_prefs(prefs)
+        notif = Notification(notification_id="n1", title="T", body="B", priority="normal", channel="telegram")
+        # Mock the module-level time reference so the test is deterministic regardless of wall-clock hour.
+        import time as _t, unittest.mock as _um, ghost_agent.notifications as _n
+        _orig = _n.time
+        try:
+            mock_time = _um.MagicMock()
+            mock_time.localtime.return_value = _t.struct_time([0,0,0,23,0,0,0,0,0])
+            _n.time = mock_time
+            assert store.should_deliver(notif) is False  # suppressed in quiet hours (hour 23)
+            notif2 = Notification(notification_id="n2", title="T", body="B", priority="urgent", channel="telegram")
+            assert store.should_deliver(notif2) is True   # urgent bypasses quiet hours (suppress_urgent=True)
+        finally:
+            _n.time = _orig
 
     def test_urgent_bypasses_quiet_hours(self, root):
         """Test priority-based routing and quiet-hour suppression logic."""

@@ -196,6 +196,8 @@ class NotificationStore:
             elif qh.start_hour < qh.end_hour:
                 in_quiet = qh.start_hour <= hour < qh.end_hour
             else:
+                # Wrap-around: quiet hours span midnight (e.g. 22:00–08:00).
+                # Hour 8 is IN the range (00:00–07:59 = quiet, 08:00–21:59 = not quiet).
                 in_quiet = hour >= qh.start_hour or hour < qh.end_hour
             if in_quiet:
                 if notification.priority != "urgent" or not qh.suppress_urgent:
