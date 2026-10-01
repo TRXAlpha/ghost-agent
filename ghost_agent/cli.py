@@ -1802,6 +1802,10 @@ def main() -> None:
     review_cmd.add_argument("concept_id", help="Concept identifier")
     review_cmd.add_argument("submission", help="Code or text to assess")
     review_cmd.add_argument("--oracle", default="rustc", help="Oracle: rustc (default), python, custom")
+    path_cmd = learn_sub.add_parser("path", help="Generate a prerequisite-ordered learning path")
+    path_cmd.add_argument("targets", nargs="+", help="Target concepts for the learning path")
+    path_cmd.add_argument("--name", default="", help="Path name")
+    path_cmd.add_argument("--description", default="", help="Path description")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -3520,8 +3524,17 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             print(f"   mastery: {concept.mastery:.1%}, streak: {concept.streak}")
         return
 
+    if action == "path":
+        from .learning_engine import LearningEngine
+        engine = LearningEngine(root / ".ghost")
+        targets = args.targets
+        path = engine.generate_path(targets, name=args.name or "", description=args.description)
+        print(f"Learning path: [{path.path_id}] {path.name}")
+        print(f"  {len(path.concept_ids)} concept(s): {', '.join(path.concept_ids)}")
+        return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review")
+    print("Available: status, concepts, add-concept, record, review, path")
 
 
 # ============================================================================
