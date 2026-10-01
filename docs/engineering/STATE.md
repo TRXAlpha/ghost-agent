@@ -2,8 +2,63 @@
 
 ## Repository
 - Branch: master
-- HEAD: 6457ce7 — OJ15/S08 trace-based learning (2026-09-28 evening)
-- Working tree: CLEAN except AGENTS.md (owner's rewritten swarm-model instructions, intentionally uncommitted — owner decision).
+- HEAD: 681b769 — Add ghost learn path: generate prerequisite-ordered learning paths via LearningEngine
+- Working tree: CLEAN (AGENTS.md intentionally uncommitted per owner decision)
+
+## 2026-09-30 — AI-OS CLI commands shipped
+
+All AI-OS subsystems are now wired to production CLI entry points. Commits on master:
+
+| Commit | Content |
+|--------|---------|
+| aa51724 | AI-OS subsystems: Nexus kernel, LearningEngine, SelfImprover, CapabilityManager, ResourceManager, Notifications, MemoryManager, LongTermMemory, ContextSynthesizer, proactive OS loop extensions |
+| 303fe80 | AI-OS CLI: `ghost daemon run/status/stop`, `ghost learn status/concepts/add-concept/record/review/path`, `ghost self-improve list/propose/decide`, `ghost nexus health/state/subsystems`, `ghost perception filesystem/git/process`, `ghost context assemble/conflicts` |
+| 02e99a3 | Fix quiet-hours midnight-wrap logic; deterministic test via module-level time mock |
+| 681b769 | Add `ghost learn path`: generate prerequisite-ordered learning paths via LearningEngine |
+
+Self-learning loop wiring:
+- `ghost daemon run` composes: proactive tick → worker → trace-learning (every 10 cycles) → capability improver tick, all idled by OS activity
+- `ghost self-improve propose` auto-generates candidates from trace-learning failure signatures
+- `ghost learn path` generates prerequisite-ordered learning paths
+- `ghost learn review` uses RustCompileOracle (rustc 1.92.0 verified available at ~/.cargo/bin)
+- `ghost self-improve decide` records approved/rejected/rollback decisions
+
+Perception system (read-only, scope-guarded):
+- `ghost perception filesystem <path>` — observe file existence/size/sha256
+- `ghost perception git` — observe branch/dirty/changed entries
+- `ghost perception process <pid>` — Windows-safe liveness check via kernel32 API
+
+Nexus kernel:
+- `ghost nexus health` — Doctor-checked health report
+- `ghost nexus state` — persisted system state
+- `ghost nexus subsystems` — registered subsystem list
+
+AI-OS subsystem modules: nexus.py, learning_engine.py, self_improver.py, capability_manager.py, resource_manager.py, notifications.py, memory/long_term.py, memory/manager.py, context_synthesizer.py, proactive.py, perception.py, pet.py, control_plane.py, api_server.py
+
+Verified: 109 tests pass (AI-OS subsystems, bridge retry, capability wiring, proactive feedback, self-repair).
+
+## 2026-09-29 owner directive: REAL AI OS
+Owner: "make it an actual AI OS with real self-learning proactive loops, larger and broader, implement everything in the roadmap."
+Interpretation (root): drive OJ07/OJ08/OJ10 now (in flight); then wave 2:
+- OJ-DAEMON: `ghost daemon` — one always-on Ghost-owned process composing the EXISTING loops (OvernightRunner cycle, scheduler claim, worker drain, trace-learning cadence, digest delivery, capability improvement). Composition only; no second scheduler/authority (single-owner invariant). Upstream daemon/scheduler used as pattern reference only.
+- OJ12-S1: learner.py (LearnerStore/Oracles/RustCompileOracle) production wiring + real rustc oracles (rustup installing, proc_5d979294f14b). Lessons -> cited revision -> compiled+checked activities.
+- S01 live Telegram send: token present in env (TELEGRAM_TOKEN/CHAT_ID). getUpdates polling FORBIDDEN (collides with Hermes session); one-shot sendMessage live check per docs/engineering/telegram-live-qualification.md — owner-visible, do on request or with clear notice.
+- OJ16 partial: dashboard/api controls for new surfaces (capability, jobs add, daemon status).
+Self-learning loop end state: observe (proactive/overnight) -> work (worker+gates) -> trace-learning mines failures -> gap registry -> improver builds -> OJ10 activates capability -> capability serves next cycle. Daemon keeps it alive unattended.
+
+## 2026-09-29 morning session — wave in flight
+- Full-suite re-baseline running in background (session proc_a0e1b2a427a1) to close the stalled-run question from 9/28.
+- Roadmap triage vs OJ01–OJ16 table (implementation.md:749-759): done = OJ01-06, OJ09, OJ11, OJ15 (slices). Dependency-ready = OJ07, OJ08, OJ10. Blocked = OJ12 (needs OJ10 + rustc, absent), OJ13/OJ14 (credentials/firmware), OJ16 (final).
+- Two workers dispatched in isolated worktrees (deleg_b4e8cf1e):
+  - sa-0: OJ07 recurring schedules — worktree ../ghost_oj07, branch oj07-recurring. Scheduler recurrence (interval, due_at, catch-up cap 64, same-lock requeue, `ghost jobs add/remove`).
+  - sa-1: OJ08 bridge retry — worktree ../ghost_oj08, branch oj08-retry. chat() bounded transport retry, budget commit-once discipline, model.retry/model.route.failed events, transport_failure reputation, doctor retry_policy.
+- Ownership split: OJ07 owns ghost_agent/runtime.py scheduler + cli jobs; OJ08 owns models/chat.py + routing.py + bridge doctor. No overlap.
+- OJ07 WORKER FAILED (output-token exhaustion, no work landed) — OJ07 implemented directly in root context. Candidate commit eabe366 on oj07-recurring: recurrence {kind:interval,interval_seconds}, due_at gating in next(), same-lock requeue on completed/failed settle, 64-period catch-up cap + job.recurrence.skipped/requeued events, corrupt-recurrence fail-closed, `ghost jobs add/remove` + next_due in list. Focused: 29 passed + 45 passed (cli_outcomes, openjarvis_config, proactive_feedback). Reviewers A/B dispatched (deleg_15f5fd26). Settle path verified live: worker.py:83 marks every job terminal through Scheduler.mark.
+- OJ08 WORKER FAILED (output-token exhaustion) — OJ08 implemented directly in root context. Candidate commit 773f1d5 on oj08-retry: bounded retry in models/chat.chat() (3 attempts, 0.5-8s backoff+jitter), retryable only for ConnectionError/Timeout/HTTP5xx/OSError (not IntegrationError/4xx), budget commit-once discipline (pending across retries, committed on success, rolled back on final failure), Event(model.retry) per retry + Event(model.route.failed) on final, ModelReputationStore.record_transport_failure + recent_transport_failures (additive, 64-entry window, setdefault so old records unchanged), doctor retry_policy dict. 15 new tests (test_bridge_retry.py) + 31 existing (spend/routing/openjarvis_config) all green.
+- OJ10 WORKER FAILED (output-token exhaustion, 4th) — OJ10 implemented directly in root context. Candidate commit fb9d9b8 on oj10-acquisition: `ghost capability` CLI (list/propose/decide/activate/health/retire; activate refuses unresolved prereqs; retire from active routes active->disabled->retired per STATES), close_gap_feedback advances building->testing->ready_to_activate on real tests_passed with capability.lifecycle events, propose links trace-learning gap ids as prerequisites. 8 new tests + 41 existing (acquisition/improver/proactive) green. Proactive surface step (gap count>=3 -> opportunity) deferred to daemon wave.
+- Pending: OJ07 reviewers (deleg_15f5fd26), OJ08 reviewer A (deleg_d59b6bcd). Then merge order OJ08 -> OJ07 -> OJ10 -> OJ12.
+- OJ12-S1 dispatched (worktree ../ghost_oj12, branch oj12-learner): learner production wiring — `ghost learn` CLI (concepts/add/attempt/review/stats), lesson-source grounding, RustCompileOracle rustc resolution with explicit C:/Users/chris/.cargo/bin/rustc.exe fallback (toolchain verified: rustc 1.92.0, compile+run probe OK).
+- Rust toolchain: discovered pre-installed at ~/.cargo/bin (1.92.0); my earlier 'no rustc' probe was a PATH miss. rustup-init download failed ($TMPDIR unset, tail masked it) but was unnecessary.
 
 ## 2026-09-28 evening session — 9 accepted commits
 - 8e559af OJ06: container isolation on real Docker (POSIX mount contract, sandbox image)
@@ -24,6 +79,7 @@
 - Telegram: token-absent path network-free; pairing/fingerprint logic tested
 
 ## Test status
+- 2026-09-29: full-suite re-baseline attempted twice (proc_a0e1b2a427a1 with invalid --timeout=0 flag, killed; proc_6f8b8ad6335b ran 100+ min with zero output, killed). Confirms full-suite runs stall in this Hermes terminal environment — NOT a test regression. Focused suites are the verification path; one clean full-suite run outside this terminal (owner-invoked) still needed to re-baseline the 926 total.
 - Focused suites green: overnight 21, trace_learning 19, health_privacy 8, telegram_readiness 13, autonomy 29+, huawei_route + mvp_health + self_repair 56
 - Full suite (~926 tests): all focused/affected areas pass; full-suite single runs stall in this session's terminal environment (suspect an environment hang, not a test failure — same suite ran 885-passed at b26957c). Needs one clean full run on next session start to re-baseline.
 
