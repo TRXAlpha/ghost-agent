@@ -106,6 +106,21 @@ class CapabilityImprover:
                 pass
             return None
 
+    def tick(self) -> dict:
+        """One idle-time capability-improvement tick. Returns a status dict."""
+        try:
+            queued = self.gaps.get_queued_gaps(min_count=2)
+            if not queued:
+                return {"status": "no_gaps"}
+            gap_id = self.try_build()
+            if gap_id:
+                return {"status": "queued", "gap_id": gap_id}
+            return {"status": "skipped"}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)[:200]}
+
+
+
 def gap_outcome_for_job(job) -> Optional[tuple]:
     """Map a terminal outcome job to a gap verdict.
 

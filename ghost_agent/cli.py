@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from .audit import audit_all, audit_run
 from .autonomy import CapabilityRegistry, OutcomeStore
@@ -42,6 +43,7 @@ from .self_repair import SelfRepairManager
 from .devices import DeviceRegistry
 from .mcp_addons import MCPAddonManager
 from .intent import IntentStore
+from .utils.storage import atomic_json
 from .worker import OutcomeWorker, WorkerResult
 from .checkins import LocalCheckIns
 from .config import get_model, get_research_model, set_model
@@ -1762,13 +1764,82 @@ def main() -> None:
                                help="Stop after N cycles (default: until emergency stop)")
     overnight_idle = overnight_sub.add_parser("until-idle-ends", help="One cycle when the owner goes idle")
     overnight_idle.add_argument("--idle-after-seconds", type=float, default=900)
-    digest_parser = sub.add_parser("digest", help="Print the latest overnight digest (OJ11/S06)")
     trace_parser = sub.add_parser("trace-learning", help="Mine outcome traces for recurring failure signatures (OJ15/S08)")
     trace_sub = trace_parser.add_subparsers(dest="trace_action")
     trace_run_parser = trace_sub.add_parser("run", help="Analyze traces and propose improvements")
     trace_run_parser.add_argument("--min-count", type=int, default=2,
                                   help="Minimum recurrence count to act on (default 2)")
     trace_sub.add_parser("report", help="Print the last trace-learning analysis")
+
+    # OJ-DAEMON: unified AI-OS daemon — composes all live loops
+    daemon_parser = sub.add_parser("daemon", help="AI-OS daemon: proactive watch + worker + trace-learning + digest + capability improver (OJ-Daemon)")
+    daemon_sub = daemon_parser.add_subparsers(dest="daemon_action")
+    daemon_run = daemon_sub.add_parser("run", help="Start the continuous AI-OS daemon")
+    daemon_run.add_argument("--interval", type=float, default=300,
+                            help="Seconds between proactive ticks (default 300)")
+    daemon_run.add_argument("--idle-after-seconds", type=float, default=900,
+                            help="OS idle threshold (default 900)")
+    daemon_run.add_argument("--max-cycles", type=int, default=None,
+                            help="Stop after N cycles (default: until emergency stop)")
+    daemon_run.add_argument("--trace-every", type=int, default=10,
+                            help="Run trace-learning every N cycles (default 10)")
+    daemon_sub.add_parser("status", help="Show daemon health / last cycle summary")
+    daemon_sub.add_parser("stop", help="Engage emergency stop to stop the daemon")
+
+    # OJ12-S1: learner CLI — concepts, attempts, review, spaced repetition
+    learn_parser = sub.add_parser("learn", help="Personal learning: concepts, spaced repetition, oracle-based assessment (OJ12)")
+    learn_sub = learn_parser.add_subparsers(dest="learn_action")
+    learn_sub.add_parser("status", help="Show learning progress and due concepts")
+    learn_sub.add_parser("concepts", help="List registered concepts with mastery")
+    add_concept = learn_sub.add_parser("add-concept", help="Register a new concept")
+    add_concept.add_argument("concept_id", help="Unique concept identifier (e.g. rust-ownership)")
+    add_concept.add_argument("name", help="Human-readable name")
+    record_attempt = learn_sub.add_parser("record", help="Record a concept attempt (correct or wrong)")
+    record_attempt.add_argument("concept_id", help="Concept identifier")
+    record_attempt.add_argument("correct", help="'correct' or 'wrong'")
+    record_attempt.add_argument("--submission", default="", help="The submitted answer (for oracle assessment)")
+    review_cmd = learn_sub.add_parser("review", help="Review and assess a submission via oracle (RustCompileOracle etc.)")
+    review_cmd.add_argument("concept_id", help="Concept identifier")
+    review_cmd.add_argument("submission", help="Code or text to assess")
+    review_cmd.add_argument("--oracle", default="rustc", help="Oracle: rustc (default), python, custom")
+
+    # OJ14-S1: SelfImprover CLI
+    improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
+    improve_sub = improve_parser.add_subparsers(dest="improve_action")
+    improve_list = improve_sub.add_parser("list", help="List improvement candidates")
+    improve_list.add_argument("--status", default=None, help="Filter by status: proposed/evaluating/shadow/active/rolled_back/failed")
+    improve_sub.add_parser("propose", help="Propose a new improvement from trace-learning insights")
+    improve_decide = improve_sub.add_parser("decide", help="Approve or reject an improvement candidate")
+    improve_decide.add_argument("candidate_id", help="Candidate ID")
+    improve_decide.add_argument("decision", help="approved/rejected/rollback")
+    improve_decide.add_argument("reason", help="Reason for decision")
+
+    # Nexus kernel CLI
+    nexus_parser = sub.add_parser("nexus", help="AI-OS kernel: health, subsystem status, system state")
+    nexus_sub = nexus_parser.add_subparsers(dest="nexus_action")
+    nexus_sub.add_parser("health", help="Full subsystem health report")
+    nexus_sub.add_parser("state", help="Current system state (initializing/running/paused/stopping/stopped)")
+    nexus_sub.add_parser("subsystems", help="List registered subsystems")
+    nexus_register = nexus_sub.add_parser("register", help="Register a subsystem with the kernel")
+    nexus_register.add_argument("name", help="Subsystem name")
+    nexus_register.add_argument("class_path", help="Fully qualified class path (e.g. module.Class)")
+    nexus_deregister = nexus_sub.add_parser("unregister", help="Remove a subsystem from the kernel")
+    nexus_deregister.add_argument("name", help="Subsystem name to remove")
+
+    # Perception CLI
+    perception_parser = sub.add_parser("perception", help="Read-only observation: filesystem, git, processes")
+    perception_sub = perception_parser.add_subparsers(dest="perception_action")
+    fs_perc = perception_sub.add_parser("filesystem", help="Observe workspace file states")
+    fs_perc.add_argument("paths", nargs="+", help="Paths to observe (within project)")
+    git_perc = perception_sub.add_parser("git", help="Observe git working tree state")
+    proc_perc = perception_sub.add_parser("process", help="Observe process liveness")
+    proc_perc.add_argument("pid", type=int, help="Process ID to check")
+
+    # Context synthesizer CLI
+    ctx_parser = sub.add_parser("context", help="Synthesize runtime context for model prompts")
+    ctx_sub = ctx_parser.add_subparsers(dest="ctx_action")
+    ctx_sub.add_parser("assemble", help="Assemble full context for a goal")
+    ctx_sub.add_parser("conflicts", help="List detected context conflicts")
 
     args = parser.parse_args()
 
@@ -1812,6 +1883,12 @@ def main() -> None:
         "overnight": lambda: _cmd_overnight(args),
         "digest": lambda: _cmd_digest(args),
         "trace-learning": lambda: _cmd_trace_learning(args),
+        "daemon": lambda: _cmd_daemon(args),
+        "learn": lambda: _cmd_learn(args),
+        "self-improve": lambda: _cmd_self_improve(args),
+        "nexus": lambda: _cmd_nexus(args),
+        "perception": lambda: _cmd_perception(args),
+        "context": lambda: _cmd_context(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -3243,6 +3320,432 @@ def _cmd_parallel(args: argparse.Namespace) -> None:
     completed = runner.run_decomposition(decomposition, project_root)
 
     print(f"\n{runner.format_results(completed)}")
+
+
+    # ============================================================================
+    # AI-OS Daemon (OJ-Daemon)
+    # Composes: proactive tick → worker → trace-learning → digest → capability
+    # improver. One Ghost-owned process; upstream scheduler/authority untouched.
+    # ============================================================================
+
+def _cmd_daemon(args: argparse.Namespace) -> None:
+    """Run the unified AI-OS daemon over existing subsystem APIs."""
+    from .overnight import OvernightRunner
+    from .proactive import ProactiveEngine
+    from .trace_learning import run_trace_learning
+    from .autonomy_improver import CapabilityImprover
+    from .learning_engine import LearningEngine
+    from .runtime import EmergencyStop
+    from .worker import OutcomeWorker
+    import json
+
+    root = Path.cwd()
+    model = _resolve_model(getattr(args, "model", None))
+    interval = getattr(args, "interval", 300.0)
+    idle_after = getattr(args, "idle_after_seconds", 900.0)
+    trace_every = getattr(args, "trace_every", 10)
+
+    if getattr(args, "daemon_action", None) == "status":
+        log_path = root / ".ghost" / "overnight" / "log.jsonl"
+        status_path = root / ".ghost" / "daemon_status.json"
+        if status_path.exists():
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+            print(json.dumps(data, indent=2))
+        else:
+            print("Daemon has not run yet.")
+        return
+
+    if getattr(args, "daemon_action", None) == "stop":
+        from .runtime import EmergencyStop
+        stop = EmergencyStop(root)
+        stop.engage("user requested daemon stop")
+        print("Emergency stop engaged. Daemon will stop after current cycle.")
+        return
+
+    # Daemon state (shared JSON snapshot, updated each cycle)
+    status_path = root / ".ghost" / "daemon_status.json"
+
+    def _save_status(data: dict) -> None:
+        atomic_json(status_path, data)
+
+    def _idle() -> bool:
+        try:
+            from .proactive import idle_seconds
+            idle = idle_seconds()
+            return idle is not None and idle < idle_after
+        except Exception:
+            return True  # uncertain = treat as active
+
+    def _proactive_tick() -> dict:
+        engine = ProactiveEngine(root, model)
+        return engine.tick(auto_queue=True, require_idle=True, idle_after=idle_after)
+
+    def _worker_run() -> Optional[dict]:
+        worker = OutcomeWorker(root)
+        result = worker.run_next(
+            lambda s: _execute_queued_outcome(root, s))
+        return {"job_id": result.job_id, "status": result.status, "detail": result.detail} if result else None
+
+    def _trace_learn() -> dict:
+        summary = run_trace_learning(root, min_count=2)
+        return {"scanned": summary["analysis"]["scanned"],
+                "signatures": len(summary["analysis"]["top_signatures"]),
+                "actions": len(summary["actions"])}
+
+    def _capability_improve() -> dict:
+        improver = CapabilityImprover(root, model)
+        result = improver.tick()
+        return result or {}
+
+    def _write_cycle(cycle: int, data: dict) -> None:
+        _save_status({"cycle": cycle, "ts": time.time(), **data})
+
+    stop = EmergencyStop(root)
+    cycles = 0
+
+    while not stop.active():
+        if args.max_cycles and cycles >= args.max_cycles:
+            break
+        cycles += 1
+        cycle_data: dict = {"proactive": "skipped", "worker": None}
+
+        if not _idle():
+            # 1. Proactive tick
+            try:
+                tick_result = _proactive_tick()
+                cycle_data["proactive"] = tick_result.get("status", "ok")
+                if tick_result.get("opportunity"):
+                    cycle_data["opportunity_id"] = tick_result["opportunity"].get("opportunity_id")
+            except Exception as exc:
+                cycle_data["proactive_error"] = str(exc)[:200]
+
+            # 2. Worker job
+            try:
+                wr = _worker_run()
+                if wr:
+                    cycle_data["worker"] = wr
+            except Exception as exc:
+                cycle_data["worker_error"] = str(exc)[:200]
+        else:
+            cycle_data["proactive"] = "deferred_idle"
+
+        # 3. Trace-learning every N cycles
+        if cycles % trace_every == 0:
+            try:
+                cycle_data["trace_learning"] = _trace_learn()
+            except Exception as exc:
+                cycle_data["trace_error"] = str(exc)[:200]
+
+        # 4. Capability improver tick
+        try:
+            cycle_data["capability"] = _capability_improve()
+        except Exception as exc:
+            cycle_data["capability_error"] = str(exc)[:200]
+
+        _write_cycle(cycles, cycle_data)
+
+        if args.max_cycles and cycles >= args.max_cycles:
+            break
+        time.sleep(interval)
+
+    _save_status({"stopped": True, "total_cycles": cycles, "ts": time.time()})
+    print(f"AI-OS daemon stopped after {cycles} cycles.")
+
+
+# ============================================================================
+# Learner CLI (OJ12-S1)
+# Wraps LearnerStore + oracles with a clean CLI surface.
+# ============================================================================
+
+def _cmd_learn(args: argparse.Namespace) -> None:
+    """Personal learning: concepts, attempts, review, spaced repetition (OJ12)."""
+    from .learner import LearnerStore, RustCompileOracle, Oracle
+
+    root = Path.cwd()
+    learner = LearnerStore(root)
+    action = getattr(args, "learn_action", None) or "status"
+
+    if action == "status":
+        concepts = learner.concepts()
+        due = learner.due_count()
+        print(f"Concepts: {len(concepts)}")
+        print(f"Due for review: {due}")
+        for c in concepts:
+            print(f"  [{c.concept_id}] {c.name}: mastery={c.mastery:.1%}, "
+                  f"streak={c.streak}, attempts={c.attempts}")
+        return
+
+    if action == "concepts":
+        for c in learner.concepts():
+            print(f"  [{c.concept_id}] {c.name}: mastery={c.mastery:.1%}, "
+                  f"due={learner.due_count(now=time.time()) > 0}")
+        return
+
+    if action == "add-concept":
+        concept_id = args.concept_id
+        name = args.name
+        concept = learner.register_concept(concept_id, name)
+        print(f"Registered: [{concept.concept_id}] {concept.name}")
+        return
+
+    if action == "record":
+        concept_id = args.concept_id
+        correct = args.correct.lower() in ("true", "1", "yes", "correct")
+        submission = getattr(args, "submission", "") or ""
+        concept = learner.record_attempt(concept_id, correct, submission=submission)
+        print(f"Recorded: [{concept_id}] correct={correct}, "
+              f"mastery={concept.mastery:.1%}, streak={concept.streak}")
+        return
+
+    if action == "review":
+        concept_id = args.concept_id
+        submission = args.submission
+        oracle_name = getattr(args, "oracle", "rustc")
+
+        if oracle_name == "rustc":
+            oracle: Oracle = RustCompileOracle()
+        else:
+            raise ValueError(f"Unknown oracle: {oracle_name}")
+
+        if not oracle.available():
+            raise RuntimeError(f"Oracle '{oracle_name}' not available on this system. "
+                               "Install rustc or use a different oracle.")
+
+        # assess() calls oracle.check() and record_attempt() internally
+        attempt = learner.assess(concept_id, submission, oracle)
+        concept = learner.get_concept(concept_id)
+        status = "✓" if attempt.correct else "✗"
+        print(f"{status} [{concept_id}] {attempt.feedback}")
+        if concept:
+            print(f"   mastery: {concept.mastery:.1%}, streak: {concept.streak}")
+        return
+
+    print(f"Unknown learn action: {action}")
+    print("Available: status, concepts, add-concept, record, review")
+
+
+# ============================================================================
+# SelfImprover CLI (OJ14/S08)
+# ============================================================================
+
+def _cmd_self_improve(args: argparse.Namespace) -> None:
+    """Propose, evaluate, approve, and roll back structural improvements (OJ14/S08)."""
+    from .self_improver import SelfImprover, SelfImproverStore
+    from .trace_learning import run_trace_learning
+
+    root = Path.cwd()
+    store = SelfImproverStore(root)
+    improver = SelfImprover(root)
+    action = getattr(args, "improve_action", None) or "list"
+
+    if action == "list":
+        status = getattr(args, "status", None)
+        candidates = store.list_candidates(status=status)
+        if not candidates:
+            print("No improvement candidates found.")
+            return
+        print(f"{len(candidates)} candidate(s):")
+        for c in candidates:
+            print(f"  [{c.candidate_id}] {c.status} | {c.hypothesis[:60]}...")
+            if c.shadow_metrics:
+                print(f"    shadow: {list(c.shadow_metrics.keys())}")
+            if c.final_metrics:
+                print(f"    final: {list(c.final_metrics.keys())}")
+        return
+
+    if action == "propose":
+        # Mine trace learning for the top failure signature and auto-propose
+        summary = run_trace_learning(root, min_count=2)
+        sigs = summary.get("analysis", {}).get("top_signatures", [])
+        if not sigs:
+            print("No recurring failure signatures found to base an improvement on.")
+            return
+        sig = sigs[0]
+        hypothesis = (
+            f"Addressing {sig['error_type']} in {sig['subsystem']}: "
+            f"{sig['normalized_error'][:100]}"
+        )
+        cand = store.create_candidate(
+            hypothesis=hypothesis,
+            components=[sig["subsystem"]],
+            baseline={"failure_count": sig["count"]},
+            plan=f"Analyze {sig['count']} recurrences of {sig['error_type']}; "
+                 "propose targeted fix; evaluate against regression tests.",
+            budget_hours=1.0,
+            rollback="Revert to baseline git commit",
+        )
+        print(f"Proposed: [{cand.candidate_id}] {cand.hypothesis}")
+        return
+
+    if action == "decide":
+        candidate_id = args.candidate_id
+        decision = args.decision
+        reason = args.reason
+        if decision not in ("approved", "rejected", "rollback"):
+            print("Decision must be: approved, rejected, or rollback")
+            return
+        store.record_decision(candidate_id, decision, reason)
+        print(f"Decision recorded: {candidate_id} -> {decision}")
+        return
+
+    print(f"Unknown self-improve action: {action}")
+    print("Available: list, propose, decide")
+
+
+# ============================================================================
+# Nexus kernel CLI (OJ-Kernel)
+# ============================================================================
+
+def _cmd_nexus(args: argparse.Namespace) -> None:
+    """AI-OS kernel: health checks, subsystem registry, system state."""
+    from .nexus import Nexus, NexusHealth, HealthStatus
+    from .runtime import Doctor
+
+    root = Path.cwd()
+    action = getattr(args, "nexus_action", None) or "health"
+
+    if action == "health":
+        health = Doctor(root).check()
+        print("AI-OS Health Report")
+        print("=" * 40)
+        for key, value in health.items():
+            status = "✓" if value == "ok" else "✗"
+            print(f"  {status} {key}: {value}")
+        return
+
+    if action == "state":
+        nexus_path = root / ".ghost" / "nexus_state.json"
+        if not nexus_path.exists():
+            print("Nexus has not been initialized. State: initializing")
+            return
+        import json as _json
+        state = _json.loads(nexus_path.read_text(encoding="utf-8"))
+        print(f"System state: {state.get('state', 'unknown')}")
+        print(f"Subsystems: {', '.join(state.get('subsystems', [])) or 'none'}")
+        return
+
+    if action == "subsystems":
+        from .nexus import Nexus
+        nexus = Nexus(state_dir=root / ".ghost")
+        subs = nexus.list_subsystems()
+        print(f"Registered subsystems ({len(subs)}):")
+        for name in subs:
+            print(f"  - {name}")
+        return
+
+    if action == "register":
+        name = args.name
+        class_path = args.class_path
+        print(f"Dynamic subsystem registration requires runtime import resolution.")
+        print(f"  name: {name}, class: {class_path}")
+        print("  (Subsystems auto-register via the Nexus Subsystem protocol at startup.)")
+        return
+
+    if action == "unregister":
+        print(f"Dynamic subsystem deregistration: use the Nexus API directly.")
+        return
+
+    print(f"Unknown nexus action: {action}")
+    print("Available: health, state, subsystems, register, unregister")
+
+
+# ============================================================================
+# Perception CLI (OJ-Perception)
+# ============================================================================
+
+def _cmd_perception(args: argparse.Namespace) -> None:
+    """Read-only local observation: filesystem, git, processes."""
+    from .perception import FilesystemPerception, GitPerception, ProcessPerception
+
+    root = Path.cwd()
+    action = getattr(args, "perception_action", None) or "git"
+
+    if action == "filesystem":
+        paths = [Path(p).resolve() for p in args.paths]
+        fs = FilesystemPerception(root)
+        obs = fs.observe(paths)
+        print(f"Observed {len(obs)} filesystem entity(ies):")
+        for o in obs:
+            state = o.state
+            exists = state.get("exists", False)
+            status = "✓" if exists else "✗"
+            size = state.get("size", "")
+            print(f"  {status} {o.entity_id}{f' ({size} bytes)' if size else ''}")
+        return
+
+    if action == "git":
+        git = GitPerception(root)
+        obs = git.observe()
+        state = obs.state
+        print(f"Git working tree:")
+        print(f"  branch: {state.get('branch', '?')}")
+        print(f"  dirty: {state.get('dirty', False)}")
+        changes = state.get("changed_entries", [])
+        if changes:
+            print(f"  changed: {len(changes)} file(s)")
+            for c in changes[:5]:
+                print(f"    {c}")
+        else:
+            print("  (clean)")
+        return
+
+    if action == "process":
+        pid = args.pid
+        proc = ProcessPerception(root)
+        obs = proc.observe(pid)
+        state = obs.state
+        alive = state.get("alive")
+        if alive is True:
+            print(f"Process {pid}: ALIVE")
+        elif alive is False:
+            print(f"Process {pid}: TERMINATED")
+        else:
+            print(f"Process {pid}: UNKNOWN ({state.get('error', 'access denied')})")
+        return
+
+    print(f"Unknown perception action: {action}")
+    print("Available: filesystem, git, process")
+
+
+# ============================================================================
+# Context synthesizer CLI (OJ-Context)
+# ============================================================================
+
+def _cmd_context(args: argparse.Namespace) -> None:
+    """Synthesize runtime context for model prompts; show conflicts."""
+    from .context_synthesizer import ContextSynthesizer, SynthesizedContext
+
+    root = Path.cwd()
+    action = getattr(args, "ctx_action", None) or "assemble"
+    synthesizer = ContextSynthesizer(root)
+
+    if action == "assemble":
+        assembled = synthesizer.synthesize(max_tokens=2000)
+        print(f"Synthesized context ({len(assembled.items)} item(s), "
+              f"{assembled.total_tokens} tokens, pruned={len(assembled.pruned_items)}):")
+        for item in assembled.items[:10]:
+            print(f"  [{item.relevance:.2f}] {item.source}: {item.content[:80]}...")
+        if assembled.conflicts:
+            print(f"\n  Conflicts ({len(assembled.conflicts)}):")
+            for cf in assembled.conflicts:
+                print(f"    {cf.topic}: {cf.summary[:80]}")
+        return
+
+    if action == "conflicts":
+        assembled = synthesizer.synthesize(max_tokens=2000)
+        conflicts = assembled.conflicts
+        if not conflicts:
+            print("No context conflicts detected.")
+            return
+        print(f"Context conflicts ({len(conflicts)}):")
+        for cf in conflicts:
+            print(f"  {cf.topic}: {cf.summary}")
+            if cf.resolved_content:
+                print(f"    resolved: {cf.resolved_content[:80]}")
+        return
+
+    print(f"Unknown context action: {action}")
+    print("Available: assemble, conflicts")
 
 
 if __name__ == "__main__":
