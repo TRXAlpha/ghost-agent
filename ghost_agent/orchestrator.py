@@ -521,6 +521,9 @@ class Orchestrator:
 
         last_feedback = state.get("last_feedback", "")
         strategy = "default"
+        state.setdefault("turns", {"PLAN": 0, "IMPLEMENT": 0, "REPAIR": 0})
+        state.setdefault("parse_errors", 0)
+        state.setdefault("results_history", [])
         while True:
             if state["phase"] != "DONE" and EmergencyStop(self.repo_root).active():
                 state["phase"] = "DONE"
@@ -539,6 +542,7 @@ class Orchestrator:
             # VERIFY makes no model call; always verify the final attempt before stopping.
             if state["phase"] not in ("DONE", "VERIFY") and state["iteration"] >= iteration_limit:
                 state["phase"] = "DONE"
+                state["limit_reason"] = state.get("last_result") or "unknown"
                 state["last_result"] = "iteration_limit"
                 self._write_state(state_path, state)
                 self._write_memory(task, workspace, state, strategy)
@@ -563,6 +567,9 @@ class Orchestrator:
                 action_response, parse_error = self._model_turn(
                     messages, prompt, llm_log, last_feedback
                 )
+                state["turns"]["PLAN"] = state["turns"].get("PLAN", 0) + 1
+                if parse_error:
+                    state["parse_errors"] = state.get("parse_errors", 0) + 1
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -588,6 +595,7 @@ class Orchestrator:
                         state["phase"] = "IMPLEMENT"
                         state["last_result"] = "plan_ok"
                         strategy = "plan_first"
+                self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
                 self._write_state(state_path, state, last_feedback)
                 continue
@@ -610,6 +618,9 @@ class Orchestrator:
                 action_response, parse_error = self._model_turn(
                     messages, prompt, llm_log, last_feedback
                 )
+                state["turns"]["IMPLEMENT"] = state["turns"].get("IMPLEMENT", 0) + 1
+                if parse_error:
+                    state["parse_errors"] = state.get("parse_errors", 0) + 1
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -628,6 +639,7 @@ class Orchestrator:
                 else:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "implement_ok"
+                self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
                 state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
@@ -717,6 +729,7 @@ class Orchestrator:
                         "No explicit test command or discovered test files were found. Create focused "
                         "pytest tests and run them before declaring the task complete."
                     )
+                self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
                 self._write_state(state_path, state, last_feedback)
                 continue
@@ -726,6 +739,9 @@ class Orchestrator:
                 action_response, parse_error = self._model_turn(
                     messages, prompt, llm_log, last_feedback
                 )
+                state["turns"]["REPAIR"] = state["turns"].get("REPAIR", 0) + 1
+                if parse_error:
+                    state["parse_errors"] = state.get("parse_errors", 0) + 1
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -752,6 +768,7 @@ class Orchestrator:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "repair_ok"
                     last_feedback = self._format_results(results)
+                self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
                 state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
@@ -768,6 +785,13 @@ class Orchestrator:
             state["last_result"] = "unknown_phase"
             self._write_state(state_path, state)
             break
+
+    @staticmethod
+    def _note_result(state: Dict[str, Any]) -> None:
+        """Record the latest phase result in results_history, capped at 20."""
+        history = state.setdefault("results_history", [])
+        history.append(state.get("last_result"))
+        del history[:-20]
 
     def _build_system_prompt(self, task: Task) -> str:
         """Build a system prompt enriched with codebase knowledge."""
