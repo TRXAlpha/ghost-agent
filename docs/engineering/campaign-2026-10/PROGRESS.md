@@ -23,3 +23,12 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 | T17 | 6 | pending | | | | |
 | T18 | 7 | pending | | | | |
 | T19 | 8 | pending | | | | |
+
+## Baseline (2026-10-06, master a602677)
+
+```
+C:/Users/chris/Documents/Ghost/ghost_agent/.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --deselect tests/test_overnight.py::TestRun::test_max_cycles_stops
+995 passed, 1 deselected in 109.65s (0:01:49)
+```
+
+Setup: campaign docs committed as daa2e83; PROGRESS.md as 223576a.
