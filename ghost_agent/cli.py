@@ -1806,6 +1806,13 @@ def main() -> None:
     path_cmd.add_argument("targets", nargs="+", help="Target concepts for the learning path")
     path_cmd.add_argument("--name", default="", help="Path name")
     path_cmd.add_argument("--description", default="", help="Path description")
+    learn_sub.add_parser("next", help="Show the next due concept for spaced-repetition review")
+    learn_sub.add_parser("progress", help="Show per-concept mastery and overall progress")
+    lesson_cmd = learn_sub.add_parser("lessons", help="Show cited lesson/source ids for a concept")
+    lesson_cmd.add_argument("concept_id", help="Concept identifier")
+    attempt_cmd = learn_sub.add_parser("attempts", help="Show attempt history for a concept")
+    attempt_cmd.add_argument("concept_id", help="Concept identifier")
+    attempt_cmd.add_argument("--limit", type=int, default=20, help="Max attempts to show (default 20)")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -3533,8 +3540,46 @@ def _cmd_learn(args: argparse.Namespace) -> None:
         print(f"  {len(path.concept_ids)} concept(s): {', '.join(path.concept_ids)}")
         return
 
+    if action == "next":
+        due = learner.next_activity()
+        if due is None:
+            print("Nothing due for review right now.")
+        else:
+            print(f"Next activity: [{due.concept_id}] {due.name}")
+        return
+    if action == "progress":
+        prog = learner.progress()
+        print(f"Overall mastery: {prog['overall_mastery']:.1%}")
+        print(f"Due for review: {prog['due']}")
+        for item in prog["concepts"]:
+            print(f"  [{item['concept_id']}] mastery={item['mastery']:.1%}, "
+                  f"attempts={item['attempts']}, correct={item['correct']}, streak={item['streak']}")
+        return
+
+    if action == "lessons":
+        lessons = learner.lessons(args.concept_id)
+        if lessons:
+            print(f"Lessons for {args.concept_id}:")
+            for lesson in lessons:
+                print(f"  - {lesson}")
+        else:
+            print("No cited lessons for this concept.")
+        return
+
+    if action == "attempts":
+        items = learner.attempts(args.concept_id, limit=getattr(args, "limit", 20))
+        if not items:
+            print("No attempts recorded.")
+            return
+        for a in items:
+            outcome = "correct" if a.correct else "wrong"
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(a.at))
+            detail = f" | {a.submission[:60]}" if a.submission else ""
+            print(f"  {outcome} [{a.concept_id}] at {when}{detail}")
+        return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts")
 
 
 # ============================================================================
