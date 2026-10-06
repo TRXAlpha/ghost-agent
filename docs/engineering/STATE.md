@@ -3,11 +3,40 @@
 ## Repository
 - Branch: master
 - HEAD: 681b769 — Add ghost learn path: generate prerequisite-ordered learning paths via LearningEngine
-- Working tree: CLEAN (AGENTS.md intentionally uncommitted per owner decision)
+- Working tree: DIRTY — AGENTS.md (owner, intentional) and ghost_agent/cli.py (owner's uncommitted learn commands; broken until T01)
+
+## 2026-10-06 audit corrections (supersede claims below)
+
+Verified at a602677 by direct code reading and test runs:
+
+- **Full-suite "stall" was a test bug, not the environment.**
+  `tests/test_overnight.py::TestRun::test_max_cycles_stops` mocks
+  `run_cycle`, the only code that increments `_cycles`, so `run()` never
+  stops. With that test deselected: 995 passed in ~2 min. Fix: campaign T02.
+- **Working-tree `ghost_agent/cli.py` did not import** (IndentationError at
+  line 1786, from the uncommitted learn-command edit). Fix: campaign T01.
+- **"All AI-OS subsystems are now wired to production CLI entry points" is
+  false.** `capability_manager`, `notifications`, `memory/manager`,
+  `memory/long_term`, `resource_manager`, and `proactive.LearningTracker`,
+  `ResourceGate` and `ProactiveLoop` have no production caller (tests only).
+  `capability_manager` writes `.ghost/capabilities.json`, the gap registry's
+  file. `Nexus` has no registered subsystems in production.
+- **`ghost daemon` has never run** (no `.ghost/daemon_status.json`). It
+  re-implements the `OvernightRunner` loop instead of composing it, and it
+  never uses LearningEngine or SelfImprover.
+- **SelfImprover does not produce changes**: it fills a fixed template and
+  runs pytest on the live repo.
+- **Outcome reliability:** 2 of 18 real jobs passed, all on toy goals. Main
+  cause: every job copies the whole Ghost repo into its sandbox, so the
+  suite gate runs Ghost's own ~1,000 tests. Proactive jobs also get 4
+  iterations and 120 s.
+- **OJ08 repair commit `7c1a1f0` was never merged** into master.
+
+Remediation plan: `docs/engineering/campaign-2026-10/00-README.md`.
 
 ## 2026-09-30 — AI-OS CLI commands shipped
 
-All AI-OS subsystems are now wired to production CLI entry points. Commits on master:
+All AI-OS subsystems are now wired to production CLI entry points **(disproved 2026-10-06, see audit corrections)**. Commits on master:
 
 | Commit | Content |
 |--------|---------|
@@ -79,9 +108,9 @@ Self-learning loop end state: observe (proactive/overnight) -> work (worker+gate
 - Telegram: token-absent path network-free; pairing/fingerprint logic tested
 
 ## Test status
-- 2026-09-29: full-suite re-baseline attempted twice (proc_a0e1b2a427a1 with invalid --timeout=0 flag, killed; proc_6f8b8ad6335b ran 100+ min with zero output, killed). Confirms full-suite runs stall in this Hermes terminal environment — NOT a test regression. Focused suites are the verification path; one clean full-suite run outside this terminal (owner-invoked) still needed to re-baseline the 926 total.
+- 2026-09-29: full-suite re-baseline attempted twice (proc_a0e1b2a427a1 with invalid --timeout=0 flag, killed; proc_6f8b8ad6335b ran 100+ min with zero output, killed). Confirms full-suite runs stall in this Hermes terminal environment **(disproved 2026-10-06, see audit corrections)** — NOT a test regression. Focused suites are the verification path; one clean full-suite run outside this terminal (owner-invoked) still needed to re-baseline the 926 total.
 - Focused suites green: overnight 21, trace_learning 19, health_privacy 8, telegram_readiness 13, autonomy 29+, huawei_route + mvp_health + self_repair 56
-- Full suite (~926 tests): all focused/affected areas pass; full-suite single runs stall in this session's terminal environment (suspect an environment hang, not a test failure — same suite ran 885-passed at b26957c). Needs one clean full run on next session start to re-baseline.
+- Full suite (~926 tests): all focused/affected areas pass; full-suite single runs stall in this session's terminal environment **(disproved 2026-10-06, see audit corrections)** (suspect an environment hang, not a test failure — same suite ran 885-passed at b26957c). Needs one clean full run on next session start to re-baseline.
 
 ## How to run the MVP
 ```bash
