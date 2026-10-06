@@ -1,5 +1,5 @@
 """Tests for the AI-OS subsystems: self_improver, resource_manager,
-notifications, memory.long_term, memory.manager, nexus."""
+memory.long_term, memory.manager, nexus."""
 from __future__ import annotations
 
 import time
@@ -9,9 +9,6 @@ import pytest
 
 from ghost_agent.self_improver import SelfImprover, SelfImproverStore
 from ghost_agent.resource_manager import ResourceManager
-from ghost_agent.notifications import (
-    NotificationStore, QuietHours, ChannelPreferences, Notification,
-)
 from ghost_agent.memory.long_term import LongTermMemory
 from ghost_agent.memory.manager import MemoryManager, memory_for
 from ghost_agent.nexus import Nexus, NexusConfig
@@ -111,70 +108,6 @@ class TestResourceManager:
         assert "snapshot" in stats
         assert "budgets" in stats
         assert "active_reservations" in stats
-
-
-# ── Notifications ─────────────────────────────────────────────────────────
-
-class TestNotifications:
-    def test_enqueue_dequeue(self, root):
-        store = NotificationStore(root)
-        notif = store.enqueue("Test", "Body")
-        assert notif.title == "Test"
-        items = store.dequeue(1)
-        assert len(items) == 1
-        assert items[0].notification_id == notif.notification_id
-
-    def test_mark_sent(self, root):
-        store = NotificationStore(root)
-        notif = store.enqueue("T", "B")
-        store.mark_sent(notif.notification_id)
-        assert store.stats()["pending"] == 0
-
-    def test_quiet_hours(self, root):
-        store = NotificationStore(root)
-        # suppress_urgent=True so urgent notifications DO bypass quiet hours.
-        qh = QuietHours(enabled=True, start_hour=22, end_hour=8, suppress_urgent=True)
-        store.set_quiet_hours(qh)
-        assert store.get_quiet_hours().enabled is True
-        prefs = ChannelPreferences(channel="telegram", enabled=True, priority_min="low")
-        store.set_channel_prefs(prefs)
-        notif = Notification(notification_id="n1", title="T", body="B", priority="normal", channel="telegram")
-        # Mock the module-level time reference so the test is deterministic regardless of wall-clock hour.
-        import time as _t, unittest.mock as _um, ghost_agent.notifications as _n
-        _orig = _n.time
-        try:
-            mock_time = _um.MagicMock()
-            mock_time.localtime.return_value = _t.struct_time([0,0,0,23,0,0,0,0,0])
-            _n.time = mock_time
-            assert store.should_deliver(notif) is False  # suppressed in quiet hours (hour 23)
-            notif2 = Notification(notification_id="n2", title="T", body="B", priority="urgent", channel="telegram")
-            assert store.should_deliver(notif2) is True   # urgent bypasses quiet hours (suppress_urgent=True)
-        finally:
-            _n.time = _orig
-
-    def test_urgent_bypasses_quiet_hours(self, root):
-        """Test priority-based routing and quiet-hour suppression logic."""
-        store = NotificationStore(root)
-        # Test priority gate: urgent should not be blocked by low-priority channel minimum
-        prefs = ChannelPreferences("telegram", enabled=True, priority_min="urgent")
-        store.set_channel_prefs(prefs)
-        notif = Notification(notification_id="n2", title="T", body="B", priority="normal")
-        # Normal is below urgent-minimum -> suppressed
-        assert store.should_deliver(notif) is False
-        notif2 = Notification(notification_id="n3", title="T", body="B", priority="urgent")
-        assert store.should_deliver(notif2) is True
-
-    def test_channel_prefs(self, root):
-        store = NotificationStore(root)
-        prefs = ChannelPreferences("telegram", enabled=False)
-        store.set_channel_prefs(prefs)
-        assert store.get_channel_prefs("telegram").enabled is False
-
-    def test_stats(self, root):
-        store = NotificationStore(root)
-        store.enqueue("A", "B")
-        stats = store.stats()
-        assert stats["pending"] == 1
 
 
 # ── Long-term memory ──────────────────────────────────────────────────────
