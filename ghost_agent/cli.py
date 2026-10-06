@@ -1774,7 +1774,7 @@ def main() -> None:
     trace_sub.add_parser("report", help="Print the last trace-learning analysis")
 
     # OJ-DAEMON: unified AI-OS daemon — composes all live loops
-    daemon_parser = sub.add_parser("daemon", help="AI-OS daemon: proactive watch + worker + trace-learning + digest + capability improver (OJ-Daemon)")
+    daemon_parser = sub.add_parser("daemon", help="Always-on loop: overnight proactive+worker cycle plus trace-learning and capability improvement while the owner is away")
     daemon_sub = daemon_parser.add_subparsers(dest="daemon_action")
     daemon_run = daemon_sub.add_parser("run", help="Start the continuous AI-OS daemon")
     daemon_run.add_argument("--interval", type=float, default=300,
@@ -1785,6 +1785,7 @@ def main() -> None:
                             help="Stop after N cycles (default: until emergency stop)")
     daemon_run.add_argument("--trace-every", type=int, default=10,
                             help="Run trace-learning every N cycles (default 10)")
+    daemon_run.add_argument("--model", default=None, help="Model for proactive ticks and capability assessment")
     daemon_sub.add_parser("status", help="Show daemon health / last cycle summary")
     daemon_sub.add_parser("stop", help="Engage emergency stop to stop the daemon")
 
@@ -3346,28 +3347,16 @@ def _cmd_parallel(args: argparse.Namespace) -> None:
     # ============================================================================
 
 def _cmd_daemon(args: argparse.Namespace) -> None:
-    """Run the unified AI-OS daemon over existing subsystem APIs."""
-    from .overnight import OvernightRunner
-    from .proactive import ProactiveEngine
-    from .trace_learning import run_trace_learning
-    from .autonomy_improver import CapabilityImprover
-    from .learning_engine import LearningEngine
-    from .runtime import EmergencyStop
-    from .worker import OutcomeWorker
-    import json
+    """Run the always-on daemon: one OvernightRunner cycle plus away-only learning hooks."""
+    import json as _json
 
     root = Path.cwd()
-    model = _resolve_model(getattr(args, "model", None))
-    interval = getattr(args, "interval", 300.0)
-    idle_after = getattr(args, "idle_after_seconds", 900.0)
-    trace_every = getattr(args, "trace_every", 10)
 
     if getattr(args, "daemon_action", None) == "status":
-        log_path = root / ".ghost" / "overnight" / "log.jsonl"
         status_path = root / ".ghost" / "daemon_status.json"
         if status_path.exists():
-            data = json.loads(status_path.read_text(encoding="utf-8"))
-            print(json.dumps(data, indent=2))
+            data = _json.loads(status_path.read_text(encoding="utf-8"))
+            print(_json.dumps(data, indent=2))
         else:
             print("Daemon has not run yet.")
         return
@@ -3379,93 +3368,14 @@ def _cmd_daemon(args: argparse.Namespace) -> None:
         print("Emergency stop engaged. Daemon will stop after current cycle.")
         return
 
-    # Daemon state (shared JSON snapshot, updated each cycle)
-    status_path = root / ".ghost" / "daemon_status.json"
-
-    def _save_status(data: dict) -> None:
-        atomic_json(status_path, data)
-
-    def _idle() -> bool:
-        try:
-            from .proactive import idle_seconds
-            idle = idle_seconds()
-            return idle is not None and idle < idle_after
-        except Exception:
-            return True  # uncertain = treat as active
-
-    def _proactive_tick() -> dict:
-        engine = ProactiveEngine(root, model)
-        return engine.tick(auto_queue=True, require_idle=True, idle_after=idle_after)
-
-    def _worker_run() -> Optional[dict]:
-        worker = OutcomeWorker(root)
-        result = worker.run_next(
-            lambda s: _execute_queued_outcome(root, s))
-        return {"job_id": result.job_id, "status": result.status, "detail": result.detail} if result else None
-
-    def _trace_learn() -> dict:
-        summary = run_trace_learning(root, min_count=2)
-        return {"scanned": summary["analysis"]["scanned"],
-                "signatures": len(summary["analysis"]["top_signatures"]),
-                "actions": len(summary["actions"])}
-
-    def _capability_improve() -> dict:
-        improver = CapabilityImprover(root, model)
-        result = improver.tick()
-        return result or {}
-
-    def _write_cycle(cycle: int, data: dict) -> None:
-        _save_status({"cycle": cycle, "ts": time.time(), **data})
-
-    stop = EmergencyStop(root)
-    cycles = 0
-
-    while not stop.active():
-        if args.max_cycles and cycles >= args.max_cycles:
-            break
-        cycles += 1
-        cycle_data: dict = {"proactive": "skipped", "worker": None}
-
-        if not _idle():
-            # 1. Proactive tick
-            try:
-                tick_result = _proactive_tick()
-                cycle_data["proactive"] = tick_result.get("status", "ok")
-                if tick_result.get("opportunity"):
-                    cycle_data["opportunity_id"] = tick_result["opportunity"].get("opportunity_id")
-            except Exception as exc:
-                cycle_data["proactive_error"] = str(exc)[:200]
-
-            # 2. Worker job
-            try:
-                wr = _worker_run()
-                if wr:
-                    cycle_data["worker"] = wr
-            except Exception as exc:
-                cycle_data["worker_error"] = str(exc)[:200]
-        else:
-            cycle_data["proactive"] = "deferred_idle"
-
-        # 3. Trace-learning every N cycles
-        if cycles % trace_every == 0:
-            try:
-                cycle_data["trace_learning"] = _trace_learn()
-            except Exception as exc:
-                cycle_data["trace_error"] = str(exc)[:200]
-
-        # 4. Capability improver tick
-        try:
-            cycle_data["capability"] = _capability_improve()
-        except Exception as exc:
-            cycle_data["capability_error"] = str(exc)[:200]
-
-        _write_cycle(cycles, cycle_data)
-
-        if args.max_cycles and cycles >= args.max_cycles:
-            break
-        time.sleep(interval)
-
-    _save_status({"stopped": True, "total_cycles": cycles, "ts": time.time()})
+    model = _resolve_model(getattr(args, "model", None))
+    if not model:
+        print("A model is required: pass --model or configure one.")
+        return
+    from .daemon import GhostDaemon
+    daemon = GhostDaemon(Path.cwd(), model, interval=args.interval,
+                         idle_after=args.idle_after_seconds, trace_every=args.trace_every)
+    cycles = daemon.run(max_cycles=args.max_cycles)
     print(f"AI-OS daemon stopped after {cycles} cycles.")
 
 
