@@ -4,19 +4,19 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 
 | Task | Wave | Status | Candidate branch | Reviews | Merge commit | Notes |
 |---|---|---|---|---|---|---|
-| T01 | 1 | review-pass | hermes-subagent/subagent-sa-0-83a36a63 | A: PASS (2xP3: test file no trailing newline; ✓/✗ Unicode in other output — task said leave other occurrences alone) | | |
-| T02 | 1 | review-pass | hermes-subagent/subagent-sa-1-6c48bc01 | A: PASS (1xP3: step 4 assertion already existed on master — task staleness, disposition accept) | | |
-| T03 | 1 | review-pass | hermes-subagent/subagent-sa-2-140704d8 | A: PASS (no findings) | | |
-| T04 | 1 | review-pass | hermes-subagent/subagent-sa-3-f0457260 | A: PASS (1xP3: `import json` inside function body instead of module top — cosmetic) | | |
-| T05 | 1 | review-pass | hermes-subagent/subagent-sa-4-87f92f6e | A: PASS (1xP3: audit claims quoted verbatim from task — acceptable per task instructions) | | |
+| T01 | 1 | merged | hermes-subagent/subagent-sa-0-83a36a63 | A: PASS | 1a19da1 | review-pass; 1001 passed, 1 deselected post-merge |
+| T02 | 1 | merged | hermes-subagent/subagent-sa-1-6c48bc01 | A: PASS | cad28d0 | full suite no-deselect: 1002 passed in 107.80s |
+| T03 | 1 | merged | hermes-subagent/subagent-sa-2-140704d8 | A: PASS | 081dd6e | 1003 passed post-merge |
+| T04 | 1 | merged | hermes-subagent/subagent-sa-3-f0457260 | A: PASS | 382dd62 | 1004 passed post-merge |
+| T05 | 1 | merged | hermes-subagent/subagent-sa-4-87f92f6e | A: PASS | f4e21a1 | docs-only; 1004 passed post-merge |
 | T06 | 3 | pending | | | | |
 | T07 | 2 | pending | | | | |
 | T08 | 2 | pending | | | | |
-| T09 | 1 | review-pass | hermes-subagent/subagent-sa-5-2f2d08cc | A: PASS (2xP3: standalone `"""`/`'''` not in non-meaningful set; unused `import pytest` in test) | | |
+| T09 | 1 | merged | hermes-subagent/subagent-sa-5-2f2d08cc | A: PASS | bb26c51 | 1019 passed post-merge |
 | T10 | 4 | pending | | | | |
 | T11 | 5 | pending | | | | |
 | T12 | 4 | pending | | | | |
-| T13 | 1 | review-pass | hermes-subagent/subagent-sa-6-56fce78c | A: PASS (1xP3: stale STATE.md references to capability_manager — task §2 says docs owned by T19/T05) | | |
+| T13 | 1 | merged | hermes-subagent/subagent-sa-6-56fce78c | A: PASS | f086130 | 1012 passed post-merge |
 | T14 | 2 | pending | | | | |
 | T15 | 3 | pending | | | | |
 | T16 | 4 | pending | | | | |
