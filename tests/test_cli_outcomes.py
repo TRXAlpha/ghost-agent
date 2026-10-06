@@ -125,7 +125,7 @@ def test_real_outcome_resumes_preserved_sandbox_after_interruption(tmp_path, mon
     assert sentinel.read_text() == "keep this work"
     state = json.loads((run / "state.json").read_text())
     assert state["last_result"] == "tests_passed"
-    assert state["prior_iterations"] == 1
+    assert state["prior_iterations"] == 0  # was 1: VERIFY no longer increments (T08)
     assert not (tmp_path / "calculator.py").exists()
 
 

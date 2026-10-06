@@ -39,7 +39,9 @@ def test_real_integer_success_is_accepted(tmp_path):
 
 
 @pytest.mark.parametrize("focused_code,expected,calls_expected", [
-    (0, "tests_failed", 2), (1, "focused_tests_failed", 1),
+    # T08: VERIFY no longer consumes iterations, so extra VERIFY (and gate)
+    # calls run before the limit stops the loop. old -> new: 2 -> 4, 1 -> 3.
+    (0, "tests_failed", 4), (1, "focused_tests_failed", 3),
 ])
 def test_failure_identifies_the_actual_gate(tmp_path, monkeypatch, focused_code, expected, calls_expected):
     import ghost_agent.orchestrator as module
