@@ -220,6 +220,17 @@ def test_record_feedback_requires_queued_or_running(tmp_path: Path):
         engine.record_feedback(oid, "not-a-real-outcome")
 
 
+def test_queued_job_budget_values(tmp_path: Path):
+    from ghost_agent.proactive import queue_sandbox_outcome
+    job = queue_sandbox_outcome(tmp_path, "build a small calculator", "scripted-model")
+    assert job.iterations == 10
+    assert job.acceptance_contract["command_budget_seconds"] == 600
+    assert job.acceptance_contract["command_budget_calls"] == 32
+    scheduler = Scheduler(tmp_path)
+    scheduled = scheduler.list()[0]
+    assert scheduled.budget["iterations"] == 10
+
+
 def test_opportunity_store_methods_defined_once():
     import inspect
     import ghost_agent.proactive as module

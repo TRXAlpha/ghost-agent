@@ -28,6 +28,13 @@ from .autonomy_improver import CapabilityImprover
 from .security import SECRET_PATTERNS
 from .utils.storage import atomic_json, exclusive_lock
 
+# Bounded per-job allowance for queued sandbox work (proactive, Telegram,
+# capability improver). Raised from 4 iterations / 120 s after real jobs
+# could not finish within it (audit 2026-10-06).
+QUEUED_JOB_ITERATIONS = 10
+QUEUED_JOB_COMMAND_SECONDS = 600
+QUEUED_JOB_COMMAND_CALLS = 32
+
 
 class ProactiveError(ValueError):
     """A proactive proposal was invalid or could not be safely admitted."""
@@ -233,20 +240,20 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
     job.goal_id = goal_record.goal_id
     job.coding_model = model.strip()
     job.research_model = model.strip()
-    job.iterations = 4
+    job.iterations = QUEUED_JOB_ITERATIONS
     job.acceptance_contract.update({
         "proactive": source == "proactive",
         "source": source,
         "opportunity_id": opportunity_id,
         "required_files": [],
-        "command_budget_seconds": 120,
-        "command_budget_calls": 16,
+        "command_budget_seconds": QUEUED_JOB_COMMAND_SECONDS,
+        "command_budget_calls": QUEUED_JOB_COMMAND_CALLS,
         "promotion_requires_approval": True,
         "inference_route": route_identity(),
     })
     outcomes.save(job)
     Scheduler(root).enqueue(ScheduledJob(job.job_id, goal_record.goal_id, priority=priority,
-                                         budget={"iterations": 4}))
+                                         budget={"iterations": QUEUED_JOB_ITERATIONS}))
     EventBus(root).emit(Event("proactive.queued", {"source": source,
                                                      "opportunity_id": opportunity_id,
                                                      "job_id": job.job_id,
