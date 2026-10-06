@@ -33,6 +33,9 @@ workspaces/
 # pytest
 .pytest_cache/
 
+# Hermes subagent worktrees
+.worktrees/
+
 # Environment
 .env
 .env.local
