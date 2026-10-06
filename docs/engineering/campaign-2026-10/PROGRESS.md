@@ -14,13 +14,13 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 | T08 | 2 | merged | hermes-subagent/subagent-sa-1-baa5dbd1 | A: PASS (2xP3) | 3e4ae9b | recovered+completed by root; model turns only; 1016 passed post-merge |
 | T09 | 1 | merged | hermes-subagent/subagent-sa-5-2f2d08cc | A: PASS | bb26c51 | 1019 passed post-merge |
 | T10 | 4 | merged | hermes-subagent/subagent-sa-0-0ff132c4 | A: PASS | 73c29d5 | diagnostics written to state.json on iteration-limit hit; 1008 passed post-merge |
-| T11 | 5 | pending | | | | |
+| T11 | 5 | merged | campaign/T11 | A: PASS, B: PASS (2xP3) | 1fa471f | ghost bench with 8 goals, hidden tests, isolated bench state; 1028 passed post-merge |
 | T12 | 4 | merged | hermes-subagent/subagent-sa-1-892021d5 | A: PASS, B: PASS (2xP3 stale-base) | e5492bd | daemon rebuilt on OvernightRunner; 1019 passed post-merge |
 | T13 | 1 | merged | hermes-subagent/subagent-sa-6-56fce78c | A: PASS | f086130 | 1012 passed post-merge |
 | T14 | 2 | merged | hermes-subagent/subagent-sa-2-c71c4fb6 | A: PASS (1xP3) | fcb1cf3 | notifications.py deleted; 1010 passed post-merge |
 | T15 | 3 | merged | hermes-subagent/subagent-sa-1-94feacaa | A: PASS (2xP3, docs owned by T19) | 51c14b2 | memory manager+long_term deleted; 1012 passed post-merge |
 | T16 | 4 | merged | hermes-subagent/subagent-sa-2-730081ce | A: FAIL(P2 stale-base → rebase) | 770a00f | dead proactive extensions+resource_manager deleted; 1008 passed post-merge |
-| T17 | 6 | pending | | | | |
+| T17 | 6 | merged | (root recovery) | root review | c17ef3b | nexus kernel removed; nexus.py deleted; 1018 passed post-merge |
 | T18 | 7 | pending | | | | |
 | T19 | 8 | pending | | | | |
 
