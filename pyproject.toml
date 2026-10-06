@@ -14,6 +14,7 @@ ghost-jarvis = "ghost_agent.openjarvis_bridge.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+faulthandler_timeout = 300
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

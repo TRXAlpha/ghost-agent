@@ -244,9 +244,15 @@ class TestRun:
 
         def counted_cycle(*, now=None):
             call_count["n"] += 1
+            r._cycles += 1
             return MagicMock(emergency_stop=False, user_active=False)
 
-        with patch.object(r, "run_cycle", side_effect=counted_cycle), \
+        def bounded_cycle(*, now=None):
+            if call_count["n"] >= 10:
+                raise AssertionError("run() did not stop at max_cycles")
+            return counted_cycle(now=now)
+
+        with patch.object(r, "run_cycle", side_effect=bounded_cycle), \
              patch.object(r, "_sleep_between"):
             # Patch the module-level EmergencyStop used inside run()
             with patch("ghost_agent.overnight.EmergencyStop") as mock_es:
