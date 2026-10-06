@@ -513,7 +513,8 @@ class Orchestrator:
                     last_feedback = f"Command budget refused: {exc}"
                 if state["phase"] == "DONE":
                     self._write_state(state_path, state, last_feedback)
-            if state["phase"] != "DONE" and state["iteration"] >= iteration_limit:
+            # VERIFY makes no model call; always verify the final attempt before stopping.
+            if state["phase"] not in ("DONE", "VERIFY") and state["iteration"] >= iteration_limit:
                 state["phase"] = "DONE"
                 state["last_result"] = "iteration_limit"
                 self._write_state(state_path, state)
@@ -565,7 +566,6 @@ class Orchestrator:
                         state["last_result"] = "plan_ok"
                         strategy = "plan_first"
                 self._tui_phase(state["phase"], state["iteration"])
-                state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
                 continue
 
@@ -695,7 +695,6 @@ class Orchestrator:
                         "pytest tests and run them before declaring the task complete."
                     )
                 self._tui_phase(state["phase"], state["iteration"])
-                state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
                 continue
 
