@@ -1828,6 +1828,16 @@ def main() -> None:
     improve_decide.add_argument("decision", help="approved/rejected/rollback")
     improve_decide.add_argument("reason", help="Reason for decision")
 
+    # T11: ghost bench
+    bench_parser = sub.add_parser("bench", help="Run the fixed benchmark of 8 non-toy goals with hidden acceptance tests")
+    bench_sub = bench_parser.add_subparsers(dest="bench_action")
+    bench_sub.add_parser("list", help="List all benchmark goals with their module files")
+    bench_run = bench_sub.add_parser("run", help="Run the benchmark suite")
+    bench_run.add_argument("--model", default=None, help="Model to use (default: configured or $GHOST_MODEL)")
+    bench_run.add_argument("--goal", dest="goals", action="append", default=None, help="Goal id to run (default: all 8)")
+    bench_run.add_argument("--iterations", type=int, default=10, help="Max iterations per goal (default: 10)")
+    bench_sub.add_parser("report", help="Show the latest benchmark report")
+
     # Capabilities CLI
     perception_parser = sub.add_parser("perception", help="Read-only observation: filesystem, git, processes")
     perception_sub = perception_parser.add_subparsers(dest="perception_action")
@@ -1886,10 +1896,11 @@ def main() -> None:
         "digest": lambda: _cmd_digest(args),
         "trace-learning": lambda: _cmd_trace_learning(args),
         "daemon": lambda: _cmd_daemon(args),
-                "learn": lambda: _cmd_learn(args),
-                "self-improve": lambda: _cmd_self_improve(args),
-                "perception": lambda: _cmd_perception(args),
-                "context": lambda: _cmd_context(args),
+        "learn": lambda: _cmd_learn(args),
+        "self-improve": lambda: _cmd_self_improve(args),
+        "perception": lambda: _cmd_perception(args),
+        "context": lambda: _cmd_context(args),
+        "bench": lambda: _cmd_bench(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -3652,6 +3663,55 @@ def _cmd_context(args: argparse.Namespace) -> None:
 
     print(f"Unknown context action: {action}")
     print("Available: assemble, conflicts")
+
+
+# ============================================================================
+# Bench CLI (T11)
+# ============================================================================
+
+def _cmd_bench(args: argparse.Namespace) -> None:
+    """Run the fixed benchmark of 8 non-toy goals with hidden acceptance tests."""
+    from .benchmark import format_report, latest_report, run_benchmark
+    from .benchmark_goals import BENCH_GOALS
+
+    root = Path.cwd()
+    action = getattr(args, "bench_action", None) or "list"
+
+    if action == "list":
+        for goal in BENCH_GOALS:
+            print(f"{goal.goal_id:<14} {goal.module_file}")
+        return
+
+    if action == "run":
+        model = _resolve_model(getattr(args, "model", None))
+        if not model:
+            print("A model is required: pass --model or configure one.")
+            return
+        goal_ids = getattr(args, "goals", None)
+        iterations = getattr(args, "iterations", 10)
+        report = run_benchmark(
+            root,
+            model,
+            lambda run_root: (lambda scheduled: _execute_queued_outcome(run_root, scheduled)),
+            goal_ids=goal_ids,
+            iterations=iterations,
+        )
+        print(format_report(report))
+        from .benchmark import latest_report as _lr
+        bench_root = root / ".ghost" / "bench" / report["run_id"]
+        print(f"Report: {bench_root / 'report.json'}")
+        return
+
+    if action == "report":
+        report = latest_report(root)
+        if report is None:
+            print("No benchmark runs yet.")
+        else:
+            print(format_report(report))
+        return
+
+    print(f"Unknown bench action: {action}")
+    print("Available: list, run, report")
 
 
 if __name__ == "__main__":
