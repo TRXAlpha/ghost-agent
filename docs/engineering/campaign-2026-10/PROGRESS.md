@@ -10,14 +10,14 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 | T04 | 1 | merged | hermes-subagent/subagent-sa-3-f0457260 | A: PASS | 382dd62 | 1004 passed post-merge |
 | T05 | 1 | merged | hermes-subagent/subagent-sa-4-87f92f6e | A: PASS | f4e21a1 | docs-only; 1004 passed post-merge |
 | T06 | 3 | pending | | | | |
-| T07 | 2 | pending | | | | |
-| T08 | 2 | pending | | | | |
+| T07 | 2 | merged | hermes-subagent/subagent-sa-0-6e94caa1 | A: FAIL(P1) -> repair ac3217f -> PASS | (merge) | budgets 10/600/32; full suite 1012 passed post-merge |
+| T08 | 2 | merged | hermes-subagent/subagent-sa-1-baa5dbd1 | A: PASS (2xP3) | 3e4ae9b | recovered+completed by root; model turns only; 1016 passed post-merge |
 | T09 | 1 | merged | hermes-subagent/subagent-sa-5-2f2d08cc | A: PASS | bb26c51 | 1019 passed post-merge |
 | T10 | 4 | pending | | | | |
 | T11 | 5 | pending | | | | |
 | T12 | 4 | pending | | | | |
 | T13 | 1 | merged | hermes-subagent/subagent-sa-6-56fce78c | A: PASS | f086130 | 1012 passed post-merge |
-| T14 | 2 | pending | | | | |
+| T14 | 2 | merged | hermes-subagent/subagent-sa-2-c71c4fb6 | A: PASS (1xP3) | fcb1cf3 | notifications.py deleted; 1010 passed post-merge |
 | T15 | 3 | pending | | | | |
 | T16 | 4 | pending | | | | |
 | T17 | 6 | pending | | | | |
