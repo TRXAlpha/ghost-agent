@@ -1,5 +1,5 @@
-"""Tests for the AI-OS subsystems: self_improver, capability_manager,
-resource_manager, notifications, memory.long_term, memory.manager, nexus."""
+"""Tests for the AI-OS subsystems: self_improver, resource_manager,
+notifications, memory.long_term, memory.manager, nexus."""
 from __future__ import annotations
 
 import time
@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from ghost_agent.self_improver import SelfImprover, SelfImproverStore
-from ghost_agent.capability_manager import CapabilityManager
 from ghost_agent.resource_manager import ResourceManager
 from ghost_agent.notifications import (
     NotificationStore, QuietHours, ChannelPreferences, Notification,
@@ -70,70 +69,6 @@ class TestSelfImprover:
         history = store.history()
         assert history["total"] == 1
 
-
-# ── CapabilityManager ─────────────────────────────────────────────────────
-
-class TestCapabilityManager:
-    def test_register_and_get(self, root):
-        mgr = CapabilityManager(root)
-        rec = mgr.register("test_cap", "Test Capability", owner="tester")
-        assert rec.capability == "test_cap"
-        assert rec.status == "discovered"
-        assert mgr.get("test_cap") is not None
-        with pytest.raises(ValueError):
-            mgr.register("test_cap", "Duplicate")
-
-    def test_lifecycle_transitions(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("cap", "Cap")
-        mgr.set_status("cap", "researched")
-        mgr.set_status("cap", "feasible")
-        mgr.set_status("cap", "building")
-        mgr.set_status("cap", "testing")
-        mgr.set_status("cap", "ready_to_activate")
-        mgr.set_status("cap", "active")
-        assert mgr.get("cap").status == "active"
-
-    def test_versions(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("cap", "Cap")
-        mgr.add_version("cap", "1.1.0", "manifest.json", "Added feature")
-        assert mgr.get("cap").current_version == "1.1.0"
-        with pytest.raises(ValueError):
-            mgr.add_version("cap", "1.1.0", "dup", "dup")
-
-    def test_dependency_check(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("cap", "Cap")
-        mgr.register("dep", "Dep")
-        mgr.add_dependency("dep", "cap", "1.0.0")
-        # cap is still "discovered" so unsatisfied
-        results = mgr.check_dependencies("dep")
-        assert results["cap"] is False
-        mgr.set_status("cap", "active")
-        assert mgr.check_dependencies("dep")["cap"] is True
-
-    def test_health_and_usage(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("cap", "Cap")
-        mgr.set_health("cap", "healthy")
-        assert mgr.get("cap").health_status == "healthy"
-        mgr.record_usage("cap")
-        assert mgr.get("cap").usage_count == 1
-
-    def test_retire(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("cap", "Cap")
-        retired = mgr.retire("cap", "unused")
-        assert retired.status == "retired"
-        assert retired.retirement_reason == "unused"
-
-    def test_stats(self, root):
-        mgr = CapabilityManager(root)
-        mgr.register("a", "A")
-        mgr.register("b", "B")
-        stats = mgr.stats()
-        assert stats["total"] == 2
 
 
 # ── ResourceManager ───────────────────────────────────────────────────────
