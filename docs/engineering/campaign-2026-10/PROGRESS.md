@@ -21,8 +21,8 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 | T15 | 3 | merged | hermes-subagent/subagent-sa-1-94feacaa | A: PASS (2xP3, docs owned by T19) | 51c14b2 | memory manager+long_term deleted; 1012 passed post-merge |
 | T16 | 4 | merged | hermes-subagent/subagent-sa-2-730081ce | A: FAIL(P2 stale-base → rebase) | 770a00f | dead proactive extensions+resource_manager deleted; 1008 passed post-merge |
 | T17 | 6 | merged | (root recovery) | root review | c17ef3b | nexus kernel removed; nexus.py deleted; 1018 passed post-merge |
-| T18 | 7 | pending | | | | |
-| T19 | 8 | pending | | | | |
+| T18 | 7 | merged | campaign/T18 | root review | 919953a | self-improver front end to self-repair; 1037 passed post-merge |
+| T19 | 8 | merged | (root) | root review | 5c389b9 | README+STATE updated to match merged code; 1037 passed |
 
 ## Baseline (2026-10-06, master a602677)
 
