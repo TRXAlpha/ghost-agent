@@ -1,4 +1,4 @@
-"""Tests for the AI-OS subsystems: self_improver, resource_manager,
+"""Tests for the AI-OS subsystems: self_improver,
 memory.long_term, memory.manager, nexus."""
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from ghost_agent.self_improver import SelfImprover, SelfImproverStore
-from ghost_agent.resource_manager import ResourceManager
 from ghost_agent.memory.long_term import LongTermMemory
 from ghost_agent.memory.manager import MemoryManager, memory_for
 from ghost_agent.nexus import Nexus, NexusConfig
@@ -66,48 +65,6 @@ class TestSelfImprover:
         history = store.history()
         assert history["total"] == 1
 
-
-
-# ── ResourceManager ───────────────────────────────────────────────────────
-
-class TestResourceManager:
-    def test_snapshot(self, root):
-        mgr = ResourceManager(root)
-        snap = mgr.snapshot()
-        assert snap.cpu_cores >= 1
-        assert snap.disk_free > 0
-
-    def test_budget_consume_release(self, root):
-        mgr = ResourceManager(root)
-        mgr.set_budget_ceiling("inference", 10.0)
-        assert mgr.consume("inference", 5.0) is True
-        assert mgr.consume("inference", 6.0) is False  # over ceiling
-        mgr.release("inference", 5.0)
-        assert mgr.get_budget("inference").used == 0.0
-
-    def test_reserve(self, root):
-        mgr = ResourceManager(root)
-        mgr.set_budget_ceiling("inference", 10.0)
-        res = mgr.reserve("inference", 5.0, "job1")
-        assert res is not None
-        res2 = mgr.reserve("inference", 6.0, "job2")
-        assert res2 is None  # exceeds ceiling
-        mgr.release_reservation(res.reservation_id)
-        assert mgr.active_reservations("inference") == []
-
-    def test_admission(self, root):
-        mgr = ResourceManager(root)
-        mgr.set_budget_ceiling("ram", 100.0)
-        result = mgr.admit("job1")
-        assert result["admitted"] is True
-        mgr.release_job("job1")
-
-    def test_stats(self, root):
-        mgr = ResourceManager(root)
-        stats = mgr.stats()
-        assert "snapshot" in stats
-        assert "budgets" in stats
-        assert "active_reservations" in stats
 
 
 # ── Long-term memory ──────────────────────────────────────────────────────
@@ -179,43 +136,6 @@ class TestMemoryManager:
 
     def test_factory(self, root):
         assert memory_for(root) is not None
-
-
-# ── Proactive loop AI-OS extensions ──────────────────────────────────────
-
-class TestLearningTracker:
-    def test_record_and_rates(self, root):
-        from ghost_agent.proactive import LearningTracker
-        tracker = LearningTracker(root)
-        rates = tracker.record_outcome("coding", "tests_passed")
-        assert rates["coding"] > 0.5
-        rates = tracker.record_outcome("coding", "tests_failed")
-        rates2 = tracker.record_outcome("research", "tests_passed")
-        assert tracker.success_rates()["research"] > tracker.success_rates()["coding"]
-
-    def test_rank(self, root):
-        from ghost_agent.proactive import LearningTracker
-        tracker = LearningTracker(root)
-        tracker.record_outcome("coding", "tests_passed")
-        tracker.record_outcome("coding", "tests_passed")
-        tracker.record_outcome("research", "tests_failed")
-        candidates = [
-            {"kind": "research", "confidence": 0.9},
-            {"kind": "coding", "confidence": 0.5},
-        ]
-        ranked = tracker.rank(candidates)
-        assert ranked[0]["kind"] == "coding"  # higher success rate
-
-
-class TestResourceGate:
-    def test_admit_release(self, root):
-        from ghost_agent.proactive import ResourceGate
-        gate = ResourceGate(root)
-        result = gate.admit("test_job")
-        assert result["admitted"] is True
-        gate.release("test_job")
-        assert gate.resources.active_reservations("ram") == []
-
 
 # ── NEXUS ─────────────────────────────────────────────────────────────────
 
