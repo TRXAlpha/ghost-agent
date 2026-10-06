@@ -94,6 +94,12 @@ Example 5 - Search the web:
 {"thought": "Look up the latest FastAPI docs for dependency injection", "actions": [{"tool": "web_search", "query": "FastAPI dependency injection latest docs"}]}
 """
 
+_PLACEHOLDER_CONTENT = frozenset({
+    "updated content", "todo", "your code here", "implementation here",
+    "code here", "placeholder", "content here", "insert code here",
+    "add code here", "rest of the code", "same as before",
+})
+
 
 @dataclass
 class Task:
@@ -839,6 +845,36 @@ class Orchestrator:
         return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
 
     @staticmethod
+    def _placeholder_content_error(path: str, content: str) -> Optional[str]:
+        """Return an error string if content looks like placeholder, else None."""
+        lower_path = path.replace("\\", "/").lower()
+        filename = Path(lower_path).name
+
+        # Rule 1: Python source (non-test) with no meaningful lines
+        if (
+            lower_path.endswith(".py")
+            and filename != "__init__.py"
+            and not Orchestrator._is_python_test(lower_path)
+        ):
+            meaningful = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    if stripped not in ("pass", "..."):
+                        meaningful = True
+                        break
+            if not meaningful:
+                return f"write_file content for {path} has no code (only comments/pass/...); write the real implementation"
+
+        # Rule 2: known placeholder phrases (any file except plan.md and *.md)
+        if not (filename == "plan.md" or lower_path.endswith(".md")):
+            normalized = content.strip().lstrip("#/ ").strip().lower().rstrip(".")
+            if normalized in _PLACEHOLDER_CONTENT:
+                return f"write_file content for {path} is a placeholder ('{content.strip()[:40]}'); write the complete file content"
+
+        return None
+
+    @staticmethod
     def _missing_required_files(task: Task, workspace: Path) -> List[str]:
         root = workspace.resolve()
         missing = []
@@ -1303,6 +1339,10 @@ class Orchestrator:
                         and "subprocess" not in content
                     ):
                         return "tests must capture stdout (capsys/capfd or subprocess)"
+            # Placeholder content guard
+            placeholder = self._placeholder_content_error(action.path, action.content or "")
+            if placeholder:
+                return placeholder
         if action.tool == "read_file":
             if is_placeholder(action.path):
                 return "read_file path is missing or placeholder"
