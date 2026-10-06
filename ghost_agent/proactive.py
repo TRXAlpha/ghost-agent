@@ -206,7 +206,8 @@ _BLOCKED_GOAL_MARKERS = (
 
 
 def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "proactive",
-                          priority: int = 25, opportunity_id: str = ""):
+                          priority: int = 25, opportunity_id: str = "",
+                          workspace_mode: str = "empty"):
     """Queue a bounded request through Ghost's existing worker.
 
     This is the narrow hand-off used by both the local proactive loop and the
@@ -228,6 +229,8 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
         raise ProactiveError("Unknown sandbox request source")
     if type(priority) is not int or not 0 <= priority <= 100:
         raise ProactiveError("Sandbox priority must be between 0 and 100")
+    if workspace_mode not in {"project", "empty"}:
+        raise ProactiveError("workspace_mode must be 'project' or 'empty'")
 
     goals = GoalStore(root)
     goal_record = goals.create(clean_goal, kind="proactive", priority=priority,
@@ -250,6 +253,7 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
         "command_budget_calls": QUEUED_JOB_COMMAND_CALLS,
         "promotion_requires_approval": True,
         "inference_route": route_identity(),
+        "workspace_mode": workspace_mode,
     })
     outcomes.save(job)
     Scheduler(root).enqueue(ScheduledJob(job.job_id, goal_record.goal_id, priority=priority,

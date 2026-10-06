@@ -136,7 +136,7 @@ class OutcomeStore:
         job.validate()
         constraints = {"iteration_limit": iterations}
         for key in ("required_files", "command_budget_seconds", "command_budget_calls",
-                    "command_timeout_seconds"):
+                    "command_timeout_seconds", "workspace_mode"):
             if key in job.acceptance_contract:
                 constraints[key] = deepcopy(job.acceptance_contract[key])
         return {

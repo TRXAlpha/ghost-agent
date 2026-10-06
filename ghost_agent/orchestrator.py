@@ -149,6 +149,8 @@ class Task:
 
 
 class Orchestrator:
+    WORKSPACE_MODES = ("project", "empty")
+
     def __init__(
         self,
         repo_root: Path,
@@ -251,8 +253,12 @@ class Orchestrator:
         self._provenance_parent_id = self.provenance.record(
             "outcome.started", {"task_id": task.task_id, "goal": task.goal, "model": self.model}
         ).record_id
+        workspace_mode = self._workspace_mode(task)
         artifacts = self._init_artifacts_root(task, artifacts_root)
-        sandbox = self._create_sandbox(workspace_root, artifacts / "sandbox")
+        if workspace_mode == "empty":
+            sandbox = self._create_empty_sandbox(artifacts / "sandbox")
+        else:
+            sandbox = self._create_sandbox(workspace_root, artifacts / "sandbox")
         state = {
             "phase": "INGEST",
             "iteration": 0,
@@ -371,17 +377,28 @@ class Orchestrator:
                 if name.lower() in ignored or name.lower() == ".env" or name.lower().startswith(".env.")
                 or Path(name).suffix.lower() in {".pyc", ".pem", ".key", ".p12", ".pfx"}}
 
-    def _create_sandbox(self, source_root: Path, target: Path) -> Path:
-        """Copy a project into a NEW workspace; this is not OS containment."""
-        source = Path(source_root).resolve()
+    def _validate_sandbox_target(self, target: Path) -> Path:
+        """Resolve target, check it stays inside repo, and ensure it is new."""
         target = Path(target).resolve()
         allowed_root = self.repo_root.resolve()
         if target == allowed_root or not target.is_relative_to(allowed_root):
             raise ValueError(f"Sandbox path escapes project: {target}")
-        if source == target or source.is_relative_to(target):
-            raise ValueError("Sandbox must not replace or contain its source")
         if target.exists():
             raise FileExistsError(f"Workspace already exists; preserve it and resume explicitly: {target}")
+        return target
+
+    def _create_sandbox(self, source_root: Path, target: Path) -> Path:
+        """Copy a project into a NEW workspace; this is not OS containment."""
+        source = Path(source_root).resolve()
+        allowed_root = self.repo_root.resolve()
+        resolved = Path(target).resolve()
+        if resolved == allowed_root or not resolved.is_relative_to(allowed_root):
+            raise ValueError(f"Sandbox path escapes project: {resolved}")
+        if source == resolved or source.is_relative_to(resolved):
+            raise ValueError("Sandbox must not replace or contain its source")
+        if resolved.exists():
+            raise FileExistsError(f"Workspace already exists; preserve it and resume explicitly: {resolved}")
+        target = resolved
         target.parent.mkdir(parents=True, exist_ok=True)
         def ignore(directory: str, names: List[str]) -> set[str]:
             excluded = self._sandbox_ignore(directory, names)
@@ -394,6 +411,12 @@ class Orchestrator:
                     excluded.add(name)
             return excluded
         shutil.copytree(source, target, ignore=ignore)
+        return target
+
+    def _create_empty_sandbox(self, target: Path) -> Path:
+        """Create a NEW empty workspace for greenfield work; nothing is copied."""
+        target = self._validate_sandbox_target(target)
+        target.mkdir(parents=True)
         return target
 
     def _init_artifacts_root(self, task: Task, artifacts_root: Path) -> Path:
@@ -767,7 +790,16 @@ class Orchestrator:
         return prompt
 
     @staticmethod
+    def _workspace_mode(task: Task) -> str:
+        mode = task.constraints.get("workspace_mode", "project")
+        if mode not in Orchestrator.WORKSPACE_MODES:
+            raise ValueError("workspace_mode must be 'project' or 'empty'")
+        return mode
+
+    @staticmethod
     def _needs_existing_code_context(task: Task) -> bool:
+        if task.constraints.get("workspace_mode") == "empty":
+            return False
         if task.context.get("use_existing_context") is True:
             return True
         text = f"{task.title} {task.goal}".lower()
