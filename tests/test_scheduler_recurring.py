@@ -174,11 +174,28 @@ def test_cli_jobs_add_list_round_trip(tmp_path: Path, monkeypatch, capsys) -> No
 
 
 def test_jobs_add_default_iterations_is_10(tmp_path: Path, monkeypatch, capsys) -> None:
-    from types import SimpleNamespace
-    from ghost_agent.cli import _cmd_jobs
+    import sys
+    import ghost_agent.cli as cli_mod
     monkeypatch.chdir(tmp_path)
-    _cmd_jobs(SimpleNamespace(action="add", job_id="", goal_id="g1", recurrence="interval:60",
-                              priority=50, iterations=10))
+    # Capture the args main() parses from sys.argv — do NOT pass iterations explicitly,
+    # so the parser default in cli.py is what actually reaches _cmd_jobs.
+    captured: list = []
+    real_cmd_jobs = cli_mod._cmd_jobs
+
+    def fake_cmd_jobs(args):
+        captured.append(args)
+
+    monkeypatch.setattr(cli_mod, "_cmd_jobs", fake_cmd_jobs)
+    monkeypatch.setattr(sys, "argv", ["ghost", "jobs", "add",
+                                      "--goal-id", "g1",
+                                      "--recurrence", "interval:60",
+                                      "--priority", "50"])
+    cli_mod.main()
+    assert len(captured) == 1
+    args = captured[0]
+    assert args.iterations == 10, f"expected parser default 10, got {args.iterations}"
+    # Now run the real command handler with the parsed args
+    real_cmd_jobs(args)
     out = capsys.readouterr().out
     assert '"interval_seconds": 60' in out
     # verify the job was enqueued with iterations=10
