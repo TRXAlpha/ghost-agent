@@ -4,19 +4,19 @@ Orchestrator: kanban task t_71d6c6b0. One row per task; only the orchestrator ed
 
 | Task | Wave | Status | Candidate branch | Reviews | Merge commit | Notes |
 |---|---|---|---|---|---|---|
-| T01 | 1 | pending | | | | |
-| T02 | 1 | pending | | | | |
-| T03 | 1 | pending | | | | |
-| T04 | 1 | pending | | | | |
-| T05 | 1 | pending | | | | |
+| T01 | 1 | review-pass | hermes-subagent/subagent-sa-0-83a36a63 | A: PASS (2xP3: test file no trailing newline; ✓/✗ Unicode in other output — task said leave other occurrences alone) | | |
+| T02 | 1 | review-pass | hermes-subagent/subagent-sa-1-6c48bc01 | A: PASS (1xP3: step 4 assertion already existed on master — task staleness, disposition accept) | | |
+| T03 | 1 | review-pass | hermes-subagent/subagent-sa-2-140704d8 | A: PASS (no findings) | | |
+| T04 | 1 | review-pass | hermes-subagent/subagent-sa-3-f0457260 | A: PASS (1xP3: `import json` inside function body instead of module top — cosmetic) | | |
+| T05 | 1 | review-pass | hermes-subagent/subagent-sa-4-87f92f6e | A: PASS (1xP3: audit claims quoted verbatim from task — acceptable per task instructions) | | |
 | T06 | 3 | pending | | | | |
 | T07 | 2 | pending | | | | |
 | T08 | 2 | pending | | | | |
-| T09 | 1 | pending | | | | |
+| T09 | 1 | review-pass | hermes-subagent/subagent-sa-5-2f2d08cc | A: PASS (2xP3: standalone `"""`/`'''` not in non-meaningful set; unused `import pytest` in test) | | |
 | T10 | 4 | pending | | | | |
 | T11 | 5 | pending | | | | |
 | T12 | 4 | pending | | | | |
-| T13 | 1 | pending | | | | |
+| T13 | 1 | review-pass | hermes-subagent/subagent-sa-6-56fce78c | A: PASS (1xP3: stale STATE.md references to capability_manager — task §2 says docs owned by T19/T05) | | |
 | T14 | 2 | pending | | | | |
 | T15 | 3 | pending | | | | |
 | T16 | 4 | pending | | | | |
