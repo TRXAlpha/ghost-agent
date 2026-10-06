@@ -173,6 +173,22 @@ def test_cli_jobs_add_list_round_trip(tmp_path: Path, monkeypatch, capsys) -> No
     assert "refused" in out and "interval:SECONDS" in out
 
 
+def test_jobs_add_default_iterations_is_10(tmp_path: Path, monkeypatch, capsys) -> None:
+    from types import SimpleNamespace
+    from ghost_agent.cli import _cmd_jobs
+    monkeypatch.chdir(tmp_path)
+    _cmd_jobs(SimpleNamespace(action="add", job_id="", goal_id="g1", recurrence="interval:60",
+                              priority=50, iterations=10))
+    out = capsys.readouterr().out
+    assert '"interval_seconds": 60' in out
+    # verify the job was enqueued with iterations=10
+    from ghost_agent.runtime import Scheduler
+    scheduler = Scheduler(tmp_path)
+    jobs = scheduler.list()
+    assert len(jobs) == 1
+    assert jobs[0].budget["iterations"] == 10
+
+
 def test_cli_remove_refused_for_queued_oneshot(tmp_path: Path, monkeypatch, capsys) -> None:
     from types import SimpleNamespace
     from ghost_agent.cli import _cmd_jobs

@@ -1683,7 +1683,7 @@ def main() -> None:
     jobs_parser.add_argument("--goal-id", default="", help="jobs add: goal id the recurring job serves")
     jobs_parser.add_argument("--recurrence", default="", help="jobs add: interval:SECONDS for a recurring job")
     jobs_parser.add_argument("--priority", type=int, default=50, help="jobs add: job priority (higher first)")
-    jobs_parser.add_argument("--iterations", type=int, default=3, help="jobs add: iteration budget for the job")
+    jobs_parser.add_argument("--iterations", type=int, default=10, help="jobs add: iteration budget for the job")
     emergency_parser = sub.add_parser("emergency-stop", help="Stop or resume consequential jobs")
     emergency_parser.add_argument("action", choices=["engage", "clear", "status"])
     emergency_parser.add_argument("--reason", default="user requested emergency stop")
