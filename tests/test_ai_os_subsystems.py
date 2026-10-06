@@ -1,4 +1,4 @@
-"""Tests for the AI-OS subsystems: self_improver, nexus."""
+"""Tests for the AI-OS subsystems: self_improver."""
 from __future__ import annotations
 
 import time
@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from ghost_agent.self_improver import SelfImprover, SelfImproverStore
-from ghost_agent.nexus import Nexus, NexusConfig
 
 
 @pytest.fixture
@@ -61,29 +60,6 @@ class TestSelfImprover:
         store.create_candidate("h", ["c"], {}, "p", 1, "r")
         history = store.history()
         assert history["total"] == 1
-
-
-# ── NEXUS ─────────────────────────────────────────────────────────────────
-
-class TestNexus:
-    def test_register_and_initialize(self, root):
-        from ghost_agent.nexus import SubsystemHealth
-
-        class FakeSubsystem:
-            def health_check(self):
-                return SubsystemHealth(name="fake")
-
-            def initialize(self):
-                pass
-
-            def shutdown(self):
-                pass
-
-        nexus = Nexus(state_dir=root / ".ghost")
-        nexus.register("fake", FakeSubsystem())
-        assert "fake" in nexus.list_subsystems()
-        nexus.start()
-        assert nexus.list_subsystems() == ["fake"]
 
 
 # ── All imports verified ───────────────────────────────────────────────────

@@ -1828,19 +1828,7 @@ def main() -> None:
     improve_decide.add_argument("decision", help="approved/rejected/rollback")
     improve_decide.add_argument("reason", help="Reason for decision")
 
-    # Nexus kernel CLI
-    nexus_parser = sub.add_parser("nexus", help="AI-OS kernel: health, subsystem status, system state")
-    nexus_sub = nexus_parser.add_subparsers(dest="nexus_action")
-    nexus_sub.add_parser("health", help="Full subsystem health report")
-    nexus_sub.add_parser("state", help="Current system state (initializing/running/paused/stopping/stopped)")
-    nexus_sub.add_parser("subsystems", help="List registered subsystems")
-    nexus_register = nexus_sub.add_parser("register", help="Register a subsystem with the kernel")
-    nexus_register.add_argument("name", help="Subsystem name")
-    nexus_register.add_argument("class_path", help="Fully qualified class path (e.g. module.Class)")
-    nexus_deregister = nexus_sub.add_parser("unregister", help="Remove a subsystem from the kernel")
-    nexus_deregister.add_argument("name", help="Subsystem name to remove")
-
-    # Perception CLI
+    # Capabilities CLI
     perception_parser = sub.add_parser("perception", help="Read-only observation: filesystem, git, processes")
     perception_sub = perception_parser.add_subparsers(dest="perception_action")
     fs_perc = perception_sub.add_parser("filesystem", help="Observe workspace file states")
@@ -1898,11 +1886,10 @@ def main() -> None:
         "digest": lambda: _cmd_digest(args),
         "trace-learning": lambda: _cmd_trace_learning(args),
         "daemon": lambda: _cmd_daemon(args),
-        "learn": lambda: _cmd_learn(args),
-        "self-improve": lambda: _cmd_self_improve(args),
-        "nexus": lambda: _cmd_nexus(args),
-        "perception": lambda: _cmd_perception(args),
-        "context": lambda: _cmd_context(args),
+                "learn": lambda: _cmd_learn(args),
+                "self-improve": lambda: _cmd_self_improve(args),
+                "perception": lambda: _cmd_perception(args),
+                "context": lambda: _cmd_context(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -3566,61 +3553,6 @@ def _cmd_self_improve(args: argparse.Namespace) -> None:
     print("Available: list, propose, decide")
 
 
-# ============================================================================
-# Nexus kernel CLI (OJ-Kernel)
-# ============================================================================
-
-def _cmd_nexus(args: argparse.Namespace) -> None:
-    """AI-OS kernel: health checks, subsystem registry, system state."""
-    from .nexus import Nexus, NexusHealth, HealthStatus
-    from .runtime import Doctor
-
-    root = Path.cwd()
-    action = getattr(args, "nexus_action", None) or "health"
-
-    if action == "health":
-        health = Doctor(root).check()
-        print("AI-OS Health Report")
-        print("=" * 40)
-        for key, value in health.items():
-            status = "✓" if value == "ok" else "✗"
-            print(f"  {status} {key}: {value}")
-        return
-
-    if action == "state":
-        nexus_path = root / ".ghost" / "nexus_state.json"
-        if not nexus_path.exists():
-            print("Nexus has not been initialized. State: initializing")
-            return
-        import json as _json
-        state = _json.loads(nexus_path.read_text(encoding="utf-8"))
-        print(f"System state: {state.get('state', 'unknown')}")
-        print(f"Subsystems: {', '.join(state.get('subsystems', [])) or 'none'}")
-        return
-
-    if action == "subsystems":
-        from .nexus import Nexus
-        nexus = Nexus(state_dir=root / ".ghost")
-        subs = nexus.list_subsystems()
-        print(f"Registered subsystems ({len(subs)}):")
-        for name in subs:
-            print(f"  - {name}")
-        return
-
-    if action == "register":
-        name = args.name
-        class_path = args.class_path
-        print(f"Dynamic subsystem registration requires runtime import resolution.")
-        print(f"  name: {name}, class: {class_path}")
-        print("  (Subsystems auto-register via the Nexus Subsystem protocol at startup.)")
-        return
-
-    if action == "unregister":
-        print(f"Dynamic subsystem deregistration: use the Nexus API directly.")
-        return
-
-    print(f"Unknown nexus action: {action}")
-    print("Available: health, state, subsystems, register, unregister")
 
 
 # ============================================================================

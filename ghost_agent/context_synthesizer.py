@@ -154,24 +154,6 @@ class ContextSynthesizer:
         self._cache_time: float = 0.0
         self._cache_ttl: float = 60.0  # seconds
 
-    # -- Health (for NEXUS integration) ------------------------------------
-
-    def health_check(self) -> Any:
-        """Return health status for NEXUS monitoring."""
-        from .nexus import HealthStatus, SubsystemHealth
-        issues: list[str] = []
-        
-        if not self._context_index_file.exists():
-            issues.append("Context index missing")
-        
-        status = HealthStatus.UNAVAILABLE if issues else HealthStatus.HEALTHY
-        return SubsystemHealth(
-            name="context_synthesizer",
-            status=status,
-            message="; ".join(issues) if issues else "operational",
-            last_check=time.time(),
-        )
-
     def initialize(self) -> None:
         """Initialize the synthesizer."""
         self.state_dir.mkdir(parents=True, exist_ok=True)

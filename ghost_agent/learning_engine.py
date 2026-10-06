@@ -129,27 +129,6 @@ class LearningEngine:
         self._gaps_file = self.state_dir / "knowledge_gaps.json"
         self._progress_cache: Optional[LearningProgress] = None
 
-    # -- Health (for NEXUS integration) ------------------------------------
-
-    def health_check(self) -> Any:
-        """Return health status for NEXUS monitoring."""
-        from .nexus import HealthStatus, SubsystemHealth
-        issues: list[str] = []
-        
-        # Check if state files are accessible
-        for path in [self._prerequisites_file, self._paths_file, 
-                     self._effectiveness_file, self._gaps_file]:
-            if not path.exists():
-                issues.append(f"Missing state file: {path.name}")
-        
-        status = HealthStatus.UNAVAILABLE if issues else HealthStatus.HEALTHY
-        return SubsystemHealth(
-            name="learning_engine",
-            status=status,
-            message="; ".join(issues) if issues else "operational",
-            last_check=time.time(),
-        )
-
     def initialize(self) -> None:
         """Initialize the learning engine."""
         self.state_dir.mkdir(parents=True, exist_ok=True)
