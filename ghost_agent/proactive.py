@@ -108,25 +108,6 @@ class OpportunityStore:
         return next((item for item in self._load()
                      if item.opportunity_id == fingerprint and item.status in {"proposed", "queued", "running"}), None)
 
-    def find_any(self, opportunity_id: str) -> Optional[Opportunity]:
-        """Find an opportunity record by identity, regardless of status.
-
-        Used for rejected-idea suppression: a decided opportunity must not be
-        re-proposed as identical unless the goal text changes (new fingerprint).
-        """
-        return next((item for item in self._load()
-                     if item.opportunity_id == opportunity_id), None)
-
-    def find_suppressed(self, opportunity_id: str) -> Optional[Opportunity]:
-        """Return opportunity if it was already decided (stop condition met).
-
-        Suppressed statuses are completed, rejected, and dismissed.
-        Needs-input is NOT suppressed — user input unblocks them.
-        """
-        return next((item for item in self._load()
-                     if item.opportunity_id == opportunity_id
-                     and item.status in {"completed", "rejected", "dismissed"}), None)
-
     def save(self, opportunity: Opportunity) -> Opportunity:
         if opportunity.status not in {"proposed", "needs_input", "queued", "running", "completed", "dismissed", "rejected"}:
             raise ProactiveError("Unknown opportunity status")

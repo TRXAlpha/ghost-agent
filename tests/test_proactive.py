@@ -218,3 +218,13 @@ def test_record_feedback_requires_queued_or_running(tmp_path: Path):
     engine.store.save(op)
     with pytest.raises(ProactiveError, match="outcome"):
         engine.record_feedback(oid, "not-a-real-outcome")
+
+
+def test_opportunity_store_methods_defined_once():
+    import inspect
+    import ghost_agent.proactive as module
+    src = inspect.getsource(module)
+    find_any_count = src.count("    def find_any(")
+    find_suppressed_count = src.count("    def find_suppressed(")
+    assert find_any_count == 1, f"find_any defined {find_any_count} times (expected 1)"
+    assert find_suppressed_count == 1, f"find_suppressed defined {find_suppressed_count} times (expected 1)"
