@@ -390,9 +390,15 @@ class Orchestrator:
     def _create_sandbox(self, source_root: Path, target: Path) -> Path:
         """Copy a project into a NEW workspace; this is not OS containment."""
         source = Path(source_root).resolve()
-        target = self._validate_sandbox_target(target)
-        if source == target or source.is_relative_to(target):
+        allowed_root = self.repo_root.resolve()
+        resolved = Path(target).resolve()
+        if resolved == allowed_root or not resolved.is_relative_to(allowed_root):
+            raise ValueError(f"Sandbox path escapes project: {resolved}")
+        if source == resolved or source.is_relative_to(resolved):
             raise ValueError("Sandbox must not replace or contain its source")
+        if resolved.exists():
+            raise FileExistsError(f"Workspace already exists; preserve it and resume explicitly: {resolved}")
+        target = resolved
         target.parent.mkdir(parents=True, exist_ok=True)
         def ignore(directory: str, names: List[str]) -> set[str]:
             excluded = self._sandbox_ignore(directory, names)
