@@ -5,7 +5,41 @@
 - HEAD: 681b769 — Add ghost learn path: generate prerequisite-ordered learning paths via LearningEngine
 - Working tree: DIRTY — AGENTS.md (owner, intentional) and ghost_agent/cli.py (owner's uncommitted learn commands; broken until T01)
 
-## 2026-10-06 audit corrections (supersede claims below)
+## Campaign 2026-10 result
+
+Started from a602677. All 19 tasks merged (T01–T19). Full suite result: 1037 passed in ~2 min (no hanging test after T02 fix). Benchmark not run live — owner runs `ghost bench run --model gemma4:26b`.
+
+Tasks merged:
+
+| Task | Commit | What changed |
+|------|--------|-------------|
+| T01 | 1a19da1 | Fixed cli.py IndentationError + learn-attempts loop |
+| T02 | cad28d0 | Fixed infinite-loop overnight test + hang diagnostics |
+| T03 | 081dd6e | Removed duplicated OpportunityStore methods |
+| T04 | 382dd62 | Integrated unmerged OJ08 repair commit 7c1a1f0 |
+| T05 | f4e21a1 | Corrected false claims in STATE.md |
+| T06 | 27095cc, ed832d8 | Empty-workspace mode for greenfield jobs |
+| T07 | 292e9e5 | Realistic budgets: proactive=10, queued=600, command=32 |
+| T08 | 3e4ae9b | Count only model turns against iteration limit |
+| T09 | bb26c51 | Reject placeholder file content from model |
+| T10 | 73c29d5 | Record why job hit iteration limit in state.json |
+| T11 | 1fa471f | `ghost bench`: 8 fixed goals, hidden acceptance tests |
+| T12 | e5492bd | `ghost daemon` rebuilt on OvernightRunner |
+| T13 | f086130 | Deleted dead capability_manager.py |
+| T14 | fcb1cf3 | Deleted dead notifications.py |
+| T15 | 51c14b2 | Deleted dead memory/manager.py + memory/long_term.py |
+| T16 | 770a00f | Deleted dead proactive extensions + resource_manager.py |
+| T17 | c17ef3b | Removed nexus kernel (nexus.py deleted, no callers) |
+| T18 | 919953a | SelfImprover front end to SelfRepairManager pipeline |
+| T19 | (this task) | README + STATE updated to match merged code |
+
+Removed dead code: nexus.py, capability_manager.py, notifications.py,
+memory/manager.py, memory/long_term.py, resource_manager.py, dead proactive
+extensions (LearningTracker, ResourceGate, ProactiveLoop). All tests pass.
+
+Remaining placeholders: Telegram, Huawei, DeskSentinel.
+
+## 2026-10-06 audit corrections (supersedes claims below)
 
 Verified at a602677 by direct code reading and test runs:
 

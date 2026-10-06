@@ -12,11 +12,27 @@ Ghost is a local-first outcome agent in active development. It can research a go
 - **Autonomous adapter building**: capability gaps from repeated failures are tracked (`ghost gaps list`); Ghost uses the model to assess whether a gap is autonomously addressable, queues sandbox implementation work, and marks the gap resolved on tests_passed. All changes are sandbox-only; promotion requires owner approval.
 - **Capability gap registry**: `ghost gaps list` / `ghost gaps stats` — see queued high-count gaps and their followup goals.
 - **Proactive feedback loop**: queued/running opportunities are reconciled on restart and closed on terminal outcomes (completed/tests_failed/error/cancelled).
+- **Benchmark** (`ghost bench`): 8 fixed non-toy goals run through the real production job path in isolated state, with independent hidden acceptance tests the model never saw. `ghost bench run --model <model>` produces `ghost_pass_rate` and `accepted_rate`; the owner runs it live.
+- **Self-improvement pipeline** (`ghost self-improve`): recurring failures become queued project-mode sandbox jobs; passing sandboxes are handed to `ghost self-repair` for evaluation and owner-gated promotion (`ghost self-improve sync`).
 - Source-grounded research with credibility tiers, exact-quote claim gating, and per-run provenance graphs.
 - Sandboxed coding runs, plan → implement → verify → repair state machine, and durable outcome jobs via `ghost accomplish`.
 - Outcome acceptance contracts, persistent intent records, and model routing based on measured reputation.
 - Reviewable MCP extension scaffold, explicit approval gates, and loopback-only API (`ghost api`).
 - Promoted artifacts use atomic per-file replacement with a recovery journal.
+
+## Live vs placeholder (updated 2026-10-07)
+
+| Capability | State | Evidence |
+|---|---|---|
+| Sandboxed coding jobs (`ghost accomplish`, worker) | live | T01–T09 tests, 1037-suite pass |
+| Greenfield empty-workspace jobs | live | T06 tests |
+| Benchmark (`ghost bench`) | live command; results: not yet run | T11 tests |
+| Proactive tick / overnight / daemon | live, idle-gated | T12 tests |
+| Self-improvement (`ghost self-improve` → `ghost self-repair`) | live pipeline, owner-gated promotion | T18 tests |
+| Learning (`ghost learn`) | local tracking + rustc oracle; no content generation | learner tests |
+| Telegram | placeholder until token + pairing | |
+| Huawei | placeholder until credentials | |
+| DeskSentinel | placeholder until firmware/protocol | |
 
 ## Honest limits
 
@@ -131,6 +147,12 @@ ghost accomplish "investigate X and prototype Y" --research-model gemma4:e4b-Cla
 ghost accomplish "fix the parser" --iterations 20 --command-timeout-seconds 120
 ghost accomplish "local-only code task" --skip-research
 ghost accomplish "research then build this overnight" --queue
+ghost bench run --model <model>      # Run the 8-goal benchmark with hidden tests
+ghost bench report                   # Show latest benchmark result
+ghost self-improve propose --model <model>  # Queue a fix for a recurring failure
+ghost self-improve sync              # Hand finished jobs to self-repair
+ghost daemon run --model <model>     # Always-on overnight loop (T12)
+ghost accomplish "greenfield task" --workspace empty  # Fresh empty workspace
 ```
 
 When `ghost api` is running, open `http://127.0.0.1:8765/` for the local dashboard. It reads the same loopback-only control-plane snapshot; it does not expose a public web service.
