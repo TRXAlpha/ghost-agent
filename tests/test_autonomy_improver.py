@@ -174,10 +174,12 @@ def test_try_build_queues_on_addressable(tmp_path: Path, monkeypatch) -> None:
 
     queued_jobs = []
 
-    def fake_queue(root, goal, model, *, source, priority):
-        queued_jobs.append({"root": str(root), "goal": goal, "source": source})
+    def fake_queue(root, goal, model, *, source, priority, workspace_mode="empty"):
+        queued_jobs.append({"root": str(root), "goal": goal, "source": source,
+                            "workspace_mode": workspace_mode})
         class FakeJob:
             job_id = "fake-job-123"
+            acceptance_contract = {}
         return FakeJob()
 
     monkeypatch.setattr(

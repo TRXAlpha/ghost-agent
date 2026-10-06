@@ -87,6 +87,7 @@ class CapabilityImprover:
                 self.model,
                 source="capability_improver",
                 priority=10,   # low priority — owner work comes first
+                workspace_mode="project",
             )
             # Bind the gap identity into the job contract so the worker can
             # close the gap on the job's real terminal result (OJ09 pattern).

@@ -1672,6 +1672,8 @@ def main() -> None:
         help="Max seconds per command (default 30; increase for heavyweight test suites)")
     accomplish_parser.add_argument("--require-file", action="append", default=[],
                                    help="Required relative deliverable path; repeat for multiple files")
+    accomplish_parser.add_argument("--workspace", choices=("project", "empty"), default="project",
+                                   help="Sandbox start: copy of this project (default) or an empty directory for greenfield work")
     accomplish_parser.add_argument("--skip-research", action="store_true")
     accomplish_parser.add_argument("--dry-run", action="store_true")
     accomplish_parser.add_argument("--queue", action="store_true", help="Persist the outcome for ghost worker")
@@ -2300,6 +2302,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
                 _cmd_accomplish(argparse.Namespace(
                     goal=[outcome_goal], model=model_state["model"],
                     research_model=None, iterations=12, skip_research=False, dry_run=False, queue=False,
+                    workspace="project",
                 ))
                 continue
             # LLM-driven intent classification
@@ -2330,6 +2333,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
                 _cmd_accomplish(argparse.Namespace(
                     goal=[line], model=model_state["model"],
                     research_model=None, iterations=12, skip_research=False, dry_run=False, queue=False,
+                    workspace="project",
                 ))
     except KeyboardInterrupt:
         print(f"\n{_DIM}Goodbye!{_RESET}")
@@ -2696,6 +2700,7 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
                        "coding": _resolve_model(args.model)},
             "research": not args.skip_research,
             "required_files": required_files,
+            "workspace_mode": getattr(args, "workspace", "project"),
             "command_budget": {"seconds": command_seconds, "calls": command_calls},
             "permissions": [authorization.__dict__],
             "approval_id": approval.approval_id if approval else None,
@@ -2726,6 +2731,7 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
     events = EventBus(project_root)
     job = store.create(goal)
     job.acceptance_contract["required_files"] = list(required_files)
+    job.acceptance_contract["workspace_mode"] = getattr(args, "workspace", "project")
     from .models.chat import route_identity
     job.acceptance_contract["inference_route"] = route_identity()
     job.acceptance_contract.update(command_budget_seconds=command_seconds, command_budget_calls=command_calls, command_timeout_seconds=command_timeout)
