@@ -225,7 +225,7 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
     blocked = next((marker for marker in _BLOCKED_GOAL_MARKERS if marker in clean_goal.casefold()), "")
     if blocked:
         raise ProactiveError(f"Sandbox request contains a blocked side effect: {blocked}")
-    if source not in {"proactive", "telegram", "capability_improver", "benchmark"}:
+    if source not in {"proactive", "telegram", "capability_improver", "benchmark", "self_improver"}:
         raise ProactiveError("Unknown sandbox request source")
     if type(priority) is not int or not 0 <= priority <= 100:
         raise ProactiveError("Sandbox priority must be between 0 and 100")

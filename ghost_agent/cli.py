@@ -1821,8 +1821,10 @@ def main() -> None:
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
     improve_sub = improve_parser.add_subparsers(dest="improve_action")
     improve_list = improve_sub.add_parser("list", help="List improvement candidates")
-    improve_list.add_argument("--status", default=None, help="Filter by status: proposed/evaluating/shadow/active/rolled_back/failed")
-    improve_sub.add_parser("propose", help="Propose a new improvement from trace-learning insights")
+    improve_list.add_argument("--status", default=None, help="Filter by status: queued/handed_to_self_repair/failed")
+    improve_propose = improve_sub.add_parser("propose", help="Propose a new improvement from trace-learning insights")
+    improve_propose.add_argument("--model", default=None, help="Model to use (default: configured or $GHOST_MODEL)")
+    improve_sub.add_parser("sync", help="Sync queued improvement jobs with worker results")
     improve_decide = improve_sub.add_parser("decide", help="Approve or reject an improvement candidate")
     improve_decide.add_argument("candidate_id", help="Candidate ID")
     improve_decide.add_argument("decision", help="approved/rejected/rollback")
@@ -3501,7 +3503,7 @@ def _cmd_learn(args: argparse.Namespace) -> None:
 # ============================================================================
 
 def _cmd_self_improve(args: argparse.Namespace) -> None:
-    """Propose, evaluate, approve, and roll back structural improvements (OJ14/S08)."""
+    """Propose, sync, and decide on structural improvements."""
     from .self_improver import SelfImprover, SelfImproverStore
     from .trace_learning import run_trace_learning
 
@@ -3519,34 +3521,41 @@ def _cmd_self_improve(args: argparse.Namespace) -> None:
         print(f"{len(candidates)} candidate(s):")
         for c in candidates:
             print(f"  [{c.candidate_id}] {c.status} | {c.hypothesis[:60]}...")
-            if c.shadow_metrics:
-                print(f"    shadow: {list(c.shadow_metrics.keys())}")
-            if c.final_metrics:
-                print(f"    final: {list(c.final_metrics.keys())}")
         return
 
     if action == "propose":
-        # Mine trace learning for the top failure signature and auto-propose
+        model = _resolve_model(getattr(args, "model", None))
+        if not model:
+            print("A model is required: pass --model or configure one.")
+            return
         summary = run_trace_learning(root, min_count=2)
         sigs = summary.get("analysis", {}).get("top_signatures", [])
         if not sigs:
             print("No recurring failure signatures found to base an improvement on.")
             return
-        sig = sigs[0]
-        hypothesis = (
-            f"Addressing {sig['error_type']} in {sig['subsystem']}: "
-            f"{sig['normalized_error'][:100]}"
-        )
-        cand = store.create_candidate(
-            hypothesis=hypothesis,
-            components=[sig["subsystem"]],
-            baseline={"failure_count": sig["count"]},
-            plan=f"Analyze {sig['count']} recurrences of {sig['error_type']}; "
-                 "propose targeted fix; evaluate against regression tests.",
-            budget_hours=1.0,
-            rollback="Revert to baseline git commit",
-        )
-        print(f"Proposed: [{cand.candidate_id}] {cand.hypothesis}")
+        cand = improver.propose(sigs, model)
+        if cand is None:
+            print("No new recurring failure to work on.")
+            return
+        if cand.status == "failed":
+            print(f"[{cand.candidate_id}] queued: FAILED — {cand.failure_reason}")
+        else:
+            print(f"[{cand.candidate_id}] {cand.status} | job={cand.job_id}")
+        return
+
+    if action == "sync":
+        changed = improver.sync()
+        if not changed:
+            print("No queued candidates to sync.")
+            return
+        for c in changed:
+            extra = ""
+            if c.status == "handed_to_self_repair":
+                extra = f" | repair_proposal_id={c.repair_proposal_id}"
+                print("Next: ghost self-repair verify <repair_id> --command \"python -m pytest -q\"")
+            elif c.failure_reason:
+                extra = f" | {c.failure_reason}"
+            print(f"[{c.candidate_id}] {c.status}{extra}")
         return
 
     if action == "decide":
@@ -3561,7 +3570,7 @@ def _cmd_self_improve(args: argparse.Namespace) -> None:
         return
 
     print(f"Unknown self-improve action: {action}")
-    print("Available: list, propose, decide")
+    print("Available: list, propose, decide, sync")
 
 
 
