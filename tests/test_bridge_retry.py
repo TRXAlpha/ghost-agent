@@ -129,6 +129,22 @@ def test_reservation_committed_once_on_retry_success(tmp_path, monkeypatch) -> N
     assert call_count[0] == 3
     data = json.loads((tmp_path / ".ghost" / "openjarvis" / "spend.json").read_text())
     assert data["committed_calls"] == 1
+    assert data["input_chars"] > 0  # real input size recorded (reviewer P2 fix)
+
+
+def test_budget_without_reservation_refused(tmp_path, monkeypatch) -> None:
+    """Reviewer finding: a synthetic reservation corrupts call accounting."""
+    from ghost_agent.models.chat import chat
+    from ghost_agent.openjarvis_bridge.spend import DurableInferenceBudget
+
+    monkeypatch.setenv("GHOST_INFERENCE_BACKEND", "legacy")
+    monkeypatch.setattr("ghost_agent.models.chat.legacy_chat",
+                        lambda *a, **kw: "ok")
+    budget = DurableInferenceBudget(tmp_path)
+    with pytest.raises(ValueError, match="matching reservation"):
+        chat("m", [{"role": "user", "content": "hi"}], budget=budget)
+    data = json.loads((tmp_path / ".ghost" / "openjarvis" / "spend.json").read_text())
+    assert data["committed_calls"] == 0  # nothing committed without a real reservation
 
 
 def test_reservation_rolled_back_on_final_failure(tmp_path, monkeypatch) -> None:
