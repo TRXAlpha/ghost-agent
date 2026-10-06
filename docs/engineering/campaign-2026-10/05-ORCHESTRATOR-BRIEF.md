@@ -37,6 +37,18 @@ Read each task file only when you dispatch that task.
   uncommitted edit; leave it dirty), touching `.ghost/`, running state-changing
   `ghost` commands in the main checkout, and installing packages.
 
+## Output-budget rule (learned on run 1)
+
+Run 1 died because one `delegate_task` call carried 7 long reviewer prompts,
+and the model ran out of output tokens while writing it. So:
+
+- Put **at most 3 tasks** in one `delegate_task` call. Send more calls for
+  larger waves.
+- Keep each `goal` to the template text only. Put long material (reports,
+  finding lists) in `context`, and cap it at about 40 lines. Summarise rather
+  than paste.
+- Keep your own replies short. Write detail to PROGRESS.md in small edits.
+
 ## Step 0: setup (once)
 
 1. `git status --short` must show only `M AGENTS.md`,
