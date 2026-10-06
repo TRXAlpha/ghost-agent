@@ -1,21 +1,26 @@
-"""RL14/S08: Self-improvement engine — analyzes failures, proposes and evaluates improvements.
+"""RL14/S08: Self-improvement engine — turns recurring failures into queued sandbox jobs.
 
-Uses trace_learning.py output (failure signatures) and Ghost's existing
-SelfRepairManager/CapabilityRegistry to propose bounded improvements, evaluate
-candidates against regression tests, and roll back on failure.
+Front end to Ghost's reviewed candidate pipeline: trace-learning failure
+signatures become real sandbox jobs (via ``queue_sandbox_outcome``); passing
+sandboxes are handed to ``SelfRepairManager`` for verification and owner-approved
+promotion. No evidence, approval or promotion logic lives here.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import shutil
-import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from .utils.storage import atomic_json, exclusive_lock
+
+# Job statuses at which a queued candidate can be resolved (from
+# feedback_outcome_for_job plus cancelled as a defensive extra for
+# emergency-stop paths in _execute_queued_outcome).
+_TERMINAL_JOB_STATUSES = {"completed", "failed", "needs_review", "cancelled"}
 
 
 @dataclass
@@ -27,7 +32,7 @@ class ImprovementCandidate:
     evaluation_plan: str
     budget_hours: float
     rollback_plan: str
-    status: str = "proposed"   # proposed | evaluating | shadow | active | rolled_back | failed
+    status: str = "proposed"   # queued | handed_to_self_repair | failed | (legacy: proposed | evaluating | shadow | active | rolled_back)
     baseline_commit: str = ""
     shadow_metrics: dict[str, Any] = field(default_factory=dict)
     final_metrics: dict[str, Any] = field(default_factory=dict)
@@ -36,6 +41,9 @@ class ImprovementCandidate:
     failure_reason: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    job_id: str = ""
+    signature_key: str = ""
+    repair_proposal_id: str = ""
 
 
 @dataclass
@@ -168,81 +176,116 @@ class SelfImproverStore:
 
 
 class SelfImprover:
-    """Bridge failure signatures from trace_learning to improvement candidates."""
+    """Bridge failure signatures to queued sandbox jobs and SelfRepairManager."""
 
-    def __init__(self, root: Path, model: Optional[str] = None) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
-        self.model = model or "qwen2.5-coder:1.5b"
         self.store = SelfImproverStore(self.root)
 
-    def propose_from_signatures(self, signatures: list[dict[str, Any]]) -> list[ImprovementCandidate]:
-        """Create improvement candidates from failure signatures."""
-        candidates = []
+    def propose(self, signatures: list[dict[str, Any]], model: str) -> Optional[ImprovementCandidate]:
+        """Create one queued sandbox job from the first usable recurring signature."""
+        if not model or not model.strip():
+            raise ValueError("A model is required to propose improvements")
+
         for sig in signatures:
-            count = sig.get("count", 0)
-            if count < 2:
+            if (sig.get("count", 0) or 0) < 2:
                 continue
-            error_type = sig.get("error_type", "")
-            subsys = sig.get("subsystem", "orchestrator")
-            sample = sig.get("sample_error", "")[:200]
-            hypothesis = (
-                f"Recurring {error_type} in {subsys} (seen {count}x) "
-                f"may be addressable by improving {subsys} error handling or retry logic"
-            )
-            components = [subsys]
-            baseline = {"failure_count": count, "sample_error": sample}
-            plan = f"Build a candidate fix targeting {error_type} in {subsys} component"
-            rollback = f"Restore backup of affected {subsys} files"
-            cand = self.store.create_candidate(
-                hypothesis=hypothesis, components=components,
-                baseline=baseline, plan=plan, budget_hours=0.5, rollback=rollback)
-            candidates.append(cand)
-        return candidates
-
-    def evaluate_candidate(self, candidate_id: str,
-                          regression_tests: Optional[list[str]] = None) -> dict[str, Any]:
-        """Evaluate a candidate: run regression suite, record shadow metrics."""
-        candidate = self.store.get_candidate(candidate_id)
-        if not candidate:
-            raise ValueError("Candidate not found")
-        self.store.update_candidate(candidate_id, {"status": "evaluating"})
-        results = {"passed": 0, "failed": 0, "errors": []}
-        if regression_tests:
-            for test in regression_tests:
-                try:
-                    r = subprocess.run(
-                        ["python", "-m", "pytest", test, "-q"],
-                        capture_output=True, text=True, timeout=120,
-                        cwd=str(self.root))
-                    if r.returncode == 0:
-                        results["passed"] += 1
-                    else:
-                        results["failed"] += 1
-                except Exception as exc:
-                    results["errors"].append(str(exc))
-        shadow = {"regression": results, "evaluated_at": time.time()}
-        self.store.set_shadow_metrics(candidate_id, shadow)
-        return shadow
-
-    def review_and_decide(self, candidate_id: str) -> ImprovementDecision:
-        """Model review of a candidate's shadow results -> approve/reject/rollback."""
-        candidate = self.store.get_candidate(candidate_id)
-        if not candidate:
-            raise ValueError("Candidate not found")
-        shadow = candidate.shadow_metrics
-        baseline = candidate.baseline_metrics
-        reg = shadow.get("regression", {})
-        passed = reg.get("passed", 0)
-        failed = reg.get("failed", 0)
-        base_failed = baseline.get("failure_count", 0)
-        # Simple heuristic: if regressions all pass AND it reduces failures -> approve
-        if failed == 0 and passed > 0 and base_failed > 0:
-            decision = "approved"
-            reason = f"Regressions passed ({passed}/{passed+failed}), baseline failures={base_failed}"
-        elif failed > 0:
-            decision = "rollback"
-            reason = f"Regression failures: {failed} test(s) broke"
+            key = (f"{sig['error_type']}|{sig.get('subsystem', 'unknown')}|"
+                   f"{sig.get('normalized_error', '')[:120]}")
+            open_keys = {c.signature_key for c in self.store.list_candidates()
+                         if c.status in ("queued", "handed_to_self_repair")}
+            if key in open_keys:
+                continue  # duplicate open work
+            break
         else:
-            decision = "rejected"
-            reason = "Insufficient evidence to approve"
-        return self.store.record_decision(candidate_id, decision, reason)
+            return None  # none usable
+
+        error_type = sig.get("error_type", "unknown failure")
+        subsystem = sig.get("subsystem", "orchestrator")
+        count = sig.get("count", 1)
+        sample = (sig.get("sample_error") or sig.get("normalized_error") or "")[:200]
+        sample = sample.replace("\n", " ")
+        hypothesis = f"Address recurring {error_type} in {subsystem}"
+        goal = (
+            f"Improve Ghost to reduce the recurring failure \"{error_type}\" in "
+            f"{subsystem} (seen {count} times). Example: {sample}. "
+            f"Make the smallest code change under ghost_agent/ that addresses it, "
+            f"add a focused pytest regression test under tests/, and keep the "
+            f"existing tests passing."
+        )
+        if len(goal) > 600:
+            while len(goal) > 600 and len(sample) > 20:
+                sample = sample[: len(sample) - 20]
+                goal = (
+                    f"Improve Ghost to reduce \"{error_type}\" in {subsystem} "
+                    f"(seen {count} times). Example: {sample}. "
+                    f"Make the smallest code change under ghost_agent/ that fixes it, "
+                    f"add a pytest regression test, and keep existing tests passing."
+                )
+
+        from .proactive import ProactiveError, queue_sandbox_outcome
+        cand = self.store.create_candidate(
+            hypothesis=hypothesis, components=[subsystem],
+            baseline={"failure_count": count}, plan="Sandbox job via worker; verification via self-repair evaluator",
+            budget_hours=1.0,
+            rollback="ghost promote rollback of the promotion, if ever applied")
+
+        try:
+            job = queue_sandbox_outcome(
+                self.root, goal, model.strip(),
+                source="self_improver", priority=30, workspace_mode="project")
+            self.store.update_candidate(cand.candidate_id, {
+                "status": "queued", "job_id": job.job_id, "signature_key": key})
+            cand.status = "queued"
+            cand.job_id = job.job_id
+            cand.signature_key = key
+        except ProactiveError as exc:
+            self.store.fail(cand.candidate_id, f"queue refused: {exc}")
+            cand.status = "failed"
+            cand.failure_reason = f"queue refused: {exc}"
+        return cand
+
+    def sync(self) -> list[ImprovementCandidate]:
+        """Check queued jobs, hand passing ones to SelfRepairManager, fail the rest."""
+        from .autonomy import OutcomeStore
+        from .self_repair import SelfRepairManager
+
+        changed: list[ImprovementCandidate] = []
+        store = OutcomeStore(self.root)
+        repair_mgr = SelfRepairManager(self.root)
+        candidates = self.store.list_candidates("queued")
+        for cand in candidates:
+            job = store.load(cand.job_id)
+            if job is None:
+                cand = self.store.fail(cand.candidate_id, "job record missing")
+                changed.append(cand)
+                continue
+            if job.status not in _TERMINAL_JOB_STATUSES:
+                continue  # still running
+            if job.result == "tests_passed" and Path(job.sandbox_path).is_dir():
+                dst = self.root / "workspaces" / "self-improve" / cand.candidate_id
+                if dst.exists():
+                    cand = self.store.fail(cand.candidate_id, "handoff directory already exists")
+                    changed.append(cand)
+                    continue
+                shutil.copytree(
+                    job.sandbox_path, dst,
+                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+                try:
+                    proposal = repair_mgr.propose(
+                        diagnosis=cand.hypothesis, sandbox=dst,
+                        proposed_benefit=(f"Targets {cand.baseline_metrics.get('failure_count', '?')} recurring failures"),
+                        linked_failure=cand.signature_key)
+                    cand = self.store.update_candidate(cand.candidate_id, {
+                        "status": "handed_to_self_repair",
+                        "repair_proposal_id": proposal.proposal_id})
+                    changed.append(cand)
+                except ValueError as exc:
+                    shutil.rmtree(dst, ignore_errors=True)
+                    cand = self.store.fail(cand.candidate_id, f"self-repair refused: {exc}")
+                    changed.append(cand)
+            else:
+                reason = job.result or job.status
+                cand = self.store.fail(cand.candidate_id, f"job ended {reason}")
+                changed.append(cand)
+        return changed
