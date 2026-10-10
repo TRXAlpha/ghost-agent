@@ -1851,6 +1851,12 @@ def main() -> None:
     answer_cmd.add_argument("submission", help="The submitted answer")
     hint_cmd = learn_sub.add_parser("hint", help="Show the next hint for an exercise (TG3)")
     hint_cmd.add_argument("exercise_id", help="Exercise identifier")
+    # TG4: deadline-aware review scheduling
+    deadline_cmd = learn_sub.add_parser("deadline", help="Attach a study deadline to concepts (TG4)")
+    deadline_cmd.add_argument("label", help="Deadline label (e.g. 'midterm')")
+    deadline_cmd.add_argument("--date", required=True, help="Due date YYYY-MM-DD")
+    deadline_cmd.add_argument("--concepts", required=True,
+                              help="Comma-separated concept ids the deadline applies to")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -3628,8 +3634,25 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             print(f"Hint refused: {exc}")
         return
 
+    if action == "deadline":
+        import datetime as _dt
+        try:
+            due_date = _dt.date.fromisoformat(args.date)
+        except ValueError:
+            raise ValueError(f"Invalid --date (expected YYYY-MM-DD): {args.date}")
+        # End of the due day (local midnight of the next day) so the deadline
+        # stays relevant through the whole of its date.
+        due_at = (_dt.datetime.combine(due_date + _dt.timedelta(days=1),
+                                       _dt.time.min)
+                  - _dt.datetime(1970, 1, 1)).total_seconds()
+        record = learner.set_deadline(args.concepts.split(","), due_at, args.label)
+        print(f"Deadline '{record['label']}' set for {args.date} "
+              f"({len(record['concept_ids'])} concept(s): "
+              f"{','.join(record['concept_ids'])})")
+        return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint, deadline")
 
 
 # ============================================================================

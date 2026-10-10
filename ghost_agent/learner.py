@@ -76,6 +76,7 @@ class LearnerStore:
         self.dir_path = self.root / ".ghost" / "learner"
         self.concepts_path = self.dir_path / "concepts.json"
         self.attempts_path = self.dir_path / "attempts.json"
+        self.deadlines_path = self.dir_path / "deadlines.json"
         self.dir_path.mkdir(parents=True, exist_ok=True)
 
     # -- persistence ------------------------------------------------------
@@ -211,14 +212,53 @@ class LearnerStore:
             self._save_list(self.attempts_path, attempts)
         return concept
 
+    # -- deadlines (TG4) ----------------------------------------------------
+    def set_deadline(self, concept_ids: list[str], due_at: float, label: str) -> dict[str, Any]:
+        """Record a deadline (e.g. an exam) that links concepts to a due date."""
+        label = label.strip()
+        if not label or len(label) > 200:
+            raise LearnerError("Deadline label must be nonempty within length limits")
+        if not isinstance(due_at, (int, float)) or due_at <= 0:
+            raise LearnerError("due_at must be a positive timestamp")
+        concept_ids = [cid.strip() for cid in concept_ids]
+        if not concept_ids or any(not cid for cid in concept_ids):
+            raise LearnerError("Deadline must link at least one concept id")
+        with exclusive_lock(self.deadlines_path.with_suffix(".lock")):
+            items = [d for d in self._load_list(self.deadlines_path)
+                     if d.get("label") != label]
+            items.append({"label": label, "due_at": float(due_at),
+                          "concept_ids": concept_ids})
+            self._save_list(self.deadlines_path, items)
+        return {"label": label, "due_at": float(due_at), "concept_ids": concept_ids}
+
+    def _deadline_concepts(self, now_ts: float) -> dict[str, float]:
+        """Map concept_id -> nearest future deadline within 14 days (past ignored)."""
+        nearest: dict[str, float] = {}
+        for d in self._load_list(self.deadlines_path):
+            due_at = float(d.get("due_at", 0.0))
+            if due_at < now_ts or due_at > now_ts + 14 * 86400:
+                continue
+            for cid in d.get("concept_ids", []):
+                if cid not in nearest or due_at < nearest[cid]:
+                    nearest[cid] = due_at
+        return nearest
+
     # -- study planning / progress -----------------------------------------
     def next_activity(self, now: Optional[float] = None) -> Optional[Concept]:
-        """Feedback-driven next activity: due concept with the lowest mastery."""
+        """Due concept with the lowest mastery; deadline-linked concepts first.
+
+        Among due concepts, those with a deadline within 14 days come first,
+        ordered by nearest deadline, then lowest mastery.  With no deadlines
+        the original (mastery, concept_id) ordering applies.
+        """
         now_ts = time.time() if now is None else now
         due = [c for c in self.concepts() if now_ts >= c.next_review_at]
         if not due:
             return None
-        return min(due, key=lambda c: (c.mastery, c.concept_id))
+        deadlines = self._deadline_concepts(now_ts)
+        return min(due, key=lambda c: (c.concept_id not in deadlines,
+                                       deadlines.get(c.concept_id, float("inf")),
+                                       c.mastery, c.concept_id))
 
     def due_count(self, now: Optional[float] = None) -> int:
         now_ts = time.time() if now is None else now
