@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .knowledge_base import OwnerKnowledgeBase
-from .learner import LearnerStore, RustCompileOracle
+from .learner import FormatStats, LearnerStore, RustCompileOracle
 from .models.chat import chat
 
 from .utils.storage import atomic_json
@@ -56,6 +56,7 @@ class ExerciseGenerator:
         self.answers_dir = self.root / ".ghost" / "learner" / "answers"
         self.exercises_dir.mkdir(parents=True, exist_ok=True)
         self.answers_dir.mkdir(parents=True, exist_ok=True)
+        self.formats = FormatStats(root)
 
     # -- persistence ------------------------------------------------------
     def _save_exercise(self, exercise: Exercise) -> None:
@@ -111,6 +112,8 @@ class ExerciseGenerator:
             exercises.append(exercise)
             if len(exercises) >= count:
                 break
+        if exercises:
+            self.formats.record("exercise", generated=len(exercises))
         return exercises
 
     @staticmethod
@@ -179,6 +182,8 @@ class ExerciseGenerator:
             correct, feedback = RustCompileOracle(plan_root=self.root).check(
                 submission, context=exercise.concept_id)
         lesson_id = exercise.source_refs[0] if exercise.source_refs else ""
+        FormatStats(self.root).record(
+            "exercise", attempted=1, correct=1 if correct else 0)
         LearnerStore(self.root).record_attempt(
             exercise.concept_id, correct, lesson_id=lesson_id,
             feedback=feedback, submission=submission)

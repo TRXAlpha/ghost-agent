@@ -1947,6 +1947,7 @@ def main() -> None:
     answer_cmd.add_argument("submission", help="The submitted answer")
     hint_cmd = learn_sub.add_parser("hint", help="Show the next hint for an exercise (TG3)")
     hint_cmd.add_argument("exercise_id", help="Exercise identifier")
+    learn_sub.add_parser("formats", help="Show which teaching format works and the recommendation (TK3)")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -4094,6 +4095,18 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             print(generator.next_hint(args.exercise_id, wrong))
         except StudyError as exc:
             print(f"Hint refused: {exc}")
+        return
+
+    if action == "formats":
+        from .learner import FormatStats
+        stats = FormatStats(root).stats()
+        for fmt, s in stats.items():
+            print(f"  {fmt}: generated={s['generated']}, "
+                  f"attempted={s['attempted']}, correct={s['correct']}")
+        rec = FormatStats(root).recommend_format()
+        print(f"Recommended format: {rec['format']} ({rec['reason']})")
+        if rec.get("unused"):
+            print(f"Unused: {', '.join(rec['unused'])} — {rec['unused_reason']}")
         return
 
     print(f"Unknown learn action: {action}")

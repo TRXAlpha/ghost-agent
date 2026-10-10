@@ -348,3 +348,87 @@ class RustCompileOracle:
         if version:
             feedback = f"[rustc {version}] {feedback}"
         return probe.returncode == 0, feedback
+
+class FormatStats:
+    """Track which teaching format works (TK3/R10).
+
+    Persistent counters under ``.ghost/learner/formats.json``: per format
+    (exercise, challenge, explanation) how much material was generated and
+    how often attempts happened and succeeded, so Ghost can recommend a
+    format and stop producing unused material.
+    """
+
+    FORMATS = ("exercise", "challenge", "explanation")
+    MIN_ATTEMPTS = 3
+    UNUSED_GENERATED = 5
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root).resolve()
+        self.path = self.root / ".ghost" / "learner" / "formats.json"
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _save(self, data: dict[str, dict[str, Any]]) -> None:
+        atomic_json(self.path, data)
+
+    def stats(self) -> dict[str, dict[str, Any]]:
+        """Return per-format counters, defaults filled in."""
+        raw = self._load()
+        out: dict[str, dict[str, Any]] = {}
+        for fmt in self.FORMATS:
+            entry = raw.get(fmt) if isinstance(raw.get(fmt), dict) else {}
+            out[fmt] = {
+                "generated": int(entry.get("generated", 0) or 0),
+                "attempted": int(entry.get("attempted", 0) or 0),
+                "correct": int(entry.get("correct", 0) or 0),
+                "last_used_at": float(entry.get("last_used_at", 0.0) or 0.0),
+            }
+        return out
+
+    def record(self, fmt: str, *, generated: int = 0,
+               attempted: int = 0, correct: int = 0) -> None:
+        """Increment counters for a format through the real learning path."""
+        if fmt not in self.FORMATS:
+            raise LearnerError(f"Unknown teaching format: {fmt}")
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            data = self._load()
+            entry = data.get(fmt) if isinstance(data.get(fmt), dict) else {}
+            entry["generated"] = int(entry.get("generated", 0) or 0) + generated
+            entry["attempted"] = int(entry.get("attempted", 0) or 0) + attempted
+            entry["correct"] = int(entry.get("correct", 0) or 0) + correct
+            entry["last_used_at"] = time.time()
+            data[fmt] = entry
+            self._save(data)
+
+    def recommend_format(self) -> dict[str, Any]:
+        """Recommend the best-evidenced format; flag unused formats."""
+        stats = self.stats()
+        unused = [fmt for fmt, s in stats.items()
+                  if s["generated"] >= self.UNUSED_GENERATED
+                  and s["attempted"] == 0]
+        best: Optional[str] = None
+        best_rate = -1.0
+        for fmt, s in stats.items():
+            if s["attempted"] >= self.MIN_ATTEMPTS:
+                rate = s["correct"] / s["attempted"]
+                if rate > best_rate:
+                    best, best_rate = fmt, rate
+        if best is not None:
+            reason = (f"highest success rate {best_rate:.0%} over "
+                      f"{stats[best]['attempted']} attempts")
+        else:
+            best = "exercise"
+            reason = "no evidence yet"
+        result: dict[str, Any] = {"format": best, "reason": reason}
+        if unused:
+            result["unused"] = unused
+            result["unused_reason"] = \
+                "generated but never attempted: stop generating"
+        return result
