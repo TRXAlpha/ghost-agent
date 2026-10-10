@@ -1726,6 +1726,9 @@ def main() -> None:
     list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
     ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
     ack_parser.add_argument("notification_id")
+    why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
+    why_parser.add_argument("item_id", help="Job id or opportunity id")
+    why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
     proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
@@ -1893,6 +1896,7 @@ def main() -> None:
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
         "notifications": lambda: _cmd_notifications(args),
+        "why": lambda: _cmd_why(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3086,6 +3090,36 @@ def _cmd_notifications(args: argparse.Namespace) -> None:
         print(json.dumps(payload, indent=2))
     except (ValueError, OSError) as exc:
         print(f"Notifications refused: {exc}")
+
+
+def _cmd_why(args: argparse.Namespace) -> None:
+    from .control_plane import GhostSDK
+    try:
+        detail = GhostSDK(Path.cwd()).explain(args.item_id)
+    except (ValueError, OSError) as exc:
+        print(f"Explain refused: {exc}")
+        return
+    if detail is None:
+        print(f"No job or opportunity with id {args.item_id}")
+        return
+    if not args.json:
+        job = detail.get("job")
+        opportunity = detail.get("opportunity")
+        goal = detail.get("goal")
+        if job:
+            print(f"Job {job['job_id']}: {job['goal']}")
+            print(f"  status: {job['status']}  result: {job['result'] or 'none'}")
+            if goal:
+                print(f"  goal: {goal['goal_id']} ({goal['status']}) {goal['title']}")
+        elif opportunity:
+            print(f"Opportunity {opportunity['opportunity_id']}: {opportunity['title']}")
+            print(f"  status: {opportunity['status']}  confidence: {opportunity['confidence']}")
+            print(f"  rationale: {opportunity['rationale']}")
+        if detail.get("intent"):
+            print(f"  intent: {detail['intent']['intent_id']} ({detail['intent']['status']})")
+        if detail.get("events"):
+            print(f"  recent events mentioning this id: {len(detail['events'])}")
+    print(json.dumps(detail, indent=2))
 
 
 def _cmd_check_in(args: argparse.Namespace) -> None:

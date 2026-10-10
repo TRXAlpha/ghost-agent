@@ -198,6 +198,49 @@ class GhostSDK:
         except (OSError, ValueError):
             return {"status": "invalid", "schedule": None}
 
+    def explain(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """Explain why a job or opportunity exists (functional 'why')."""
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise ValueError("Explain requires an item id")
+        item_id = item_id.strip()
+        try:
+            job = self.outcomes.load(item_id)
+        except (OSError, ValueError):
+            job = None
+        opportunity = None
+        # An opportunity id may be given directly, or linked from the job.
+        linked_id = ""
+        if job is not None:
+            linked_id = job.acceptance_contract.get("opportunity_id", "")
+        for candidate in OpportunityStore(self.root).list_all():
+            if candidate.opportunity_id == item_id or (linked_id and not opportunity
+                                                       and candidate.opportunity_id == linked_id):
+                opportunity = candidate
+                if opportunity.opportunity_id == item_id:
+                    break
+        if job is None and opportunity is not None and opportunity.job_id:
+            try:
+                job = self.outcomes.load(opportunity.job_id)
+            except (OSError, ValueError):
+                job = None
+        if job is None and opportunity is None:
+            return None
+        goal = self.goals.get(job.goal_id) if job is not None and job.goal_id else None
+        intent = next((record for record in self.intents._load()
+                       if goal is not None and record.get("goal_id") == goal.goal_id), None)
+        # Last 20 events whose payload mentions the id.
+        needle = opportunity.opportunity_id if (job is None and opportunity is not None) else (job.job_id if job is not None else item_id)
+        events = [event.__dict__ for event in self.events.recent(500)
+                  if needle in json.dumps(event.payload)]
+        return {
+            "item_id": item_id,
+            "job": job.__dict__ if job is not None else None,
+            "opportunity": opportunity.__dict__ if opportunity is not None else None,
+            "goal": goal.__dict__ if goal is not None else None,
+            "intent": intent,
+            "events": events[-20:],
+        }
+
 # ── Goal Management ─────────────────────────────────────────────────────────────
 
     def goal_tree(self) -> Dict[str, Any]:
