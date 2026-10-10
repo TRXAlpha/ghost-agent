@@ -3347,25 +3347,11 @@ def _cmd_notifications(args: argparse.Namespace) -> None:
             note = attention.acknowledge(args.notification_id)
             print(json.dumps(note.__dict__, indent=2))
             return
-        prefs = sdk.notification_preferences()
-        quiet_hours: tuple[int, int] | None = None
-        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
-        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
-            quiet_hours = (start, end)
-        from .focus import FocusStore
-        active_focus = FocusStore(Path.cwd()).active()
-        focus = active_focus is not None and "hold_notifications" in active_focus.interventions
-        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)}
+        overview = sdk.notifications_overview()
         if not args.all:
-            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)], indent=2))
+            print(json.dumps(overview["deliverable"], indent=2))
             return
-        payload = []
-        for note in attention.pending():
-            record = note.__dict__.copy()
-            if note.notification_id not in deliverable_ids:
-                record["held"] = "focus" if focus and note.priority in ("normal", "silent") else "quiet hours"
-            payload.append(record)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(overview["deliverable"] + overview["held"], indent=2))
     except (ValueError, OSError) as exc:
         print(f"Notifications refused: {exc}")
 
