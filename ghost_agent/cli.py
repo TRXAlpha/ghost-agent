@@ -1739,11 +1739,14 @@ def main() -> None:
     repair_parser.add_argument("--command", default="python -m pytest -q",
                                help="Evaluator command run inside the candidate to verify it")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
-    device_parser.add_argument("action", choices=["list", "register"])
+    device_parser.add_argument("action", choices=["list", "register", "pair", "revoke", "status"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
     device_parser.add_argument("--capability", action="append", default=[])
+    device_parser.add_argument("--transport", default=None,
+                               help="unknown|usb_serial|ble|wifi|cloud_api|simulated")
+    device_parser.add_argument("--firmware", default=None, help="Firmware version string")
     mcp_parser = sub.add_parser("mcp", help="Scaffold a reviewable local MCP add-on")
     mcp_parser.add_argument("name")
     mcp_parser.add_argument("--goal", required=True)
@@ -3272,13 +3275,44 @@ def _cmd_device(args: argparse.Namespace) -> None:
         if args.action == "list":
             print(json.dumps([device.__dict__ for device in registry.list()], indent=2))
             return
-        if not args.device_id or not args.name or not args.capability:
-            print("register requires device_id, --name, and at least one --capability")
+        if args.action == "register":
+            if not args.device_id or not args.name or not args.capability:
+                print("register requires device_id, --name, and at least one --capability")
+                return
+            device = registry.register(args.device_id, args.name, args.kind, args.capability)
+            transport = getattr(args, "transport", None)
+            firmware = getattr(args, "firmware", None)
+            if transport or firmware:
+                fields: dict = {}
+                if transport:
+                    fields["transport"] = transport
+                if firmware is not None:
+                    fields["firmware_version"] = firmware
+                device = registry.update(device.device_id, **fields)
+            print(json.dumps(device.__dict__, indent=2))
             return
-        device = registry.register(args.device_id, args.name, args.kind, args.capability)
-        print(json.dumps(device.__dict__, indent=2))
+        if not args.device_id:
+            print(f"{args.action} requires a device_id")
+            return
+        if args.action == "pair":
+            device = registry.update(args.device_id, pairing_state="paired")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "revoke":
+            device = registry.update(args.device_id, pairing_state="revoked")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "status":
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            print(json.dumps({
+                "device": device.__dict__,
+                "freshness": registry.freshness(args.device_id),
+                "declared_capabilities": device.capabilities,
+                "verified_capabilities": device.verified_capabilities,
+            }, indent=2))
     except ValueError as exc:
-        print(f"Device registration refused: {exc}")
+        print(f"Device operation refused: {exc}")
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:
