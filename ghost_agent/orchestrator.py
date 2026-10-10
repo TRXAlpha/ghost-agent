@@ -70,6 +70,8 @@ RULES:
 - Tests belong in their OWN file named test_*.py (e.g. test_add.py), never inside
   the implementation file. A file that does not start with test_ is not a test file.
 - Stay inside the workspace root. Use only allowed commands.
+- "thought" is at most two short sentences. Never put code in "thought".
+- Write at most ONE file per response; you will get more turns.
 - If no actions needed: {"thought": "...", "actions": []}
 
 STRATEGY:
@@ -78,9 +80,7 @@ STRATEGY:
 - Run tests after implementation
 - If tests fail, fix the specific issues shown
 - Add focused tests for behavior you change, then run the broadest relevant test command.
-- Use web_search when you need current information, documentation, or solutions from the internet
-- If you do not know something, ALWAYS use web_search instead of hallucinating.
-- If asked to come up with a new idea, FIRST use web_search to find what is already done, identify problems in the field, and THEN start working if there is no existing solution.
+- Use web_search only when the task needs information that is not in the workspace or the task description.
 
 EXAMPLES:
 
@@ -88,7 +88,7 @@ Example 1 - Create a file:
 {"thought": "Create hello.py with a greeting function", "actions": [{"tool": "write_file", "path": "hello.py", "content": "def greet(name):\\n    return f\\\"Hello, {name}!\\\"\\n\\nif __name__ == '__main__':\\n    print(greet('World'))"}]}
 
 Example 2 - Read then write:
-{"thought": "Read the existing file to understand its structure", "actions": [{"tool": "read_file", "path": "main.py"}, {"tool": "write_file", "path": "main.py", "content": "# updated content"}]}
+{"thought": "Read the existing file to understand its structure", "actions": [{"tool": "read_file", "path": "main.py"}, {"tool": "write_file", "path": "main.py", "content": "def add(a, b):\\n    return a + b\\n\\nprint(add(2, 3))"}]}
 
 Example 3 - Run tests:
 {"thought": "Run the test suite to verify the implementation", "actions": [{"tool": "run_cmd", "cmd": "pytest -q", "cwd": "."}]}
@@ -166,7 +166,7 @@ class Orchestrator:
         verbose: bool = False,
         tui: Optional[TUICallback] = None,
         max_input_chars: int = 24_000,
-        max_output_tokens: int = 2048,
+        max_output_tokens: int = 4096,
     ) -> None:
         if type(max_input_chars) is not int or max_input_chars <= 0:
             raise ValueError("max_input_chars must be a positive integer")
@@ -531,6 +531,7 @@ class Orchestrator:
         state.setdefault("parse_errors", 0)
         state.setdefault("results_history", [])
         state.setdefault("model_failures", 0)
+        state.setdefault("truncations", 0)
         while True:
             if state["phase"] != "DONE" and EmergencyStop(self.repo_root).active():
                 state["phase"] = "DONE"
@@ -588,6 +589,8 @@ class Orchestrator:
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
                     state["model_failures"] = state.get("model_failures", 0) + 1
+                    if parse_error.startswith("Your response was cut off"):
+                        state["truncations"] = state.get("truncations", 0) + 1
                 else:
                     state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
@@ -602,15 +605,18 @@ class Orchestrator:
                     state["files_touched"], touched
                 )
                 if self._has_errors(results):
-                    state["phase"] = "REPAIR"
-                    state["last_result"] = "plan_failed"
+                    # TH5: a failed plan must not burn iterations in REPAIR;
+                    # skip straight to IMPLEMENT with the plan error as feedback.
+                    state["phase"] = "IMPLEMENT"
+                    state["last_result"] = "plan_skipped"
                     last_feedback = self._format_results(results)
-                    strategy = "plan_and_repair"
+                    strategy = "plan_first"
                 else:
                     if not plan_path.exists():
-                        state["phase"] = "REPAIR"
-                        state["last_result"] = "plan_missing"
+                        state["phase"] = "IMPLEMENT"
+                        state["last_result"] = "plan_skipped"
                         last_feedback = "plan.md was not created."
+                        strategy = "plan_first"
                     else:
                         state["phase"] = "IMPLEMENT"
                         state["last_result"] = "plan_ok"
@@ -642,6 +648,8 @@ class Orchestrator:
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
                     state["model_failures"] = state.get("model_failures", 0) + 1
+                    if parse_error.startswith("Your response was cut off"):
+                        state["truncations"] = state.get("truncations", 0) + 1
                 else:
                     state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
@@ -766,6 +774,8 @@ class Orchestrator:
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
                     state["model_failures"] = state.get("model_failures", 0) + 1
+                    if parse_error.startswith("Your response was cut off"):
+                        state["truncations"] = state.get("truncations", 0) + 1
                 else:
                     state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
@@ -1135,6 +1145,15 @@ class Orchestrator:
             return parse_action_response(response_text), None
         except ValueError as exc:
             llm_log.log({"parse_error": str(exc)})
+            # Truncation heuristic: a JSON response cut off mid-object will not
+            # end with a closing brace or a closed code fence.
+            stripped = response_text.strip()
+            if not stripped.endswith("}") and not (
+                    stripped.endswith("```") and "}" in stripped[:-3]):
+                return ActionResponse(thought="truncated", actions=[]), (
+                    "Your response was cut off because it was too long. "
+                    "Keep thought to one sentence and write only ONE file per response."
+                )
             return ActionResponse(thought="invalid_json", actions=[]), str(exc)
 
     def _execute_actions(
