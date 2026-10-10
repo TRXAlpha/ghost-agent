@@ -1775,11 +1775,55 @@ def main() -> None:
     repair_parser.add_argument("--isolation", choices=["auto", "container", "host"], default="auto",
                                help="Where the evaluator runs: container when available, host fallback, or host only")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
-    device_parser.add_argument("action", choices=["list", "register"])
+    device_parser.add_argument("action", choices=["list", "register", "pair", "revoke",
+                                                  "status", "simulate"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
     device_parser.add_argument("--capability", action="append", default=[])
+    device_parser.add_argument("--transport", default=None,
+                               help="unknown|usb_serial|ble|wifi|cloud_api|simulated")
+    device_parser.add_argument("--firmware", default=None, help="Firmware version string")
+    # TF3: simulated pan/tilt command through the safety gate (no real hardware).
+    device_parser.add_argument("--pan", type=float, default=None)
+    device_parser.add_argument("--tilt", type=float, default=None)
+    device_parser.add_argument("--duration", type=float, default=1.0,
+                               help="Command duration in seconds")
+    device_parser.add_argument("--disconnect", action="store_true",
+                               help="Disconnect the simulator after the command")
+    # TF1/TF4: `ghost huawei` — synthetic/manual data only until Huawei
+    # credentials are configured (S02). One CLI action per existing public
+    # HuaweiRoute method; no network calls.
+    huawei_parser = sub.add_parser(
+        "huawei",
+        help=("Huawei health route (synthetic/manual data only until Huawei "
+              "credentials are configured)"))
+    huawei_sub = huawei_parser.add_subparsers(dest="huawei_action")
+    huawei_sub.add_parser("route", help="Show the provider route record")
+    huawei_sub.add_parser("status", help="Show integration state (honest, not configured until it is)")
+    huawei_register = huawei_sub.add_parser("register-route",
+                                            help="Register the provider route record")
+    huawei_register.add_argument("--name", required=True)
+    huawei_register.add_argument("--source", action="append", required=True)
+    huawei_register.add_argument("--prerequisite", action="append", default=[])
+    huawei_register.add_argument("--limitation", action="append", default=[])
+    huawei_set_state = huawei_sub.add_parser("set-state", help="Set the integration state")
+    huawei_set_state.add_argument("state", choices=["discovered", "configured", "active",
+                                                    "revoked", "unavailable"])
+    huawei_ingest = huawei_sub.add_parser("ingest",
+                                          help="Ingest synthetic observations from a JSON file")
+    huawei_ingest.add_argument("file", help="JSON file of observation rows")
+    huawei_correct = huawei_sub.add_parser("correct",
+                                           help="Record an owner context correction")
+    huawei_correct.add_argument("note", help="e.g. illness, travel, unworn watch, rest day")
+    huawei_correct.add_argument("--effect", default="")
+    huawei_trend = huawei_sub.add_parser("trend", help="Trend summary (measured only)")
+    huawei_trend.add_argument("--metric", default="activity")
+    huawei_trend.add_argument("--window-seconds", type=float, default=7 * 86400)
+    huawei_retention = huawei_sub.add_parser("retention", help="Show or set retention days")
+    huawei_retention.add_argument("--days", type=int, default=None)
+    huawei_purge = huawei_sub.add_parser("purge", help="Purge stored observations")
+    huawei_purge.add_argument("--all", action="store_true", dest="purge_all")
     mcp_parser = sub.add_parser("mcp", help="Scaffold a reviewable local MCP add-on")
     mcp_parser.add_argument("name")
     mcp_parser.add_argument("--goal", required=True)
@@ -1930,6 +1974,7 @@ def main() -> None:
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
+        "huawei": lambda: _cmd_huawei(args),
         "mcp": lambda: _cmd_mcp(args),
         "parallel": lambda: _cmd_parallel(args),
         "gaps": lambda: _cmd_gaps(args),
@@ -3494,13 +3539,115 @@ def _cmd_device(args: argparse.Namespace) -> None:
         if args.action == "list":
             print(json.dumps([device.__dict__ for device in registry.list()], indent=2))
             return
-        if not args.device_id or not args.name or not args.capability:
-            print("register requires device_id, --name, and at least one --capability")
+        if args.action == "register":
+            if not args.device_id or not args.name or not args.capability:
+                print("register requires device_id, --name, and at least one --capability")
+                return
+            device = registry.register(args.device_id, args.name, args.kind, args.capability)
+            transport = getattr(args, "transport", None)
+            firmware = getattr(args, "firmware", None)
+            if transport or firmware:
+                fields: dict = {}
+                if transport:
+                    fields["transport"] = transport
+                if firmware is not None:
+                    fields["firmware_version"] = firmware
+                device = registry.update(device.device_id, **fields)
+            print(json.dumps(device.__dict__, indent=2))
             return
-        device = registry.register(args.device_id, args.name, args.kind, args.capability)
-        print(json.dumps(device.__dict__, indent=2))
+        if not args.device_id:
+            print(f"{args.action} requires a device_id")
+            return
+        if args.action == "pair":
+            device = registry.update(args.device_id, pairing_state="paired")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "revoke":
+            device = registry.update(args.device_id, pairing_state="revoked")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "status":
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            print(json.dumps({
+                "device": device.__dict__,
+                "freshness": registry.freshness(args.device_id),
+                "declared_capabilities": device.capabilities,
+                "verified_capabilities": device.verified_capabilities,
+            }, indent=2))
+        elif args.action == "simulate":
+            from .device_control import (CommandRefused, DeviceCommandGate,
+                                         PanTiltCommand, SimulatedPanTilt,
+                                         limits_from_constraints)
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            if args.pan is None or args.tilt is None:
+                print("simulate requires --pan and --tilt")
+                return
+            limits = limits_from_constraints(device.constraints)
+            sim = SimulatedPanTilt(limits)
+            sim.connected = True
+            gate = DeviceCommandGate(Path.cwd(), registry, args.device_id, limits)
+            try:
+                result = gate.send(sim, PanTiltCommand(args.pan, args.tilt), args.duration)
+                if args.disconnect:
+                    sim.disconnect()
+                print(json.dumps(result, indent=2))
+            except CommandRefused as exc:
+                print(f"Command refused: {exc}")
     except ValueError as exc:
-        print(f"Device registration refused: {exc}")
+        print(f"Device operation refused: {exc}")
+
+
+def _cmd_huawei(args: argparse.Namespace) -> None:
+    """TF1/TF4: synthetic-only Huawei route CLI; no network calls, privacy-guarded."""
+    from .huawei_route import HuaweiRoute, HuaweiRouteError
+    route = HuaweiRoute(Path.cwd())
+    action = getattr(args, "huawei_action", None)
+    try:
+        if action == "route":
+            record = route.route()
+            print(json.dumps(record.__dict__ if record else None, indent=2))
+        elif action == "status":
+            record = route.route()
+            print(json.dumps({
+                "provider": "huawei",
+                "state": record.state if record else "not_configured",
+                "note": ("synthetic/manual data only until Huawei credentials are "
+                         "configured"),
+            }, indent=2))
+        elif action == "register-route":
+            record = route.register_route(args.name, args.source, time.time(),
+                                          args.prerequisite, args.limitation)
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "set-state":
+            print(json.dumps(route.set_state(args.state).__dict__, indent=2))
+        elif action == "ingest":
+            raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            obs = route.ingest(raw)
+            # Privacy guard: counts and metrics only, never observation values.
+            print(json.dumps({"ingested": len(obs),
+                              "metrics": sorted({o.metric for o in obs})}, indent=2))
+        elif action == "correct":
+            correction = route.correct_context(args.note, args.effect)
+            print(json.dumps(correction.__dict__, indent=2))
+        elif action == "trend":
+            print(json.dumps(route.trend_summary(time.time(), args.window_seconds,
+                                                 args.metric), indent=2))
+        elif action == "retention":
+            if args.days is not None:
+                route.set_retention_days(args.days)
+            print(json.dumps({"retention_days": route.retention_days()}, indent=2))
+        elif action == "purge":
+            removed = route.purge_all() if args.purge_all else route.purge_expired()
+            print(json.dumps({"removed": removed}, indent=2))
+        else:
+            print("huawei requires a sub-command (route, status, register-route, "
+                  "set-state, ingest, correct, trend, retention, purge)")
+    except (HuaweiRouteError, ValueError) as exc:
+        print(f"Huawei route refused: {exc}")
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:

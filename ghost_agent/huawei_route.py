@@ -86,6 +86,7 @@ class HuaweiRoute:
         self.observations_path = self.dir_path / "observations.json"
         self.context_path = self.dir_path / "context.json"
         self.privacy_path = self.dir_path / "privacy.json"
+        self.retention_path = self.dir_path / "retention.json"
         self.ingest_fn = ingest_fn  # injectable raw-fetch for synthetic data
         # Reuse the existing shared world/event bus (no second observation system).
         self.world = WorldModel(self.root)
@@ -141,9 +142,56 @@ class HuaweiRoute:
                 source="huawei_route"))
         return route
 
+    # -- retention (R11: selective retention of health observations) ---------
+    DEFAULT_RETENTION_DAYS = 90
+
+    def retention_days(self) -> int:
+        if not self.retention_path.exists():
+            return self.DEFAULT_RETENTION_DAYS
+        try:
+            value = json.loads(self.retention_path.read_text(encoding="utf-8")).get("retention_days")
+        except (OSError, ValueError, AttributeError):
+            return self.DEFAULT_RETENTION_DAYS
+        if not isinstance(value, int) or not 1 <= value <= 3650:
+            return self.DEFAULT_RETENTION_DAYS
+        return value
+
+    def set_retention_days(self, days: int) -> int:
+        if not isinstance(days, int) or not 1 <= days <= 3650:
+            raise HuaweiRouteError("retention_days must be an integer between 1 and 3650")
+        atomic_json(self.retention_path, {"retention_days": days})
+        return days
+
+    def purge_expired(self, now: Optional[float] = None) -> int:
+        """Remove observations older than the retention window; return the count."""
+        now_ts = time.time() if now is None else float(now)
+        cutoff = now_ts - self.retention_days() * 86400
+        with exclusive_lock(self.observations_path.with_suffix(".lock")):
+            items = self._load_list(self.observations_path)
+            keep = [i for i in items if float(i.get("timestamp", 0)) >= cutoff]
+            removed = len(items) - len(keep)
+            if removed:
+                self._save_list(self.observations_path, keep)
+        if removed:
+            # Event carries only counts, never observation values (privacy).
+            self.events.emit(Event("huawei.purge", {"removed": removed, "reason": "expired"},
+                                   source="huawei_route"))
+        return removed
+
+    def purge_all(self) -> int:
+        with exclusive_lock(self.observations_path.with_suffix(".lock")):
+            items = self._load_list(self.observations_path)
+            self._save_list(self.observations_path, [])
+        removed = len(items)
+        if removed:
+            self.events.emit(Event("huawei.purge", {"removed": removed, "reason": "purge_all"},
+                                   source="huawei_route"))
+        return removed
+
     # -- ingest (S02: units, timestamp, timezone, freshness, provenance) ----
     def ingest(self, raw: list[dict[str, Any]]) -> list[HealthObservation]:
         """Map raw provider rows into preserved observations; write to shared world."""
+        self.purge_expired()
         current = self.route()
         if current is None or current.state != "active":
             raise HuaweiRouteError("Route must be active before ingesting observations")
