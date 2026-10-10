@@ -131,6 +131,8 @@ class ScheduledJob:
     # Recurrence (OJ07): absent = one-shot job, byte-for-byte legacy behavior.
     recurrence: Optional[Dict[str, Any]] = None  # {"kind": "interval", "interval_seconds": N}
     due_at: Optional[float] = None               # epoch seconds; recurring jobs claim only when due
+    lease_expires_at: Optional[float] = None     # epoch seconds; running claim is stale once past this
+    generation: int = 0                          # incremented on each claim; guards stale worker marks
 
 
 class ResourceMonitor:
@@ -181,6 +183,11 @@ class Scheduler:
                 if ((job.owner is not None and not isinstance(job.owner, str))
                         or not isinstance(job.attempts, int) or job.attempts < 0 or not isinstance(job.budget, dict)):
                     raise ValueError("Invalid ownership or budget state")
+                if not isinstance(job.generation, int) or isinstance(job.generation, bool) or job.generation < 0:
+                    raise ValueError("Invalid generation record")
+                if job.lease_expires_at is not None and (not isinstance(job.lease_expires_at, (int, float))
+                                                        or isinstance(job.lease_expires_at, bool)):
+                    raise ValueError("Invalid lease_expires_at record")
                 if job.recurrence is not None:
                     if (not isinstance(job.recurrence, dict)
                             or job.recurrence.get("kind") != "interval"
@@ -259,12 +266,13 @@ class Scheduler:
                     job = None
             return self._mark_locked(job.job_id, "running", owner=owner) if job else None
 
-    def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None) -> ScheduledJob:
+    def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None,
+             generation: Optional[int] = None) -> ScheduledJob:
         with exclusive_lock(self.path.with_suffix(".lock")):
-            return self._mark_locked(job_id, status, expected)
+            return self._mark_locked(job_id, status, expected, generation=generation)
 
     def _mark_locked(self, job_id: str, status: str, expected: Optional[set[str]] = None,
-                     owner: Optional[str] = None) -> ScheduledJob:
+                     owner: Optional[str] = None, generation: Optional[int] = None) -> ScheduledJob:
         if status not in {"queued", "running", "paused", "completed", "failed", "cancelled"}:
             raise ValueError(f"Unknown job status: {status}")
         jobs = self._load()
@@ -273,16 +281,27 @@ class Scheduler:
                 previous = raw["status"]
                 if expected is not None and previous not in expected:
                     raise ValueError("Job state changed or does not permit this operation")
+                if generation is not None and raw.get("generation", 0) != generation:
+                    raise ValueError("stale generation")
                 if status != previous and status not in self.TRANSITIONS[previous]:
                     raise ValueError(f"Invalid job transition: {previous} -> {status}")
                 if status == "running" and previous == "queued":
                     raw["owner"] = owner
                     raw["attempts"] = raw.get("attempts", 0) + 1
                     raw["claimed_at"] = time.time()
+                    raw["generation"] = raw.get("generation", 0) + 1
+                    lease_seconds = raw.get("budget", {}).get("lease_seconds", 21600)
+                    if (not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool)
+                            or not 60 <= lease_seconds <= 604800):
+                        lease_seconds = 21600
+                    raw["lease_expires_at"] = time.time() + lease_seconds
                 elif status == "queued":
                     raw["owner"] = None
                     raw["claimed_at"] = None
+                    raw["lease_expires_at"] = None
                 raw["status"] = status
+                if status != "running":
+                    raw["lease_expires_at"] = None
                 recurrence_event: Optional[Event] = None
                 if status in {"completed", "failed"} and raw.get("recurrence"):
                     # OJ07: a recurring job settles terminal AND re-queues in the
