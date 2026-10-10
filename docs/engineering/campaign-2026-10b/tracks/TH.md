@@ -118,3 +118,87 @@ by passing argv through. No behavior change.
 **Tests:** `ghost protocol-bench --help` works; a dry/fixture run path if the
 module has one; otherwise only argument forwarding with the run function
 patched.
+
+---
+
+# Added 2026-10-10 by the meta-orchestrator (live benchmark findings)
+
+The live benchmark shows `IMPLEMENT: 0` and 0 completed goals. Root causes
+from `llm.log`:
+
+- The model puts whole files in `thought`, then repeats them in `actions`,
+  and is cut off at `num_predict = 2048` partway through the JSON, which then
+  fails to parse.
+- Code escaped inside JSON strings is mangled by a 7B model.
+- `SYSTEM_PROMPT` Example 2 literally teaches the placeholder `"# updated content"`.
+- The rules say to "ALWAYS use web_search", which drives pointless searches.
+- After a failed PLAN turn the loop never reaches IMPLEMENT (REPAIR ↔ VERIFY only).
+
+Extra files this track owns for these tasks: `ghost_agent/schema.py` and the
+`SYSTEM_PROMPT` constant and `_run_loop` PLAN/REPAIR branches in
+`orchestrator.py`.
+
+## TH5: prompt and output-budget fixes plus truncation feedback (review: 2)
+
+**Decided design:**
+
+1. `Orchestrator.__init__` default `max_output_tokens` goes from 2048 to
+   4096 (the cap stays 8192).
+2. `SYSTEM_PROMPT` edits (exactly these):
+   - Add to RULES: `- "thought" is at most two short sentences. Never put code in "thought".`
+     and `- Write at most ONE file per response; you will get more turns.`
+   - Replace Example 2's `"content": "# updated content"` with real code
+     content (for example a two-line function), so the prompt never shows a
+     placeholder.
+   - Replace the three web_search STRATEGY bullets ("Use web_search when you
+     need…", "If you do not know something, ALWAYS use web_search…", "If asked
+     to come up with a new idea, FIRST use web_search…") with one bullet:
+     `- Use web_search only when the task needs information that is not in the workspace or the task description.`
+3. Truncation detection in `_model_turn`: when parsing fails **and** the
+   stripped response does not end with `}` (nor with a closing ``` fence after
+   a `}`), replace the parse error text with:
+   `"Your response was cut off because it was too long. Keep thought to one sentence and write only ONE file per response."`
+   and count it in `state["truncations"]`. TH1/T10 already add counters;
+   follow their pattern.
+4. Plan failure no longer blocks implementation: in the PLAN branch, if the
+   plan turn fails **for any reason**, go to `IMPLEMENT` (not REPAIR) with
+   `last_result="plan_skipped"`, and set the feedback to the parse/plan error.
+   The plan is an aid, not a gate. The plan turn still happens once.
+
+**Tests:** default max tokens; prompt contains the new rules and no
+`# updated content` (assert on the SYSTEM_PROMPT text); a truncated scripted
+response produces the cut-off feedback and increments truncations; a failed
+plan goes to IMPLEMENT (assert `state["turns"]["IMPLEMENT"] >= 1` with a
+scripted model that fails the plan and then writes a correct file and test).
+
+## TH6: raw file blocks for write_file content (review: 2)
+
+**Goal:** small models write file content without escaping it inside JSON.
+
+**Decided design:**
+
+- New response convention, documented in `SYSTEM_PROMPT` with one example. A
+  `write_file` action may use `"content_ref": "F1"` instead of `"content"`,
+  and the file body follows the JSON object as:
+  ```text
+  <<<F1
+  ...raw file content, any characters...
+  F1>>>
+  ```
+- `schema.parse_action_response`: before JSON parsing, extract all blocks
+  matching `^<<<([A-Z][A-Z0-9_]{0,15})\n(.*?)\n\1>>>$` (multiline, dotall),
+  remove them from the text, parse the JSON as today, then for every
+  `write_file` action with `content_ref`, set `content` to the block body. A
+  missing ref → `ValueError("content_ref F1 has no matching block")`. Having
+  both `content` and `content_ref` is a `ValueError`. Unused blocks are ignored.
+- The existing plain `content` form keeps working unchanged.
+- Update the write_file schema/validator so `content_ref` is allowed and
+  resolved before `_validate_action_inputs` runs (placeholder checks apply to
+  the resolved content).
+- In SYSTEM_PROMPT, make the file-block form the **recommended** form for
+  files over 5 lines.
+
+**Tests:** a block with quotes, backslashes and braces round-trips exactly;
+multiple blocks; a missing ref raises; both content and content_ref raises;
+the plain content form is unchanged; the resolved content passes through the
+T09 placeholder guard.
