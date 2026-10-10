@@ -16,6 +16,8 @@ from .proactive import Opportunity, OpportunityStore
 DEFAULT_WEIGHTS = {"goal_relevance": 0.25, "urgency": 0.2, "confidence": 0.2,
                    "benefit": 0.2, "effort": 0.1, "interruption": 0.05}
 QUEUE_THRESHOLD = 0.55
+# TN3: at most this many initiatives may be queued/running at once.
+MAX_ACTIVE_INITIATIVES = 2
 
 _BENEFIT_VALUES = {"low": 0.2, "medium": 0.6, "high": 1.0}
 _EFFORT_VALUES = {"small": 1.0, "medium": 0.6, "large": 0.3}  # cheaper is better
@@ -41,9 +43,9 @@ def load_weights(root: Path) -> dict[str, float]:
         _warn_invalid(path)
         return merged
     for key, value in raw.items():
-        if key == "threshold":
+        if key in {"threshold", "max_active"}:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                merged["threshold"] = float(value)
+                merged[key] = float(value)
             else:
                 _warn_invalid(path)
         elif key in DEFAULT_WEIGHTS and isinstance(value, (int, float)) \

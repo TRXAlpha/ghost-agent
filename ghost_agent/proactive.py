@@ -619,9 +619,11 @@ class ProactiveEngine:
         self.store.save(proposal)
         # TN1: compute the composite score after building the proposal, before
         # the auto-queue decision reads it.
-        from .initiative import QUEUE_THRESHOLD, score as score_opportunity
+        from .initiative import MAX_ACTIVE_INITIATIVES, QUEUE_THRESHOLD, \
+            score as score_opportunity
         weights = self._score_weights()
         threshold = float(weights.pop("threshold", QUEUE_THRESHOLD))
+        max_active = int(weights.pop("max_active", MAX_ACTIVE_INITIATIVES))
         # TN2: tune the score by this kind's recorded outcome rate (None when
         # there is not enough evidence, which score treats as untuned).
         from .initiative import kind_success_rate
@@ -631,9 +633,16 @@ class ProactiveEngine:
         proposal.score = opportunity_score
         proposal.score_reasons = list(score_reasons)
         queued = False
+        active_count = sum(
+            1 for item in self.store.list(100)
+            if item.status in {"queued", "running"})
         if proposal.status == "proposed" and proposal.confidence >= 0.65 \
                 and proposal.kind != "focus":
-            if auto_queue and opportunity_score >= threshold:
+            # TN3: bound active initiatives before the score gate.
+            if active_count >= max_active:
+                proposal.score_reasons.append(
+                    f"active initiative limit reached ({active_count}/{max_active})")
+            elif auto_queue and opportunity_score >= threshold:
                 queued = True
             elif auto_queue:
                 # Score blocked queueing; stay proposed with the threshold reason.
@@ -655,7 +664,8 @@ class ProactiveEngine:
             job_id = job.job_id
             proposal.updated_at = time.time()
             self.store.save(proposal)
-        elif proposal.score_reasons and proposal.score_reasons[-1].startswith("below queue threshold"):
+        elif proposal.score_reasons and proposal.score_reasons[-1].startswith(
+                ("below queue threshold", "active initiative limit reached")):
             proposal.updated_at = time.time()
             self.store.save(proposal)
         # Enforce bounded backlog whenever a proposal exists, whether it was

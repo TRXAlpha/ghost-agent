@@ -1797,7 +1797,7 @@ def main() -> None:
     why_parser.add_argument("item_id", help="Job id or opportunity id")
     why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
-    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less"])
+    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less", "ranking"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
     proactive_parser.add_argument("--interval-seconds", type=float, default=900)
     proactive_parser.add_argument("--idle-after-seconds", type=float, default=900)
@@ -1807,6 +1807,9 @@ def main() -> None:
     proactive_parser.add_argument("--context-file", action="append", default=[],
                                   help="Project-relative text context for initiative planning; repeatable")
     proactive_parser.add_argument("opportunity_id", nargs="?", default="")
+    # TN3: transparent ranking of proposed/queued opportunities by score.
+    proactive_parser.add_argument("--limit", type=int, default=10,
+                                   help="Max opportunities shown by `proactive ranking`")
     repair_parser = sub.add_parser("self-repair", help="Manage bounded Ghost self-repair proposals")
     repair_parser.add_argument("action", choices=["propose", "verify", "request-promotion"])
     repair_parser.add_argument("value", help="Diagnosis for propose or proposal ID otherwise")
@@ -2099,6 +2102,9 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
         if args.action == "status":
             print(json.dumps([item.__dict__ for item in OpportunityStore(root).list()], indent=2))
             return
+        if args.action == "ranking":
+            _cmd_proactive_ranking(root, limit=args.limit, as_json=args.json)
+            return
         model = _resolve_model(args.model)
         engine = ProactiveEngine(root, model, context_paths=args.context_file)
         if args.action == "tick":
@@ -2124,6 +2130,25 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except ProactiveError as exc:
         print(f"Proactive action refused: {exc}")
+
+
+def _cmd_proactive_ranking(root, *, limit: int = 10, as_json: bool = False) -> None:
+    """TN3: print proposed/queued opportunities sorted by score, with reasons."""
+    from .proactive import OpportunityStore
+    items = [item for item in OpportunityStore(root).list(100)
+             if item.status in {"proposed", "queued"}]
+    items.sort(key=lambda o: o.score, reverse=True)
+    items = items[:max(0, limit)]
+    if as_json:
+        print(json.dumps([item.__dict__ for item in items], indent=2, ensure_ascii=False))
+        return
+    if not items:
+        print("No proposed or queued opportunities.")
+        return
+    for item in items:
+        print(f"{item.score:.3f}  [{item.status}] {item.opportunity_id} {item.goal}")
+        for reason in item.score_reasons:
+            print(f"    - {reason}")
 
 
 def _resolve_model(cli_override: str | None = None) -> str:

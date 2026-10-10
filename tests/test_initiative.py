@@ -239,3 +239,77 @@ def test_tick_passes_kind_success_to_score(tmp_path, monkeypatch):
     record = result["opportunity"]
     assert any("kind_success=0.00" in reason
                for reason in record["score_reasons"])
+
+
+# --- TN3: bound active initiatives + ranking CLI -------------------------------
+
+def test_active_limit_blocks_queueing(tmp_path):
+    from ghost_agent.proactive import OpportunityStore, ProactiveEngine
+    from tests.test_proactive import proposal
+    store = OpportunityStore(tmp_path)
+    # two already-active initiatives: one queued, one running
+    store.save(make_recorded_opp(status="queued"))
+    store.save(make_recorded_opp(status="running"))
+    engine = ProactiveEngine(tmp_path, "tiny",
+                             chat_fn=lambda *a, **k: proposal(confidence=0.9))
+    result = engine.tick()
+    record = result["opportunity"]
+    assert record["status"] == "proposed"
+    assert any(r.startswith("active initiative limit reached (2/2)")
+               for r in record["score_reasons"])
+    # exactly the two pre-existing active items; nothing new queued
+    statuses = [i.status for i in OpportunityStore(tmp_path).list_all()]
+    assert statuses.count("queued") == 1
+    assert statuses.count("running") == 1
+
+
+def test_active_limit_override_from_weights_file(tmp_path):
+    from ghost_agent.proactive import OpportunityStore, ProactiveEngine
+    from tests.test_proactive import proposal
+    (tmp_path / ".ghost").mkdir()
+    (tmp_path / ".ghost/initiative_weights.json").write_text(
+        '{"max_active": 0}', encoding="utf-8")
+    store = OpportunityStore(tmp_path)
+    engine = ProactiveEngine(tmp_path, "tiny",
+                             chat_fn=lambda *a, **k: proposal(confidence=0.9))
+    result = engine.tick()
+    assert result["opportunity"]["status"] == "proposed"
+    assert any(r.startswith("active initiative limit reached (0/0)")
+               for r in result["opportunity"]["score_reasons"])
+
+
+def test_ranking_command_ordered_with_reasons(tmp_path, capsys):
+    from ghost_agent.cli import _cmd_proactive_ranking
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    low = make_recorded_opp(status="proposed", opportunity_id="opp_low")
+    low.score = 0.2
+    low.score_reasons = ["effort large (+0.03)"]
+    high = make_recorded_opp(status="queued", opportunity_id="opp_high")
+    high.score = 0.8
+    high.score_reasons = ["benefit high (+0.20)"]
+    store.save(low)
+    store.save(high)
+    decided = make_recorded_opp(status="completed", opportunity_id="opp_decided")
+    decided.score = 0.99
+    store.save(decided)
+    _cmd_proactive_ranking(tmp_path, limit=10, as_json=False)
+    out = capsys.readouterr().out
+    assert out.index("opp_high") < out.index("opp_low")
+    assert "opp_decided" not in out
+    assert "benefit high (+0.20)" in out
+    assert "effort large (+0.03)" in out
+
+
+def test_ranking_command_json_and_limit(tmp_path, capsys):
+    import json as _json
+    from ghost_agent.cli import _cmd_proactive_ranking
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    for i in range(3):
+        item = make_recorded_opp(status="proposed", opportunity_id=f"opp_{i}")
+        item.score = 0.1 * i
+        store.save(item)
+    _cmd_proactive_ranking(tmp_path, limit=2, as_json=True)
+    rows = _json.loads(capsys.readouterr().out)
+    assert [r["opportunity_id"] for r in rows] == ["opp_2", "opp_1"]
