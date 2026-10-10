@@ -1634,6 +1634,14 @@ def main() -> None:
     capability_retire = capability_sub.add_parser("retire", help="Retire an active capability")
     capability_retire.add_argument("record_id", help="Acquisition record id")
     capability_retire.add_argument("--reason", default="", help="Retirement reason")
+    capability_degrade = capability_sub.add_parser("degrade", help="Mark an active capability degraded")
+    capability_degrade.add_argument("record_id", help="Acquisition record id")
+    capability_degrade.add_argument("--reason", default="", help="Why the capability is degraded")
+    capability_recover = capability_sub.add_parser("recover", help="Return a degraded capability to active")
+    capability_recover.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live = capability_sub.add_parser("verify-live", help="Record live operational verification")
+    capability_verify_live.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live.add_argument("--evidence", default="", help="Live verification evidence")
 
     memory_parser = sub.add_parser("memory",
         help="Manage validated memories (retract/purge)")
@@ -1737,6 +1745,15 @@ def main() -> None:
     checkin_parser.add_argument("--interval-seconds", type=int, default=86400)
     checkin_parser.add_argument("--message", default="Check in: review active goals and pending approvals.")
     checkin_parser.add_argument("--quiet-hours", type=int, nargs=2, default=[22, 8], metavar=("START", "END"))
+    notifications_parser = sub.add_parser("notifications", help="List or acknowledge pending notifications")
+    notifications_sub = notifications_parser.add_subparsers(dest="subaction", required=True)
+    list_parser = notifications_sub.add_parser("list", help="Show deliverable notifications")
+    list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
+    ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
+    ack_parser.add_argument("notification_id")
+    why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
+    why_parser.add_argument("item_id", help="Job id or opportunity id")
+    why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
     proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
@@ -1908,6 +1925,8 @@ def main() -> None:
         "integration": lambda: _cmd_integration(args),
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
+        "notifications": lambda: _cmd_notifications(args),
+        "why": lambda: _cmd_why(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -2648,6 +2667,17 @@ def _cmd_capability(args: argparse.Namespace) -> None:
                 EventBus(Path.cwd()).emit(Event("capability.degraded",
                                                 {"record_id": args.record_id, "health": args.health}))
             print(json.dumps(record.__dict__, indent=2))
+        elif action == "degrade":
+            record = store.advance(args.record_id, "degraded")
+            EventBus(Path.cwd()).emit(Event("capability.degraded",
+                                            {"record_id": args.record_id, "reason": args.reason or ""}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "recover":
+            record = store.advance(args.record_id, "active")
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "verify-live":
+            record = store.mark_operationally_verified(args.record_id, args.evidence or "")
+            print(json.dumps(record.__dict__, indent=2))
         elif action == "retire":
             record = store.get(args.record_id)
             if record is None:
@@ -2798,6 +2828,8 @@ def _cmd_doctor() -> None:
     """Report local runtime health without changing state."""
     doctor = Doctor(Path.cwd())
     checks = doctor.check()
+    tampered = ExtensionManager(Path.cwd()).verify_integrity()
+    checks["extensions"] = f"{len(tampered)} tampered" if tampered else "ok"
     service_names = {"ollama", "docker"}
     storage = {k: v for k, v in checks.items() if k not in service_names}
     services = {k: v for k, v in checks.items() if k in service_names}
@@ -2847,6 +2879,7 @@ def _cmd_emergency_stop(args: argparse.Namespace) -> None:
 def _cmd_extension(args: argparse.Namespace) -> None:
     """Create only reviewable extension scaffolds; enabling is a later approval step."""
     manager = ExtensionManager(Path.cwd())
+    manager.verify_integrity()
     if args.action == "propose":
         manifest = manager.propose(args.name, args.goal)
     elif args.action == "scaffold":
@@ -3139,6 +3172,64 @@ def _cmd_worker(args: argparse.Namespace) -> None:
         if not args.watch:
             return
         time.sleep(max(0.25, args.poll_seconds))
+
+
+def _cmd_notifications(args: argparse.Namespace) -> None:
+    sdk = GhostSDK(Path.cwd())
+    attention = AttentionManager(Path.cwd())
+    try:
+        if args.subaction == "ack":
+            note = attention.acknowledge(args.notification_id)
+            print(json.dumps(note.__dict__, indent=2))
+            return
+        prefs = sdk.notification_preferences()
+        quiet_hours: tuple[int, int] | None = None
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            quiet_hours = (start, end)
+        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours)}
+        if not args.all:
+            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours)], indent=2))
+            return
+        payload = []
+        for note in attention.pending():
+            record = note.__dict__.copy()
+            if note.notification_id not in deliverable_ids:
+                record["held"] = "quiet hours"
+            payload.append(record)
+        print(json.dumps(payload, indent=2))
+    except (ValueError, OSError) as exc:
+        print(f"Notifications refused: {exc}")
+
+
+def _cmd_why(args: argparse.Namespace) -> None:
+    from .control_plane import GhostSDK
+    try:
+        detail = GhostSDK(Path.cwd()).explain(args.item_id)
+    except (ValueError, OSError) as exc:
+        print(f"Explain refused: {exc}")
+        return
+    if detail is None:
+        print(f"No job or opportunity with id {args.item_id}")
+        return
+    if not args.json:
+        job = detail.get("job")
+        opportunity = detail.get("opportunity")
+        goal = detail.get("goal")
+        if job:
+            print(f"Job {job['job_id']}: {job['goal']}")
+            print(f"  status: {job['status']}  result: {job['result'] or 'none'}")
+            if goal:
+                print(f"  goal: {goal['goal_id']} ({goal['status']}) {goal['title']}")
+        elif opportunity:
+            print(f"Opportunity {opportunity['opportunity_id']}: {opportunity['title']}")
+            print(f"  status: {opportunity['status']}  confidence: {opportunity['confidence']}")
+            print(f"  rationale: {opportunity['rationale']}")
+        if detail.get("intent"):
+            print(f"  intent: {detail['intent']['intent_id']} ({detail['intent']['status']})")
+        if detail.get("events"):
+            print(f"  recent events mentioning this id: {len(detail['events'])}")
+    print(json.dumps(detail, indent=2))
 
 
 def _cmd_check_in(args: argparse.Namespace) -> None:

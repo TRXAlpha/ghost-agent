@@ -421,6 +421,7 @@ class Notification:
 class AttentionManager:
     """Persist notifications with acknowledgement and quiet-hour delivery policy."""
     PRIORITIES = {"silent", "normal", "important", "urgent"}
+    BATCH_THRESHOLD = 3
 
     def __init__(self, project_root: Path) -> None:
         self.path = Path(project_root) / ".ghost" / "notifications.json"
@@ -493,14 +494,35 @@ class AttentionManager:
         """Return notifications fit for delivery; urgent items bypass quiet hours."""
         pending = self.pending()
         if quiet_hours is None:
-            return [item for item in pending if item.priority != "silent"]
-        hour = time.localtime().tm_hour if now_hour is None else now_hour
-        if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
-                or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
-            raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
-        start, end = quiet_hours
-        quiet = start <= hour < end if start <= end else hour >= start or hour < end
-        return [item for item in pending if item.priority != "silent" and (not quiet or item.priority == "urgent")]
+            items = [item for item in pending if item.priority != "silent"]
+        else:
+            hour = time.localtime().tm_hour if now_hour is None else now_hour
+            if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
+                    or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
+                raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
+            start, end = quiet_hours
+            quiet = start <= hour < end if start <= end else hour >= start or hour < end
+            items = [item for item in pending if item.priority != "silent" and (not quiet or item.priority == "urgent")]
+        return self._batch(items)
+
+    @classmethod
+    def _batch(cls, items: list[Notification]) -> list[Notification]:
+        """Collapse bursts of normal notifications from one source into one summary."""
+        result: list[Notification] = []
+        for source in {item.source for item in items if item.priority == "normal"}:
+            burst = [item for item in items if item.priority == "normal" and item.source == source]
+            if len(burst) > cls.BATCH_THRESHOLD:
+                newest = max(burst, key=lambda note: note.created_at)
+                # Synthetic copy only: the originals stay pending and individually ackable.
+                result.append(Notification(
+                    "normal",
+                    f"{len(burst)} updates from {source}; latest: {newest.message}",
+                    notification_id=newest.notification_id,
+                    source=source, status="pending", created_at=newest.created_at))
+            else:
+                result.extend(burst)
+        result.extend(item for item in items if item.priority != "normal")
+        return result
 
 
 class Doctor:
