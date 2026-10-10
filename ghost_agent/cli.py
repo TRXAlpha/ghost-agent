@@ -1974,6 +1974,17 @@ def main() -> None:
     deadline_cmd.add_argument("--date", required=True, help="Due date YYYY-MM-DD")
     deadline_cmd.add_argument("--concepts", required=True,
                               help="Comma-separated concept ids the deadline applies to")
+    challenge_cmd = learn_sub.add_parser("challenge", help="Practice challenges with protected oracles (TK2)")
+    challenge_sub = challenge_cmd.add_subparsers(dest="challenge_action")
+    challenge_create = challenge_sub.add_parser("create", help="Create a challenge from a spec JSON file")
+    challenge_create.add_argument("--spec", required=True, help="Path to the challenge spec JSON")
+    challenge_sub.add_parser("list", help="List practice challenges")
+    challenge_check = challenge_sub.add_parser("check", help="Run the oracle on the learner's starter")
+    challenge_check.add_argument("challenge_id", help="Challenge identifier")
+    challenge_check.add_argument("--concept", default="", help="Concept to record the attempt against")
+    challenge_reset = challenge_sub.add_parser("reset", help="Reset a challenge's starter files")
+    challenge_reset.add_argument("challenge_id", help="Challenge identifier")
+    learn_sub.add_parser("formats", help="Show which teaching format works and the recommendation (TK3)")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -4249,8 +4260,67 @@ def _cmd_learn(args: argparse.Namespace) -> None:
               f"{','.join(record['concept_ids'])})")
         return
 
+    if action == "formats":
+        from .learner import FormatStats
+        stats = FormatStats(root).stats()
+        for fmt, s in stats.items():
+            print(f"  {fmt}: generated={s['generated']}, "
+                  f"attempted={s['attempted']}, correct={s['correct']}")
+        rec = FormatStats(root).recommend_format()
+        print(f"Recommended format: {rec['format']} ({rec['reason']})")
+        if rec.get("unused"):
+            print(f"Unused: {', '.join(rec['unused'])} — {rec['unused_reason']}")
+        return
+
+    if action == "challenge":
+        from .challenges import ChallengeError, ChallengeStore
+        store = ChallengeStore(root)
+        caction = getattr(args, "challenge_action", None) or "list"
+        if caction == "create":
+            spec_path = Path(args.spec)
+            try:
+                spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"Spec unreadable: {exc}")
+                return
+            try:
+                challenge_id = store.create(
+                    spec.get("concept_ids", []), spec.get("prompt", ""),
+                    spec.get("starter", {}), spec.get("oracle", {}),
+                    spec.get("solution", {}))
+            except ChallengeError as exc:
+                print(f"Challenge refused: {exc}")
+                return
+            print(f"Created challenge [{challenge_id}]")
+            return
+        if caction == "list":
+            challenges = store.list()
+            if not challenges:
+                print("No challenges.")
+                return
+            for item in challenges:
+                print(f"[{item['challenge_id']}] {item['prompt'][:80]}")
+            return
+        if caction == "check":
+            try:
+                correct, feedback = store.check(
+                    args.challenge_id, getattr(args, "concept", "") or "")
+            except ChallengeError as exc:
+                print(f"Check refused: {exc}")
+                return
+            print(("correct" if correct else "incorrect") + f" — {feedback[:300]}")
+            return
+        if caction == "reset":
+            try:
+                store.reset(args.challenge_id)
+            except ChallengeError as exc:
+                print(f"Reset refused: {exc}")
+                return
+            print(f"Reset starter for [{args.challenge_id}]")
+            return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint, deadline")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint, deadline, challenge, formats")
 
 
 # ============================================================================
