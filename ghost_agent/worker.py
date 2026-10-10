@@ -34,6 +34,19 @@ class OutcomeWorker:
         self.attention = AttentionManager(self.root)
         self.owner = "worker_" + uuid4().hex
 
+    def _record_stop_observation(self, component: str) -> None:
+        """Record this worker's first observation of an engaged emergency stop."""
+        from .security import SecurityMonitor
+        latency = EmergencyStop(self.root).observe(component)
+        if latency is None:
+            return  # already observed, or no longer active
+        try:
+            SecurityMonitor(self.root).record_event(
+                "emergency_stop.observed",
+                {"component": component, "latency_s": str(latency)})
+        except OSError:
+            pass
+
     def run_next(
         self,
         handler: Callable[[ScheduledJob], WorkerResult],
@@ -62,6 +75,7 @@ class OutcomeWorker:
                for job in self.scheduler.list()):
             return None
         if EmergencyStop(self.root).active():
+            self._record_stop_observation("worker")
             self.events.emit(Event("worker.skipped", {"reason": "emergency_stop"}, source="worker"))
             return None
         job = self.scheduler.claim_next(ResourceMonitor(self.root).available() if available is None else available,

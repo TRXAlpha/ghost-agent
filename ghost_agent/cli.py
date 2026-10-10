@@ -2801,15 +2801,41 @@ def _cmd_doctor() -> None:
 
 def _cmd_emergency_stop(args: argparse.Namespace) -> None:
     """Engage, clear, or inspect the runtime emergency stop."""
-    stop = EmergencyStop(Path.cwd())
+    from .security import SecurityMonitor
+    root = Path.cwd()
+    stop = EmergencyStop(root)
+    scheduler = Scheduler(root)
+    monitor = SecurityMonitor(root)
     if args.action == "engage":
         stop.engage(args.reason)
-        print("Emergency stop engaged.")
+        held = scheduler.hold_all(args.reason)
+        print(f"Emergency stop engaged. {len(held)} queued job(s) paused by emergency stop.")
     elif args.action == "clear":
+        released = scheduler.release_emergency_stop_holds()
         stop.clear()
-        print("Emergency stop cleared.")
+        print(f"Emergency stop cleared. {len(released)} job(s) requeued.")
     else:
-        print("engaged" if stop.active() else "clear")
+        if not stop.active():
+            print("clear")
+            return
+        engaged = stop.engaged_at()
+        print(json.dumps({"engaged": True,
+                          "engaged_at": engaged,
+                          "observed": [{"component": name, "latency_s": latency}
+                                       for name, latency in _observed_components(root, monitor)],
+                          }, indent=2, default=str))
+
+
+def _observed_components(root: Path, monitor) -> list[tuple[str, object]]:
+    """Report which components observed the stop and their recorded latencies."""
+    latencies: dict[str, object] = {}
+    for event in monitor.recent_events():
+        if event.get("kind") == "emergency_stop.observed":
+            detail = event.get("detail", {})
+            component = detail.get("component")
+            if component is not None:
+                latencies[component] = detail.get("latency_s")
+    return sorted(latencies.items())
 
 
 def _cmd_extension(args: argparse.Namespace) -> None:
