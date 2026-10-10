@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .audit import audit_all, audit_run
+from dataclasses import asdict
 from .autonomy import CapabilityRegistry, OutcomeStore
 from .kernel import (ActionProposal, CapabilityKernel, CapabilityManifest, GoalStore,
                      TransactionJournal)
@@ -1783,6 +1784,15 @@ def main() -> None:
     list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
     ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
     ack_parser.add_argument("notification_id")
+    focus_parser = sub.add_parser("focus", help="Start, check, or stop a focus session")
+    focus_sub = focus_parser.add_subparsers(dest="subaction", required=True)
+    focus_start = focus_sub.add_parser("start", help="Start a focus session")
+    focus_start.add_argument("--purpose", required=True, help="What this focus session is for")
+    focus_start.add_argument("--minutes", type=int, required=True, help="Session length in minutes (1-600)")
+    focus_start.add_argument("--hold-notifications", action="store_true",
+                             help="Hold normal/silent notifications for the session")
+    focus_sub.add_parser("status", help="Show the active focus session")
+    focus_sub.add_parser("stop", help="Stop the active focus session immediately")
     why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
     why_parser.add_argument("item_id", help="Job id or opportunity id")
     why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
@@ -2031,6 +2041,7 @@ def main() -> None:
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
         "notifications": lambda: _cmd_notifications(args),
+        "focus": lambda: _cmd_focus(args),
         "why": lambda: _cmd_why(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
@@ -3332,19 +3343,42 @@ def _cmd_notifications(args: argparse.Namespace) -> None:
         start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
         if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
             quiet_hours = (start, end)
-        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours)}
+        from .focus import FocusStore
+        active_focus = FocusStore(Path.cwd()).active()
+        focus = active_focus is not None and "hold_notifications" in active_focus.interventions
+        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)}
         if not args.all:
-            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours)], indent=2))
+            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)], indent=2))
             return
         payload = []
         for note in attention.pending():
             record = note.__dict__.copy()
             if note.notification_id not in deliverable_ids:
-                record["held"] = "quiet hours"
+                record["held"] = "focus" if focus and note.priority in ("normal", "silent") else "quiet hours"
             payload.append(record)
         print(json.dumps(payload, indent=2))
     except (ValueError, OSError) as exc:
         print(f"Notifications refused: {exc}")
+
+
+def _cmd_focus(args: argparse.Namespace) -> None:
+    from .focus import FocusStore
+    try:
+        store = FocusStore(Path.cwd())
+        if args.subaction == "start":
+            interventions = ["hold_notifications"] if args.hold_notifications else []
+            session = store.start(args.purpose, args.minutes, interventions)
+        elif args.subaction == "stop":
+            session = store.stop()
+        else:
+            session = store.active()
+    except (ValueError, OSError) as exc:
+        print(f"Focus refused: {exc}")
+        return
+    if session is None:
+        print("No active focus session")
+        return
+    print(json.dumps(asdict(session), indent=2))
 
 
 def _cmd_why(args: argparse.Namespace) -> None:
