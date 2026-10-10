@@ -26,7 +26,7 @@ def _sig(error_type: str = "timeout", subsystem: str = "worker",
 
 # ── propose ────────────────────────────────────────────────────────────────
 
-def test_propose_queues_project_mode_job(tmp_path: Path):
+def test_propose_queues_project_mode_job(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose([_sig(count=3)], "test-model")
     assert cand is not None
@@ -42,7 +42,7 @@ def test_propose_queues_project_mode_job(tmp_path: Path):
     assert any(s.job_id == cand.job_id for s in scheduled)
 
 
-def test_propose_skips_low_count_and_duplicates(tmp_path: Path):
+def test_propose_skips_low_count_and_duplicates(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     assert improver.propose([_sig(count=1)], "m") is None
     first = improver.propose([_sig(count=2)], "m")
@@ -65,7 +65,7 @@ def test_propose_blocked_marker_fails_candidate(tmp_path: Path):
     assert "queue refused" in cand.failure_reason
 
 
-def test_goal_text_within_limit(tmp_path: Path):
+def test_goal_text_within_limit(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose(
         [_sig(count=2, sample="x" * 5000)], "m")
@@ -88,7 +88,7 @@ def _simulate_worker_pass(tmp_path: Path, job_id: str) -> None:
     store.save(job)
 
 
-def test_sync_hands_passing_job_to_self_repair(tmp_path: Path):
+def test_sync_hands_passing_job_to_self_repair(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose([_sig(count=2)], "m")
     assert cand is not None and cand.job_id
@@ -105,7 +105,7 @@ def test_sync_hands_passing_job_to_self_repair(tmp_path: Path):
     assert ".ghost" not in Path(proposal.sandbox).parts
 
 
-def test_sync_failed_job_marks_failed(tmp_path: Path):
+def test_sync_failed_job_marks_failed(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose([_sig(count=2)], "m")
     store = OutcomeStore(tmp_path)
@@ -120,7 +120,7 @@ def test_sync_failed_job_marks_failed(tmp_path: Path):
     assert SelfRepairManager(tmp_path).list() == []
 
 
-def test_sync_leaves_running_job(tmp_path: Path):
+def test_sync_leaves_running_job(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose([_sig(count=2)], "m")
     assert cand is not None
@@ -129,7 +129,7 @@ def test_sync_leaves_running_job(tmp_path: Path):
     assert improver.store.get_candidate(cand.candidate_id).status == "queued"
 
 
-def test_sync_refuses_existing_handoff_dir(tmp_path: Path):
+def test_sync_refuses_existing_handoff_dir(tmp_path: Path, permissive_policy):
     improver = SelfImprover(tmp_path)
     cand = improver.propose([_sig(count=2)], "m")
     _simulate_worker_pass(tmp_path, cand.job_id)
@@ -161,7 +161,7 @@ def test_old_candidate_records_still_load(tmp_path: Path):
     assert listed[0].candidate_id == "imp_legacy1"
 
 
-def test_no_live_tree_modification(tmp_path: Path):
+def test_no_live_tree_modification(tmp_path: Path, permissive_policy):
     def snapshot() -> set[str]:
         return sorted(
             str(p.relative_to(tmp_path))

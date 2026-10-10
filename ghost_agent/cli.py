@@ -1700,6 +1700,10 @@ def main() -> None:
     approval_parser.add_argument("action", choices=["list", "approve", "reject"])
     approval_parser.add_argument("approval_id", nargs="?")
     approval_parser.add_argument("--note", default="")
+    policy_parser = sub.add_parser("policy", help="Show or set standing autonomy policy modes")
+    policy_parser.add_argument("action", choices=["show", "set"])
+    policy_parser.add_argument("mode", nargs="?")
+    policy_parser.add_argument("state", nargs="?", choices=["on", "off"])
     promote_parser = sub.add_parser("promote", help="Preview, approve, commit, or undo sandbox promotion")
     promote_parser.add_argument("action", choices=["request", "commit", "rollback", "list"])
     promote_parser.add_argument("value", nargs="?", default="", help="Sandbox path, transaction id, or promotion id")
@@ -1880,6 +1884,7 @@ def main() -> None:
         "emergency-stop": lambda: _cmd_emergency_stop(args),
         "extension": lambda: _cmd_extension(args),
         "approval": lambda: _cmd_approval(args),
+        "policy": lambda: _cmd_policy(args),
         "promote": lambda: _cmd_promote(args),
         "control-plane": _cmd_control_plane,
         "api": lambda: _cmd_api(args),
@@ -2839,6 +2844,22 @@ def _cmd_approval(args: argparse.Namespace) -> None:
         return
     request = store.decide(args.approval_id, args.action == "approve", args.note)
     print(json.dumps(request.__dict__, indent=2))
+
+
+def _cmd_policy(args: argparse.Namespace) -> None:
+    """Show or set standing autonomy policy modes (owner authority)."""
+    from .policy import PolicyError, PolicyStore
+    store = PolicyStore(Path.cwd())
+    try:
+        if args.action == "show":
+            print(json.dumps(store.load(), indent=2))
+            return
+        if not args.mode or not args.state:
+            print("usage: ghost policy set <mode> on|off")
+            return
+        print(json.dumps(store.set(args.mode, args.state == "on"), indent=2))
+    except PolicyError as exc:
+        print(str(exc))
 
 
 def _cmd_promote(args: argparse.Namespace) -> None:

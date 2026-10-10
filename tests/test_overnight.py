@@ -234,7 +234,7 @@ class TestRunUntilIdle:
 
 
 class TestRun:
-    def test_max_cycles_stops(self, tmp_path):
+    def test_max_cycles_stops(self, tmp_path, permissive_policy):
         r = OvernightRunner(tmp_path, "gemma4:26b",
                             proactive_tick=fake_tick(),
                             worker_fn=lambda: None)

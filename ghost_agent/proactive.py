@@ -232,6 +232,14 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
     if workspace_mode not in {"project", "empty"}:
         raise ProactiveError("workspace_mode must be 'project' or 'empty'")
 
+    from .policy import PolicyError, PolicyStore
+    try:
+        PolicyStore(root).require("build", f"queueing {source} sandbox work")
+        if source == "self_improver":
+            PolicyStore(root).require("improve", f"queueing {source} sandbox work")
+    except PolicyError as exc:
+        raise ProactiveError(str(exc)) from exc
+
     goals = GoalStore(root)
     goal_record = goals.create(clean_goal, kind="proactive", priority=priority,
                                constraints=["Sandbox-only; no live promotion or external side effects."])
@@ -563,6 +571,8 @@ class ProactiveEngine:
 
     def watch(self, *, interval: float = 900, idle_after: float = 900, auto_queue: bool = True,
               run_worker: Optional[Callable[[], Any]] = None) -> None:
+        from .policy import PolicyStore
+        PolicyStore(self.root).require("idle_work", "unattended background work")
         if type(interval) not in (int, float) or not 15 <= interval <= 86_400:
             raise ProactiveError("watch interval must be between 15 and 86400 seconds")
         while True:
