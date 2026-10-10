@@ -377,8 +377,31 @@ class ProactiveEngine:
                 break
         return documents
 
+    def _mark_stale_throttled(self, store: GoalStore) -> list:
+        """Run mark_stale at most once per 6 h; state in .ghost/proactive_state.json."""
+        state_path = self.root / ".ghost" / "proactive_state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        now = time.time()
+        if now - float(state.get("mark_stale_at", 0)) < 6 * 3600:
+            return []
+        stale = store.mark_stale(now)
+        atomic_json(state_path, {**state, "mark_stale_at": now})
+        return stale
+
+    def _stale_goals_report(self, store: GoalStore) -> list:
+        """Active goals past their deadline (what mark_stale marks), for the prompt."""
+        now = time.time()
+        return [g for g in store.active() if g.deadline_at is not None and g.deadline_at < now]
+
     def context(self) -> dict[str, Any]:
-        goals = GoalStore(self.root).active()
+        store = GoalStore(self.root)
+        # Report stale goals before mark_stale flips them out of "active"
+        stale = self._stale_goals_report(store)
+        self._mark_stale_throttled(store)
+        goals = store.active()
         outcomes = OutcomeStore(self.root).list()
         devices = DeviceRegistry(self.root).list()
         files = []
@@ -386,7 +409,7 @@ class ProactiveEngine:
             path = self.root / name
             if path.exists():
                 files.append({"path": name, "kind": "directory" if path.is_dir() else "file"})
-        return {
+        context = {
             "project": str(self.root),
             "visible_context": files,
             "active_goals": [asdict(item) for item in goals[:8]],
@@ -404,6 +427,19 @@ class ProactiveEngine:
                 "A queued outcome runs only in Ghost's existing sandbox worker and still requires verification and promotion review.",
             ],
         }
+        # TD2: stale goals / upcoming deadlines.  Key presence drives TD1's
+        # trigger ("stale_goal" when "stale_goals" is in context), so empty
+        # lists are omitted rather than sent as empty keys.
+        if stale:
+            context["stale_goals"] = [
+                {"goal_id": g.goal_id, "title": g.title} for g in stale[:5]]
+        deadlines = [g for g in goals if g.deadline_at is not None
+                     and g.deadline_at <= time.time() + 7 * 86400]
+        if deadlines:
+            context["upcoming_deadlines"] = [
+                {"goal_id": g.goal_id, "title": g.title, "deadline_at": g.deadline_at}
+                for g in deadlines[:5]]
+        return context
 
     def _prompt(self, context: dict[str, Any]) -> list[dict[str, str]]:
         return [
