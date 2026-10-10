@@ -16,6 +16,10 @@ from typing import Any
 from .control_plane import GhostSDK
 from .dashboard import render_dashboard
 
+from .focus import FocusStore
+from .policy import PolicyError, PolicyStore
+from .runtime import EmergencyStop
+
 MAX_REQUEST_BYTES = 64 * 1024
 
 
@@ -48,6 +52,12 @@ class ControlPlaneAPI:
                  authorization: str = "") -> tuple[int, dict[str, Any]]:
         if self.token and not hmac.compare_digest(authorization.encode(), f"Bearer {self.token}".encode()):
             return HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}
+        data = payload if isinstance(payload, dict) else {}
+        # A configured token still gates owner routes; only when none is set
+        # do the safer owner routes (engage) answer without credentials.
+        pre = self._dispatch_owner_controls(method, path.rstrip("/") or path, data)
+        if pre is not None:
+            return pre
         if payload is not None and not isinstance(payload, dict):
             return HTTPStatus.BAD_REQUEST, {"error": "JSON body must be an object"}
         data = payload or {}
@@ -90,6 +100,89 @@ class ControlPlaneAPI:
                     return HTTPStatus.CONFLICT, {"error": str(exc)}
             return HTTPStatus.NOT_FOUND, {"error": "endpoint not found"}
         return HTTPStatus.NOT_FOUND, {"error": "endpoint not found"}
+
+    def _owner_change_allowed(self) -> tuple[int, dict[str, Any]] | None:
+        # Authority changes need an explicit secret: without a configured
+        # token they are refused even though other routes work unauthenticated.
+        if not self.token:
+            return (HTTPStatus.FORBIDDEN,
+                    {"error": "set GHOST_API_TOKEN to change policy or disengage emergency stop over the API"})
+        return None
+
+    def _dispatch_owner_controls(self, method: str, path: str,
+                                 data: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+        """Handle the owner-control routes; None means not one of them."""
+        if method == "GET" and path == "/v1/policy":
+            return HTTPStatus.OK, PolicyStore(self.sdk.root).load()
+        if method == "POST" and path == "/v1/policy":
+            denied = self._owner_change_allowed()
+            if denied:
+                return denied
+            mode, enabled = data.get("mode"), data.get("enabled")
+            if not isinstance(mode, str) or not mode.strip():
+                return HTTPStatus.BAD_REQUEST, {"error": "mode is required"}
+            if type(enabled) is not bool:
+                return HTTPStatus.BAD_REQUEST, {"error": "enabled must be a bool"}
+            try:
+                return HTTPStatus.OK, PolicyStore(self.sdk.root).set(mode, enabled)
+            except PolicyError as exc:
+                return HTTPStatus.CONFLICT, {"error": str(exc)}
+        if method == "GET" and path == "/v1/notifications":
+            return HTTPStatus.OK, self.sdk.notifications_overview()
+        if method == "POST" and path.startswith("/v1/notifications/") and path.endswith("/ack"):
+            note_id = path[len("/v1/notifications/"):-len("/ack")]
+            if not note_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "notification id is required"}
+            try:
+                note = self.sdk.attention.acknowledge(note_id)
+            except ValueError as exc:
+                return HTTPStatus.NOT_FOUND, {"error": str(exc)}
+            return HTTPStatus.OK, note.__dict__
+        if method == "GET" and path == "/v1/focus":
+            session = FocusStore(self.sdk.root).active()
+            return HTTPStatus.OK, session.__dict__ if session is not None else None
+        if method == "POST" and path == "/v1/focus/start":
+            purpose, minutes = data.get("purpose"), data.get("minutes")
+            if not isinstance(purpose, str) or not purpose.strip():
+                return HTTPStatus.BAD_REQUEST, {"error": "purpose is required"}
+            if type(minutes) is not int:
+                return HTTPStatus.BAD_REQUEST, {"error": "minutes must be an integer"}
+            interventions = ["hold_notifications"] if data.get("hold_notifications") else []
+            try:
+                session = FocusStore(self.sdk.root).start(purpose, minutes, interventions)
+            except ValueError as exc:
+                return HTTPStatus.CONFLICT, {"error": str(exc)}
+            return HTTPStatus.CREATED, session.__dict__
+        if method == "POST" and path == "/v1/focus/stop":
+            # Stopping is always allowed: it is the owner override.
+            try:
+                session = FocusStore(self.sdk.root).stop()
+            except ValueError as exc:
+                return HTTPStatus.CONFLICT, {"error": str(exc)}
+            return HTTPStatus.OK, session.__dict__ if session is not None else {"stopped": False}
+        if method == "GET" and path.startswith("/v1/why/"):
+            item_id = path[len("/v1/why/"):]
+            try:
+                detail = self.sdk.explain(item_id)
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+            if detail is None:
+                return HTTPStatus.NOT_FOUND, {"error": f"no job or opportunity with id {item_id}"}
+            return HTTPStatus.OK, detail
+        if method == "POST" and path == "/v1/emergency-stop/engage":
+            reason = data.get("reason", "")
+            if not isinstance(reason, str) or not reason.strip():
+                return HTTPStatus.BAD_REQUEST, {"error": "reason is required"}
+            # Engaging is always allowed, even without a token: stopping is safe.
+            EmergencyStop(self.sdk.root).engage(reason)
+            return HTTPStatus.OK, {"active": True, "reason": reason}
+        if method == "POST" and path == "/v1/emergency-stop/disengage":
+            denied = self._owner_change_allowed()
+            if denied:
+                return denied
+            EmergencyStop(self.sdk.root).clear()
+            return HTTPStatus.OK, {"active": False}
+        return None
 
 
 def create_server(project_root: Path, host: str = "127.0.0.1", port: int = 8765,
