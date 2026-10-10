@@ -19,3 +19,13 @@ def test_control_plane_snapshot_aggregates_goals_events_and_approvals(tmp_path: 
     assert snapshot["devices"][0]["device_id"] == "desktop"
     assert snapshot["self_repair"] == []
     assert snapshot["security_events"] == []
+
+
+def test_cli_control_plane_prints_json_snapshot(tmp_path, monkeypatch, capsys) -> None:
+    import json as _json
+    from ghost_agent.cli import _cmd_control_plane
+
+    monkeypatch.chdir(tmp_path)
+    _cmd_control_plane()
+    snapshot = _json.loads(capsys.readouterr().out)
+    assert "goals" in snapshot and "outcome_count" in snapshot

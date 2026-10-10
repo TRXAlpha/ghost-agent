@@ -148,6 +148,9 @@ class GhostSDK:
                         constraints: Dict[str, Any] | None = None) -> Dict[str, Any]:
         return self.devices.register(device_id, name, kind, capabilities, constraints).__dict__
 
+    def snapshot_json(self) -> str:
+        return json.dumps(self.snapshot(), indent=2, ensure_ascii=False)
+
     def snapshot(self) -> Dict[str, Any]:
         outcome_root = self.outcomes.root
         outcome_count = len([path for path in outcome_root.iterdir() if path.is_dir()]) if outcome_root.exists() else 0
