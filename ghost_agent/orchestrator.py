@@ -1492,6 +1492,24 @@ class Orchestrator:
                 "Use relative paths and do not substitute different filenames."
             )
         elif "tests_missing" in last_result:
+            # A generic "add tests" message made models rewrite the module over and
+            # over (live benchmark: rpn.py rewritten 10x). Name the exact file.
+            sources = [path.replace("\\", "/") for path in state.get("files_touched", [])
+                       if path.endswith((".py", ".js", ".mjs", ".cjs"))
+                       and not self._is_python_test(path) and not self._is_node_test(path)]
+            if sources:
+                first = Path(sources[0])
+                if first.suffix == ".py":
+                    test_path = str(first.with_name(f"test_{first.stem}.py")).replace("\\", "/")
+                    kind = f"pytest tests (def test_...) that import from {first.stem}"
+                else:
+                    test_path = str(first.with_name(f"{first.stem}.test{first.suffix}")).replace("\\", "/")
+                    kind = "node:test tests"
+                return (
+                    "The goal requires tests and no test file has been written yet. Your next "
+                    f"response must write exactly ONE file: {test_path}, containing {kind}. "
+                    f"Do NOT rewrite {', '.join(sources)} again; it already exists."
+                )
             return (
                 "The goal requires tests and none were written in this run. Output JSON actions "
                 "that write focused coverage for the behavior you implemented: pytest for Python, "

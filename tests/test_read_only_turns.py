@@ -47,3 +47,13 @@ def test_mixed_read_and_write_turn_still_verifies(tmp_path):
     assert not orch._read_only_turn(mixed)
     assert orch._read_only_turn(reads)
     assert not orch._read_only_turn(empty)
+
+
+def test_tests_missing_prompt_names_the_exact_test_file(tmp_path):
+    orch = Orchestrator(tmp_path, model="scripted")
+    prompt = orch._build_repair_prompt({"last_result": "tests_missing", "files_touched": ["plan.md", "rpn.py"]}, "")
+    assert "test_rpn.py" in prompt and "Do NOT rewrite rpn.py" in prompt
+    js = orch._build_repair_prompt({"last_result": "tests_missing", "files_touched": ["src/calc.js"]}, "")
+    assert "src/calc.test.js" in js
+    generic = orch._build_repair_prompt({"last_result": "tests_missing", "files_touched": []}, "")
+    assert "pytest for Python" in generic
