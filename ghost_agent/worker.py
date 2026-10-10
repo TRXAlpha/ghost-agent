@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Callable, Optional
 from uuid import uuid4
 
@@ -53,7 +54,12 @@ class OutcomeWorker:
                     available: Optional[dict[str, float]], job_id: Optional[str]) -> Optional[WorkerResult]:
         for previous in self.scheduler.list():
             if previous.owner and previous.owner.startswith("worker_") and previous.status == "running":
+                expired = previous.lease_expires_at is not None and previous.lease_expires_at <= time.time()
                 self.scheduler.mark(previous.job_id, "paused", expected={"running"})
+                if expired:
+                    self.events.emit(Event("job.lease_expired",
+                                           {"job_id": previous.job_id, "generation": previous.generation},
+                                           source="worker", correlation_id=previous.job_id))
                 self.attention.notify(Notification("important",
                     f"Worker exited during {previous.job_id}. Job paused; review artifacts and any child processes before resuming.",
                     source="worker"))
@@ -82,7 +88,7 @@ class OutcomeWorker:
         current = next(item for item in self.scheduler.list() if item.job_id == job.job_id)
         if current.status in {"paused", "cancelled"}:
             return WorkerResult(job.job_id, current.status, "Execution returned after a control-state change")
-        self.scheduler.mark(job.job_id, terminal, expected={"running"})
+        self.scheduler.mark(job.job_id, terminal, expected={"running"}, generation=job.generation)
         priority = "normal" if terminal == "completed" else "important"
         self.attention.notify(Notification(priority, f"Job {job.job_id} {terminal}: {result.detail}", source="worker"))
         self.events.emit(Event("worker.finished", {"job_id": job.job_id, "status": terminal,
