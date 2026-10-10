@@ -23,7 +23,8 @@ from .intent import IntentStore
 from .kernel import GoalStore
 from .models.chat import chat
 from .models.chat import route_identity
-from .runtime import EmergencyStop, Event, EventBus, ScheduledJob, Scheduler
+from .runtime import (AttentionManager, EmergencyStop, Event, EventBus,
+                      Notification, ScheduledJob, Scheduler)
 from .autonomy_improver import CapabilityImprover
 from .security import SECRET_PATTERNS
 from .utils.storage import atomic_json, exclusive_lock
@@ -88,6 +89,7 @@ class Opportunity:
     alternatives: list[str] = field(default_factory=list)  # model-supplied; <=3, each <=200
     risks: list[str] = field(default_factory=list)  # model-supplied; <=3
     review_at: Optional[float] = None
+    question: str = ""  # TD4: one clarifying question when status is needs_input
     attempts: int = 0
     less_like_this: bool = False
     cost_effort: str = "small"  # "small" | "medium" | "large"
@@ -237,7 +239,7 @@ def parse_proposal(raw: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProactiveError("Proactive model response must be one object")
     allowed = {"title", "goal", "rationale", "kind", "confidence", "requires_user_input",
-               "alternatives", "risks"}
+               "alternatives", "risks", "question"}
     if set(value) - allowed:
         raise ProactiveError("Proactive model returned unsupported fields")
     confidence = value.get("confidence")
@@ -268,6 +270,12 @@ def parse_proposal(raw: str) -> dict[str, Any]:
         "requires_user_input": requires,
         "alternatives": _string_list("alternatives", 3, 200),
         "risks": _string_list("risks", 3, 200),
+        # TD4: optional clarifying question; invalid/overlong values are silently
+        # dropped (never raise) so a bad question cannot void the whole proposal.
+        "question": (value["question"].strip()[:240]
+                     if isinstance(value.get("question"), str)
+                     and value["question"].strip()
+                     and len(value["question"]) <= 240 else ""),
     }
 
 
@@ -538,6 +546,7 @@ class ProactiveEngine:
             alternatives=list(proposal.get("alternatives", [])),
             risks=list(proposal.get("risks", [])),
             review_at=(now + 7 * 86400) if status in {"proposed", "needs_input"} else None,
+            question=proposal.get("question", ""),
         )
 
     def tick(self, *, auto_queue: bool = True, require_idle: bool = False,
@@ -579,6 +588,15 @@ class ProactiveEngine:
             return {"status": "suppressed", "opportunity": asdict(proposal),
                     "note": f"Similar to recently decided idea {similar_to.opportunity_id}; not queued."}
         self.store.save(proposal)
+        # TD4 (S07): when an opportunity needs owner input, surface one
+        # clarifying question instead of parking it silently. AttentionManager
+        # dedups by notification_id, so repeated ticks do not re-notify.
+        if proposal.status == "needs_input" and proposal.question:
+            AttentionManager(self.root).notify(Notification(
+                "normal",
+                f"Ghost needs input: {proposal.question} (opportunity {proposal.opportunity_id})",
+                notification_id=f"opp-question-{proposal.opportunity_id}",
+                source="proactive"))
         job_id = ""
         if auto_queue and proposal.status == "proposed" and proposal.confidence >= 0.65 and proposal.kind != "focus":
             queued = self._queue(proposal)
