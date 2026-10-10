@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
+from .digest import MorningDigest
 from .runtime import EmergencyStop
 
 DEFAULT_QUIET_HOURS = (1, 7)
@@ -92,7 +93,8 @@ class OvernightRunner:
                  quiet_hours: tuple[int, int] = DEFAULT_QUIET_HOURS,
                  digest_window: tuple[int, int] = DEFAULT_DIGEST_WINDOW,
                  proactive_tick: Optional[Callable[..., dict]] = None,
-                 worker_fn: Optional[Callable[[], object]] = None) -> None:
+                 worker_fn: Optional[Callable[[], object]] = None,
+                 inference_budget: Optional[object] = None) -> None:
         self.root = Path(root).resolve()
         self.model = model
         if not isinstance(interval, (int, float)) or interval <= 0:
@@ -105,6 +107,7 @@ class OvernightRunner:
         self.digest_dir = self.root / ".ghost" / "digest"
         self._proactive_tick = proactive_tick      # injectable for tests
         self._worker_injected = worker_fn          # injectable for tests
+        self.inference_budget = inference_budget   # TD5 (S06): daily inference cap
         self._cycles = 0
 
     # -- collaborators (lazy: import cost and test isolation) --------------
@@ -112,7 +115,8 @@ class OvernightRunner:
         if self._proactive_tick is not None:
             return self._proactive_tick
         from .proactive import ProactiveEngine
-        engine = ProactiveEngine(self.root, self.model)
+        engine = ProactiveEngine(self.root, self.model,
+                                 inference_budget=self.inference_budget)
         return engine.tick
 
     def _worker_next(self) -> Callable[[], Optional[object]]:
@@ -218,7 +222,43 @@ class OvernightRunner:
             lines.append(f"- ⚠ job {e.get('worker')} status={e.get('worker_status')}")
         if not failed:
             lines.append("- No failed jobs.")
+        lines.extend(self._render_outcomes(now))
+        lines.extend(self._render_coverage(now, entries))
         return "\n".join(lines) + "\n"
+
+    def _render_outcomes(self, now: datetime) -> list[str]:
+        """TD6 (S06): what actually ran, from the outcome store."""
+        since = (now - timedelta(hours=24)).timestamp()
+        items = MorningDigest(self.root).collect(since)
+        if not items:
+            return ["", "## Outcomes", "- No completed jobs."]
+        rendered = MorningDigest.render(items)
+        return ["", "## Outcomes", *rendered.splitlines()]
+
+    def _render_coverage(self, now: datetime, entries: list[dict]) -> list[str]:
+        """TD6 (S06): when Ghost actually ran, and when it did not."""
+        lines = ["", "## Coverage"]
+        if not entries:
+            lines.append("Ghost did not run during this window.")
+            return lines
+        times = []
+        for e in entries:
+            try:
+                times.append(datetime.fromisoformat(e["ts"]))
+            except (KeyError, ValueError, TypeError):
+                continue
+        if not times:
+            lines.append("Ghost did not run during this window.")
+            return lines
+        times.sort()
+        lines.append(f"- First cycle: {times[0]:%H:%M}")
+        lines.append(f"- Last cycle: {times[-1]:%H:%M}")
+        gap_threshold = timedelta(seconds=3 * self.interval)
+        for prev, nxt in zip(times, times[1:]):
+            if nxt - prev > gap_threshold:
+                lines.append(f"- no cycles from {prev:%H:%M} to {nxt:%H:%M} "
+                             "(PC asleep/offline or Ghost not running)")
+        return lines
 
     # -- main loop ----------------------------------------------------------
     def run(self, *, max_cycles: Optional[int] = None) -> int:
