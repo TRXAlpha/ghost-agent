@@ -158,6 +158,19 @@ def test_modified_enabled_extension_is_tampered_on_verify(tmp_path):
     assert any(event["kind"] == "extension.tampered" for event in events)
 
 
+def test_scope_drift_from_stored_approval_is_tampered_on_verify(tmp_path):
+    manager, approval = approved_candidate(tmp_path)
+    manager.enable("demo", approval)
+    # Tamper with the stored approval scope so it no longer matches the manifest.
+    store = ApprovalStore(tmp_path)
+    path = store.path
+    data = json.loads(path.read_text())
+    data[-1]["scope"]["permissions"]["network"] = True
+    path.write_text(json.dumps(data))
+    assert manager.verify_integrity() == [{"name": "demo", "status": "tampered"}]
+    assert manager.load("demo").status == "tampered"
+
+
 def test_unchanged_enabled_extension_stays_ok_on_verify(tmp_path):
     manager, approval = approved_candidate(tmp_path)
     manager.enable("demo", approval)

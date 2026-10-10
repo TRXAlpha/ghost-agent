@@ -174,10 +174,10 @@ class ExtensionManager:
 
     def _request_enable(self, name: str) -> str:
         manifest = self.load(name)
-        if not manifest or manifest.status == "tampered":
-            raise ValueError("Extension is tampered; re-test and re-approve required"
-                             if manifest and manifest.status == "tampered"
-                             else "Only tested or disabled extensions can request enablement")
+        if not manifest or manifest.status not in {"tested", "disabled"}:
+            if manifest and manifest.status == "tampered":
+                raise ValueError("Extension is tampered; re-test and re-approve required")
+            raise ValueError("Only tested or disabled extensions can request enablement")
         approval = ApprovalStore(self.root.parents[1]).request(
             "extension.enable", f"Enable extension {manifest.name}",
             self._approval_scope(manifest), "high",
@@ -229,20 +229,35 @@ class ExtensionManager:
         tampered: list[dict[str, Any]] = []
         approvals = ApprovalStore(self.root.parents[1])
         monitor = SecurityMonitor(self.root.parents[1])
+        # Lock the whole sweep: verify mutates manifests of tampered extensions.
+        with exclusive_lock(self.root / ".lock"):
+            self._verify_integrity(tampered, approvals, monitor)
+        return tampered
+
+    def _verify_integrity(self, tampered: list[dict[str, Any]], approvals: ApprovalStore,
+                          monitor: SecurityMonitor) -> None:
         for directory in sorted(self.root.iterdir()):
             if not directory.is_dir():
                 continue
             manifest = self.load(directory.name)
             if manifest is None or manifest.status not in {"approved", "enabled"}:
                 continue
-            approval = approvals.get(manifest.enable_approval_id) if manifest.enable_approval_id else None
+            # "approved" without an approval ID is unreachable today but latent;
+            # skip rather than compare against empty stored files.
+            if not manifest.enable_approval_id:
+                continue
+            approval = approvals.get(manifest.enable_approval_id)
             current = self._approval_scope(manifest)
             # manifest.json is Ghost's own state and changes on enable; only the
             # extension payload is compared against the approval scope.
-            stored_files = {k: v for k, v in (approval.scope.get("files", {}).items()
-                                              if approval else []) if k != "manifest.json"}
-            if stored_files != {k: v for k, v in current["files"].items() if k != "manifest.json"}:
-                manifest.status = "tampered"  # Not in STATES; re-enable requires re-test and re-approval.
+            stored_files = {k: v for k, v in approval.scope.get("files", {}).items() if k != "manifest.json"}
+            is_tampered = stored_files != {k: v for k, v in current["files"].items() if k != "manifest.json"}
+            # The approval scope must still match the loaded manifest's declared scope.
+            if (approval.scope.get("permissions") != manifest.permissions
+                    or approval.scope.get("side_effects") != manifest.side_effects):
+                is_tampered = True
+            if is_tampered:
+                manifest.status = "tampered"
                 manifest.updated_at = time.time()
                 self._save(manifest)
                 monitor.record_event("extension.tampered", {"extension": manifest.name,
