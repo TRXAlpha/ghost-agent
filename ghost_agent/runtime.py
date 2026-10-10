@@ -289,7 +289,7 @@ class Scheduler:
                     # SAME locked save — no window for a duplicate claim.
                     next_due, missed = self._next_due(raw["recurrence"], raw.get("due_at"), time.time())
                     if missed > 0:
-                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed})
+                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed}, correlation_id=job_id)
                     raw["due_at"] = next_due
                     raw["status"] = "queued"
                     raw["owner"] = None
