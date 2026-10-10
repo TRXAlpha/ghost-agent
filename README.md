@@ -1,256 +1,291 @@
-# Ghost Agent
+# Ghost
 
-Ghost is a local-first outcome agent in active development. It can research a goal, build in a copied sandbox, run focused tests, attempt repairs, and preserve an auditable artifact trail. It is not a general-purpose autonomous AI operating system yet.
+Ghost is a local-first personal agent for Windows. It turns goals into
+sandboxed, tested work. It can notice opportunities while you are away, learn
+from its own failures, and keep an auditable trail of everything it did. You
+stay in control: standing policy modes, an emergency stop, explicit
+promotion, and "why did you do this?" on every job.
 
-## What works today
+It is **progressing toward** the personal AI OS described in
+[implementation.md](implementation.md), but it isn't that yet. This README
+says what works today, with how much evidence, and what is still a
+placeholder.
 
-- **End-to-end usable loop**: `ghost accomplish --model gemma4:26b --command-timeout-seconds 120 "<goal>"` → real Ollama inference → sandbox tool execution → real pytest gates → durable outcome with `tests_passed`. Run with a model large enough for multi-step reasoning (gemma4:26b recommended; `--command-timeout-seconds` is the per-command timeout, default 30s, increase for heavyweight test suites).
-- **`ghost doctor`**: real Ollama (localhost:11434) + Docker daemon health probes; all integrations report as `not_configured` until credentials/hardware exist.
-- **Owner knowledge base**: `ghost kbase ingest <dir>` indexes your Zim/notes/docs; `ghost kbase query "<text>"` retrieves relevant chunks injected into the model's context — stop re-inventing API facts.
-- **LoRA corpus capture**: every passing job auto-captures a verified (goal → reference context → passing code) triple in `.ghost/lora/training_pairs.jsonl`; `ghost lora list` shows what's accumulated. Nothing trained yet — the corpus is ready for a future fine-tune.
-- **Autonomous improvement**: `ghost proactive tick/watch` + `ghost worker --watch` — Ghost observes goals, devices, and context files, proposes one bounded experiment per tick, queues it for the worker, and closes the loop on results. Idle-time gating (`idle_seconds()` + emergency stop) ensures owner work is never interrupted.
-- **Autonomous adapter building**: capability gaps from repeated failures are tracked (`ghost gaps list`); Ghost uses the model to assess whether a gap is autonomously addressable, queues sandbox implementation work, and marks the gap resolved on tests_passed. All changes are sandbox-only; promotion requires owner approval.
-- **Capability gap registry**: `ghost gaps list` / `ghost gaps stats` — see queued high-count gaps and their followup goals.
-- **Proactive feedback loop**: queued/running opportunities are reconciled on restart and closed on terminal outcomes (completed/tests_failed/error/cancelled).
-- **Benchmark** (`ghost bench`): 8 fixed non-toy goals run through the real production job path in isolated state, with independent hidden acceptance tests the model never saw. `ghost bench run --model <model>` produces `ghost_pass_rate` and `accepted_rate`; the owner runs it live.
-- **Self-improvement pipeline** (`ghost self-improve`): recurring failures become queued project-mode sandbox jobs; passing sandboxes are handed to `ghost self-repair` for evaluation and owner-gated promotion (`ghost self-improve sync`).
-- Source-grounded research with credibility tiers, exact-quote claim gating, and per-run provenance graphs.
-- Sandboxed coding runs, plan → implement → verify → repair state machine, and durable outcome jobs via `ghost accomplish`.
-- Outcome acceptance contracts, persistent intent records, and model routing based on measured reputation.
-- Reviewable MCP extension scaffold, explicit approval gates, and loopback-only API (`ghost api`).
-- Promoted artifacts use atomic per-file replacement with a recovery journal.
+> Status: 2026-10-10 · branch `master` · 1,403 automated tests passing (`pytest`, ~2–3 min; plus 106 OpenJarvis-route tests).
+> Platform: **Windows 10/11** (idle detection, process cleanup and job
+> objects are Windows APIs; on other OSes, idle state is treated as unknown,
+> so background work never starts).
 
-## Live vs placeholder (updated 2026-10-07)
+---
 
-| Capability | State | Evidence |
-|---|---|---|
-| Sandboxed coding jobs (`ghost accomplish`, worker) | live | T01–T09 tests, 1037-suite pass |
-| Greenfield empty-workspace jobs | live | T06 tests |
-| Benchmark (`ghost bench`) | live command; results: not yet run | T11 tests |
-| Proactive tick / overnight / daemon | live, idle-gated | T12 tests |
-| Self-improvement (`ghost self-improve` → `ghost self-repair`) | live pipeline, owner-gated promotion | T18 tests |
-| Learning (`ghost learn`) | local tracking + rustc oracle; no content generation | learner tests |
-| Telegram | placeholder until token + pairing | |
-| Huawei | placeholder until credentials | |
-| DeskSentinel | placeholder until firmware/protocol | |
+## Measured reliability
 
-## Honest limits
+`ghost bench` runs 8 fixed, small but real coding goals through the
+production job path. It scores each result twice:
 
-The orchestrator requests a 2,048-token output limit (`max_output_tokens`
-constructor setting, maximum 8,192) through Ollama's `num_predict` option.
-This relies on backend enforcement and is not a transport-memory or whole-job
-token quota. Truncated invalid JSON does not count as successful implementation.
+- **ghost_pass_rate**: Ghost's own gate (its tests passed);
+- **accepted_rate**: independent **hidden** acceptance tests that the model
+  never sees.
 
-Use `ghost accomplish "Create app" --require-file src/app.py` to require specific
-deliverables. Repeat `--require-file` for multiple paths. Requirements appear in
-dry-run previews, persist for queued jobs, and are checked before and after tests.
-They check file presence, not content correctness.
+Live results on this machine, 2026-10-10:
 
-Outcome command execution shares a durable default allowance of 32 command
-attempts and 300 seconds. Task constraints `command_budget_calls` and
-`command_budget_seconds` configure this allowance; resume refuses changed limits.
-The CLI exposes these as `--command-budget-calls` and `--command-budget-seconds`
-on `ghost accomplish`, including queued jobs and dry-run previews.
-Each command reserves up to its 30-second timeout before execution and refunds
-unused time afterward. Crashed attempts retain their reservation. These are not
-whole-job CPU/RAM/GPU, model-inference, or network budgets.
+| Model (route) | ghost_pass_rate | accepted_rate | Notes |
+|---|---|---|---|
+| `zai-org/GLM-5.3-Flash` (OpenJarvis `openai-compat` route) | **0.50** | **0.875** | After four loop fixes found by the benchmark. One later run lost goals to a provider outage, reported honestly as `model_unavailable`. |
+| `gemma4:e4b` 7.5B (local Ollama, 4 GB GPU) | 0.00 | – | The model degenerates into invalid output on these goals; slow on this GPU. |
 
-Dependency-free JavaScript tests named `*.test.js`, `*.test.cjs`, or `*.test.mjs`
-can now use installed Node's `--test` runner, including focused changed-test
-checks. Node dispatch requires explicit workspace files; npm, installation,
-and additional Node flags remain refused. Mixed Python/Node projects run separate
-focused and broad gates for each detected ecosystem, stopping at the first failure
-and recording gate results. An explicit acceptance command still overrides default
-discovery. This does not yet support general Jest/Vitest,
-TypeScript compilation, browser tests, or isolated dependencies.
+Read these as: **with a capable model, the code Ghost produces is usually
+correct (7 of 8), and Ghost's own procedure now completes about half of the
+goals end to end.** The gap between the two numbers is Ghost's own process,
+not the model. Small local models are not reliable for multi-step coding.
+Compare runs with `ghost bench history` and `ghost bench compare previous latest`.
 
-Command execution now uses bounded output capture and Windows job-based child
-cleanup on completion/timeout. Running orchestrator commands poll emergency stop
-every 100 ms. These controls do not isolate host files or network access and do
-not provide hostile-code containment. A Windows supervisor-handle watcher now
-also stops command descendants if Ghost exits unexpectedly; equivalent POSIX
-crash cleanup remains unfinished. See [execution checks](outputs/audit-2026-09-07/process-lifetime.md).
+---
 
-Small local models can still fail multi-step research and coding tasks. Ghost has evidence and test gates, but independent acceptance checks and measured reliability remain incomplete; a passing test command is not proof that a user's whole outcome was achieved. It does not automatically install extensions, deploy services, create accounts, obtain secrets, or apply sandbox changes to the live project.
-
-A live Qwen 2.5 Coder 1.5B [protocol baseline](outputs/audit-2026-09-06/model-protocol-baseline.md) matched only 4 of 8 expected action lists. Run `python -m ghost_agent.protocol_benchmark` for repeatable, non-executing measurements. These results do not establish coding or research reliability.
-
-Coding model requests default to a 24,000-character serialized-message limit. Optional retrieval/history can be omitted; oversized required task instructions or feedback cause an explicit refusal. This is not an exact token budget. See [context budget behavior](outputs/audit-2026-09-06/context-budget.md).
-
-## Install
-
-For the new OpenJarvis-backed route on Windows, use the isolated installer:
-
-```powershell
-.\scripts\bootstrap-openjarvis.ps1
-.\workspaces\openjarvis-venv\Scripts\ghost-jarvis.exe openjarvis doctor --probe
-.\workspaces\openjarvis-venv\Scripts\ghost-jarvis.exe accomplish "Build a calculator with tests" --model "<installed-model>" --research-model "<installed-model>"
-```
-
-Start your inference server first and replace the model placeholders. The installer pins upstream source/dependencies and builds its native extension; it does not start services or download models. Existing `.venv` and owner state remain intact. See [OpenJarvis commands](docs/openjarvis.md) for document import, Telegram pairing, other endpoints, and qualification limits.
-
-The original Ollama-only compatibility installation remains available:
+## Quick start (PowerShell)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
+ghost doctor                                  # storage, schema, Ollama, Docker, RAM/GPU, integrations
+ghost accomplish "Create calc.py with add/sub and pytest tests" --model gemma4:26b --workspace empty
 ```
 
-Run Ollama locally, then select models installed on your machine.
+Ghost only probes services; it never starts, installs or configures them for
+you. Use a model that is installed in Ollama (`ollama list`).
 
-Check runtime health with `ghost doctor`. It reports Ghost storage state plus a
-`SERVICES:` section for real service availability (Ollama at localhost:11434 and
-Docker daemon) with detected Ollama model names, and reports the optional
-integrations (`telegram`, `huawei`, `desksentinel`) as `not_configured` until you
-provide credentials/hardware. Health checks are read-only probes; Ghost never
-starts or configures services for you.
-
-## External integrations (all optional — Ghost runs without any of them)
-
-Telegram, Huawei, and DeskSentinel are gated behind clearly-marked placeholder
-adapters under `ghost_agent/integrations/`. Without credentials/hardware they
-raise `ConnectionError` and report `not_configured`; they never fake a live
-connection or live data.
-
-- **Telegram**: set `TELEGRAM_BOT_TOKEN` and pair via `ghost integration plan telegram`,
-  review the extension proposal, and approve enablement. Until then, messaging is
-  unavailable.
-- **Huawei**: requires Huawei Developer Console credentials (AppID/AppSecret) and
-  user authorization. Until then, no live health data is fetched.
-- **DeskSentinel**: the ESP32 firmware and serial/BLE protocol do not exist yet.
-  `connect`/`set_target_height` raise `ConnectionError`; `get_status()` returns a
-  clearly-labeled mock — not live telemetry.
-
-## Core commands
+**OpenAI-compatible endpoints** (LM Studio, vLLM, or a remote API) go through
+the pinned OpenJarvis route, which has its own isolated Python 3.13
+environment. Install it with `.\scripts\bootstrap-openjarvis.ps1`, then:
 
 ```powershell
-ghost                              # Interactive mode
-ghost research "topic"             # Source-grounded research
-ghost accomplish "desired outcome" # Research -> sandbox build -> test/repair
-ghost kbase ingest <dir>           # Index owner reference docs (Zim/notes/docs)
-ghost kbase query "text"           # Retrieve relevant reference chunks
-ghost kbase status                 # Show indexed document/chunk counts
-ghost lora list                    # Show captured verified training pairs
-ghost lora status                  # Corpus summary and next step hint
-ghost gaps list                    # Show queued capability gaps
-ghost gaps stats                   # Gap counts by status
-ghost run task.json                 # Sandboxed task-file run
-ghost audit                         # Inspect saved artifacts
-ghost knowledge                     # Inspect learned task history
-ghost doctor                        # Check local runtime health (ollama, docker, integrations)
-ghost proactive tick --model <model> --context-file <file>  # Propose one experiment
-ghost proactive watch --model <model> --run-worker          # Continuous proactive loop
-ghost worker --watch                # Claim and execute queued outcomes
-ghost accomplish "build a small game" --model qwen2.5-coder:1.5b
-ghost accomplish "investigate X and prototype Y" --research-model gemma4:e4b-Claude
-ghost accomplish "fix the parser" --iterations 20 --command-timeout-seconds 120
-ghost accomplish "local-only code task" --skip-research
-ghost accomplish "research then build this overnight" --queue
-ghost bench run --model <model>      # Run the 8-goal benchmark with hidden tests
-ghost bench report                   # Show latest benchmark result
-ghost self-improve propose --model <model>  # Queue a fix for a recurring failure
-ghost self-improve sync              # Hand finished jobs to self-repair
-ghost daemon run --model <model>     # Always-on overnight loop (T12)
-ghost accomplish "greenfield task" --workspace empty  # Fresh empty workspace
+$env:GHOST_INFERENCE_BACKEND = 'openjarvis'
+$env:GHOST_OPENJARVIS_ENGINE = 'openai-compat'
+$env:GHOST_OPENJARVIS_URL    = 'https://your-endpoint/v1'
+$env:GHOST_ALLOW_REMOTE_INFERENCE = '1'        # required for non-local URLs
+$env:GHOST_OPENJARVIS_API_KEY = '<key>'        # never put it in a file, task or URL
+.\workspaces\openjarvis-venv\Scripts\python.exe -m ghost_agent.cli accomplish "..." --model "<served-model>"
 ```
 
-When `ghost api` is running, open `http://127.0.0.1:8765/` for the local dashboard. It reads the same loopback-only control-plane snapshot; it does not expose a public web service.
+Remote inference sends the task and its context to that endpoint. There is no
+automatic cloud fallback. See [docs/openjarvis.md](docs/openjarvis.md).
 
-API writes require `Content-Type: application/json` and a body no larger than 64 KiB. The transport rejects cross-origin browser requests and unexpected Host headers. Set `GHOST_API_TOKEN` to require bearer authentication for API data/actions; the current dashboard does not yet provide token entry. These checks do not isolate other programs running as your local user. See [API hardening](outputs/audit-2026-09-06/api-progress.md).
+---
 
-The API admits at most eight client handlers at once; excess connections close immediately. Embedded callers can set `create_server(..., max_clients=...)` from 1 to 64. This bounds handler concurrency, not request rate or total processing time.
+## What works today
 
-Headers and body share a 15-second read deadline, so partial arrivals cannot keep a connection open indefinitely. Embedded callers can set `read_timeout` from 0.05 to 300 seconds. This deadline does not cancel SDK work after a request has been read.
+"Live" means: production code, reachable from a real command, with tests.
+**External** integrations are only called live after a real authorized
+connection test.
 
-`ghost accomplish` accepts:
+| Area | State | Commands |
+|---|---|---|
+| Sandboxed coding jobs: plan → implement → verify → repair, durable and resumable | live | `ghost accomplish`, `ghost worker --watch`, `ghost jobs …` |
+| Independent benchmark with hidden tests | live, measured above | `ghost bench run/report/history/compare` |
+| Standing autonomy policy (suggest / build / operate / improve / idle_work), fail-closed | live | `ghost policy show/set` |
+| Emergency stop (holds queued work; latency recorded per component) | live | `ghost emergency-stop engage/clear/status` |
+| Proactive opportunities: grounded evidence, transparent outcome-tuned ranking, similarity suppression, one clarifying question | live, idle-gated | `ghost proactive tick/watch/status/ranking/less/dismiss` |
+| Unattended loop: overnight cycles, quiet hours, digest with coverage gaps, daily inference cap, yields to you when you return | live, needs `idle_work` | `ghost daemon run`, `ghost overnight run` |
+| Notifications with quiet hours, batching and focus holds | live | `ghost notifications list/ack`, `ghost focus start/status/stop` |
+| "Why did you do this?" for any job or opportunity | live | `ghost why <id>` |
+| Self-improvement: recurring failures → sandbox fix → self-repair evaluation → owner-gated promotion with update policy | live pipeline; no live end-to-end run recorded yet | `ghost trace-learning`, `ghost self-improve`, `ghost self-repair`, `ghost promote` |
+| Isolated evaluation in Docker (`--isolation auto/container/host`) | live when Docker and the OpenJarvis venv are present; otherwise records `runner: host` honestly | `ghost self-repair verify` |
+| Personal memory with provenance, edit/revisions, retention, sensitivity, retract/purge | live | `ghost memory …` |
+| Owner knowledge base: versions, replace/delete with derived invalidation, sections, PDF and OCR | live; PDF and OCR need `pdftotext`/`tesseract` on PATH | `ghost kbase …` |
+| Learning: concepts, spaced repetition, deadline-aware scheduling, generated exercises with protected answers, practice challenges with reset, rustc oracle with toolchain evidence, format effectiveness | live; Rust checks need `rustc` | `ghost learn …` |
+| Devices: records with pairing and freshness, telemetry validation, command safety gate with pan/tilt simulator | live in simulation; no real hardware | `ghost device …` |
+| Huawei health route: privacy guard, corrections, trends, retention/purge | **synthetic/manual data only** | `ghost huawei …` |
+| Capability lifecycle: feasibility records, reuse of installed integrations, degraded/verified states | live | `ghost capability …`, `ghost gaps …` |
+| Model profiles (unknown limits and costs stay unknown); private-network fetch block in research | live | `ghost model-profile …`, `ghost research` |
+| Durable state: event IDs, cursors, failed-event queue, job leases/generations, schema registry and migrations, secret-free export | live | `ghost events …`, `ghost migrate`, `ghost export` |
+| Local dashboard and API with owner controls and token entry | live, loopback only | `ghost api` → http://127.0.0.1:8765/ |
+| **Telegram** | **placeholder.** Transport, pairing, receipts and uncertain-delivery reconciliation are built and tested; no live authorized connection is recorded | `ghost openjarvis telegram …` |
+| **Huawei live data** | **placeholder** until Huawei developer credentials and user authorization exist | |
+| **DeskSentinel (ESP32 pan/tilt)** | **placeholder** until firmware and protocol exist; the safety gate and simulator are ready | |
+
+---
+
+## You stay in control
+
+**Policy modes** are set once and enforced where work is handed off and again
+when the worker claims it:
 
 ```powershell
-ghost accomplish "build a small game" --model qwen2.5-coder:1.5b
-ghost accomplish "investigate X and prototype Y" --research-model gemma4:e4b-Claude
-ghost accomplish "fix the parser" --iterations 20
-ghost accomplish "local-only code task" --skip-research
-ghost accomplish "research then build this overnight" --queue
-ghost worker --watch                 # Claim and execute queued outcomes
-ghost-jarvis proactive tick --model <installed-model> --context-file desksentinel.md
-ghost-jarvis proactive watch --model <installed-model> --context-file lessons/rust.md --run-worker
-ghost-jarvis openjarvis telegram serve --model <installed-model> --allow-sandbox-builds --run-worker
-ghost self-repair propose "diagnosis" --sandbox <sandbox-path>
-ghost device register desktop --name Precision --capability inference.run --capability filesystem.read
-ghost mcp logs --goal "Read approved service logs" --tool logs.read
+ghost policy show
+ghost policy set idle_work on     # allow unattended background loops
+ghost policy set improve on       # allow self-improvement jobs
 ```
 
-In interactive mode, code/integration requests use the same outcome workflow. Use `/accomplish <goal>` to force it explicitly.
+| Mode | Default | Allows |
+|---|---|---|
+| suggest | on | proposing opportunities |
+| build | on | queueing sandbox build/test work (proactive, capability improver, benchmark) |
+| operate | off | reserved for operating integrations; nothing uses it yet |
+| improve | off | self-improvement jobs |
+| idle_work | off | `ghost daemon` / `ghost overnight` / `proactive watch` |
 
-## Artifact layout
+A corrupt `policy.json` fails closed: only `suggest` stays on.
+
+**Other controls:**
+- **Emergency stop:** `ghost emergency-stop engage` stops new work and holds
+  queued jobs; `clear` releases only the jobs it held.
+- **Promotion:** sandbox work never changes your project on its own.
+  `ghost promote …` previews, applies with hash-bound approval, and can be
+  rolled back. Self-repair changes to authority files (policy, approvals,
+  promotion, evaluation, security, kernel) are refused outright and need the
+  owner-controlled update path.
+- **Yield on return:** unattended jobs stop at the next model turn when you
+  are back at the PC (idle under `GHOST_OWNER_RETURN_IDLE_S`, default 120 s).
+  They are paused, not failed; resume them with `ghost jobs resume <id>`.
+
+**Dashboard and API:** `ghost api` serves http://127.0.0.1:8765/. It covers
+emergency stop, policy toggles, notifications, focus, jobs
+(pause/resume/cancel) and "why". If you set `GHOST_API_TOKEN`, enter it in the
+dashboard; it is kept in sessionStorage only. Changing policy or clearing the
+emergency stop over HTTP **requires** a configured token. The API is
+loopback-only, with Host/Origin checks, 64 KiB bodies and bounded handlers. It
+does not isolate other programs running as your Windows user.
+
+---
+
+## Coding jobs
+
+```powershell
+ghost accomplish "Build wordfreq.py with top_words() and tests" --model <m> --workspace empty --skip-research
+ghost accomplish "Fix the parser bug" --model <m>                    # sandbox = copy of this project
+ghost accomplish "..." --require-file src/app.py --check compile --check smoke --smoke-cmd "python app.py --selftest"
+ghost accomplish "..." --queue                                       # run later via: ghost worker --watch
+```
+
+- **`--workspace empty`** starts from an empty sandbox; this is right for new
+  things. The default `project` copies this project (excluding `.git`,
+  `.ghost`, `.venv`, `workspaces`, secrets).
+- **Check classes:** unit tests are discovered (pytest, `node --test`).
+  `--check compile` and `--check smoke` add gates, and a declared check that
+  cannot run fails the job rather than being skipped.
+- **Budgets:**
+  - `--iterations` (default 12; queued unattended jobs get 10) counts only
+    model implement/repair turns;
+  - the command budget defaults to 32 calls / 300 s (queued jobs: 32 / 600 s);
+  - `--command-timeout-seconds` sets the per-command timeout (default 30 s);
+  - `GHOST_OLLAMA_TIMEOUT` sets the model read timeout (default 180 s).
+- **Model robustness:**
+  - a timed-out or failed model call costs one turn, and three in a row end
+    the job as `model_unavailable`;
+  - transient provider errors (5xx, 429) are retried;
+  - truncated responses get specific feedback;
+  - file content can be sent as raw blocks, so small models don't have to
+    escape code inside JSON;
+  - results of read-only turns are shown back to the model.
+- **Diagnostics:** every run writes `.ghost/outcomes/<job>/run/state.json`,
+  with turn counts, parse errors, truncations and, when it stops,
+  `limit_reason`. `ghost trace-learning run` turns recurring failures into
+  specific signatures (for example `model_output_truncated`,
+  `limit_tests_missing`).
+
+---
+
+## Learning, knowledge and memory
+
+```powershell
+ghost kbase ingest .\lessons         # .md/.txt/.py, PDFs (pdftotext), images (tesseract OCR)
+ghost kbase sources ; ghost kbase delete lessons\old.md
+ghost learn add-concept rust-ownership "Rust ownership"
+ghost learn exercises rust-ownership --model <m>   # questions + progressive hints; answers stored separately
+ghost learn deadline midterm --date 2026-11-02 --concepts rust-ownership
+ghost learn challenge create --spec challenge.json  # refused unless the solution passes and the starter fails
+ghost learn formats                                 # which teaching format actually works for you
+ghost memory list ; ghost memory edit <id> --content "..." ; ghost memory export --out mem.json
+```
+
+Missing toolchains produce a written dependency plan
+(`.ghost/learner/dependency_plan.md`). Ghost never installs toolchains
+itself. Cybersecurity/CTF environments (network services, containers) are not
+built yet; practice challenges cover code exercises only.
+
+---
+
+## Unattended operation
+
+```powershell
+ghost policy set idle_work on
+ghost daemon run --model <m> --quiet-hours 22 7 --max-inference-calls 48
+ghost daemon status ; ghost emergency-stop engage
+```
+
+The daemon composes the existing loops. Each cycle runs one proactive tick
+and one worker job, both only when you are away. It runs trace-learning
+periodically, plus capability improvement (outside quiet hours) and handoff of
+finished self-improvement jobs. The morning digest lists outcomes and
+**coverage gaps** ("no cycles from 01:10 to 06:40: PC asleep or Ghost not
+running"), so a quiet night is never reported as "nothing happened". Nothing
+installs itself as a startup service.
+
+---
+
+## External integrations (optional)
+
+| Integration | What exists | What you must provide |
+|---|---|---|
+| Telegram | Pairing, receipts, uncertain-delivery reconciliation, reconnect backoff, credential-aware health | A bot token in `GHOST_TELEGRAM_BOT_TOKEN`, then `ghost openjarvis telegram pair --user-id … --chat-id …` and a live check. Don't reuse a token another bot process polls. |
+| Huawei Health | Route, privacy guard, corrections, trends, retention | Huawei Developer Console app (AppID/AppSecret), Health Kit access, user authorization |
+| DeskSentinel | Device record, pairing, limits gate, pan/tilt simulator, telemetry validation | ESP32 firmware and command protocol |
+
+Until these exist, the adapters report `not_configured` and never fake data or
+connections.
+
+---
+
+## Security model and honest limits
+
+- **Isolation:** by default, sandboxes are copied directories, **not
+  OS-isolated**. Commands run without a shell from an allowlist, `pip` is
+  blocked, and child processes are cleaned up through Windows job objects, but
+  generated code still runs with your user's file and network access. Docker
+  isolation is used for self-repair evaluation when available. Don't run
+  untrusted tasks unattended.
+- **Secrets:** snapshots exclude `.env*` and key files; known token patterns
+  are redacted in logs and exports. This is best-effort, not a guarantee.
+- **Research fetches** refuse localhost, private, link-local and metadata
+  addresses, except with an explicit `GHOST_ALLOW_PRIVATE_FETCH=1`.
+- **What tests prove:** a passing test is not proof that your whole outcome
+  was achieved. That's why the benchmark's hidden acceptance exists.
+- **Not built:** voice or mobile clients, distributed or multi-device execution,
+  CTF environments, live Telegram/Huawei/DeskSentinel, and model fine-tuning.
+  The LoRA corpus (`ghost lora`) is captured, but nothing is trained.
+
+---
+
+## Where state lives
 
 ```text
 .ghost/
-  research/                 # Query -> source -> quote -> verdict graphs
-  outcomes/<job>/
-    outcome.json            # Job status, models, result, errors
-    research.md             # Research dossier, when used
-    run/sandbox/            # Copied project snapshot and generated work
-    run/actions.log         # Tool calls and outputs
-    run/llm.log             # Model turns
-    run/state.json          # Phase/result checkpoint
-  capabilities.json         # Recurring capability gaps and follow-up queue
-  events.jsonl              # Runtime event stream
-  world.json                # Timestamped world observations
-  scheduler.json            # Queued budget-aware jobs
-  models.json               # Verified model/task-class reputation metrics
-  transactions/             # Preview/commit/verify/rollback journals
-  approvals.json            # Explicit user decisions for consequential actions
-  secrets.json              # Environment-variable references only; never secret values
-  transactions/             # Preview/commit/verify/rollback transaction history
-  promotions/               # Per-file backups for explicit live promotion undo
-  extensions/               # Proposed/scaffolded/tested/approved extension packages
-  devices.json              # User-owned devices and their declared capabilities
-  world.json                # Fresh, sourced current-state observations
+  outcomes/<job>/        outcome.json, research.md, run/{sandbox,actions.log,llm.log,state.json}
+  scheduler.json         jobs (leases, generations, pause reasons)
+  events.jsonl, events/  event log, cursors, failed-event queue
+  policy.json            standing modes          focus.json   focus session
+  notifications.json     attention records       devices.json, telemetry/
+  validated-memory.json  personal memory         knowledge-base/, learner/
+  opportunities.json     proactive ideas         bench/<run>/report.json
+  schema.json            store versions (ghost migrate)   backups/ (pre-migration copies)
 ```
 
-## Security model
+Back up or move with `ghost export --out ghost-export.json` (versioned and
+secret-free). `ghost migrate --check` refuses data newer than the code.
 
-Ghost works in a copied project directory, **not an OS-isolated execution environment**. File tools constrain their targets, and automatic verification now uses the same capability, user-policy, emergency-stop, and audit checks as model-requested tools. Commands run without a shell, use allowlisted tool entry points, and inherit only a small set of environment variables. Direct `pip`/`python -m pip` commands are blocked. Generated Python, tests, and allowed programs still have host-user filesystem/process/network access; these checks do not make hostile code safe. Do not run untrusted tasks unattended until real execution isolation and process cancellation are implemented.
+---
 
-New runs refuse to replace existing artifact/workspace directories. Snapshots exclude `.env*`, common private-key files, dependency caches, and Ghost metadata, and reject symlinks/junctions. Known token/private-key patterns are redacted from action/model logs, provenance, and security events. This is best-effort protection, not a guarantee that every secret format or persistence path is covered; existing artifacts are not retroactively scrubbed.
-
-Live promotion binds approval to candidate and destination SHA-256 hashes, stages backups before writes, and uses atomic per-file replacement with a recovery journal. `ghost promote list` shows recovery status; `ghost promote rollback <id>` restores recorded bytes only when the live state still matches the approved before/after state. Promotion verification means approved bytes were applied, not that the program passed independent functional acceptance. Legacy/corrupt journals require manual review and are not blindly migrated. File metadata, deletion propagation, and coordination with non-Ghost writers still need stronger guarantees.
-
-Extension enablement/testing also needs stronger evidence and immutable scope checks. Account setup, external deployment, and real integration enabling remain user-controlled. See the [audit](outputs/audit-2026-09-06/assessment.md), [dispatch hardening](outputs/audit-2026-09-06/hardening-progress.md), and [promotion progress](outputs/audit-2026-09-06/promotion-progress.md) for verified behavior and unresolved defects.
-
-## Roadmap
-
-See [implementation.md](implementation.md) for the full Jarvis/AI-OS roadmap, including durable scheduling, richer scholarly retrieval, extension/MCP lifecycle management, integrations, secret handling, promotion, benchmarks, and a desktop control layer.
-
-## Job recovery
-
-Foreground `accomplish` and queued jobs use one worker path, with atomic claims and one active worker per project. Inspect state with `ghost jobs list`. After an interrupted worker, its job is paused for review; inspect preserved artifacts and any surviving child processes before `ghost jobs resume <id>`. Resume keeps the existing sandbox/checkpoint, grants a fresh bounded coding attempt, and may repeat the unfinished step. Corrupt checkpoints or changed outcome contracts are refused rather than overwritten. `ghost jobs retry <id>` retries failed jobs and reactivates a blocked goal; deadlines and dependencies still apply.
-
-`ghost jobs pause <id>` controls queued jobs; `ghost jobs cancel <id>` accepts queued, paused, or failed jobs. These commands deliberately refuse running-process cancellation. This is a single-host recovery foundation, not distributed leases or exactly-once external execution. See [worker progress](outputs/audit-2026-09-06/worker-progress.md).
-
-## Development checks
+## Development
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
-The suite currently covers parsing, sandbox paths, command restrictions, research gates, provenance graphs, autonomous repair behavior, outcome persistence, and capability-gap queues.
-# Opt-in local check-ins
-
-`ghost check-in enable --interval-seconds 86400 --quiet-hours 22 8` configures
-a local attention reminder (first due after the interval). `ghost check-in status`
-inspects it; `ghost check-in disable` stops future reminders without deleting
-existing notifications. Equal quiet-hour endpoints disable quiet hours; hours
-use the host's local time zone.
-
-An explicitly running `ghost worker --watch` checks this schedule between jobs;
-`ghost check-in tick` performs one check manually. Neither command installs a
-background service. Long-running jobs delay check-ins. Emergency stop and quiet
-hours defer reminders; an unanswered check-in suppresses additional ones. Missed
-intervals coalesce into one reminder rather than a backlog. Stable occurrence IDs
-allow recovery after a notification commit but before the schedule update.
-
-This is disabled until configured, creates local attention records only, and
-does not call a model, send external messages, observe user activity, or execute
-goals. Existing notification acknowledgement controls allow the next reminder.
+- OpenJarvis-specific tests run under `workspaces\openjarvis-venv`.
+- Engineering history and evidence:
+  - [docs/engineering/STATE.md](docs/engineering/STATE.md)
+  - the campaign records in [docs/engineering/campaign-2026-10](docs/engineering/campaign-2026-10/00-README.md)
+    and [campaign-2026-10b](docs/engineering/campaign-2026-10b/00-AUDIT-BRIEF.md)
+    (requirement audits with file:line evidence).
+- Product specification: [implementation.md](implementation.md).
