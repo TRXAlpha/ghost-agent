@@ -11,7 +11,7 @@ import json
 import warnings
 from pathlib import Path
 
-from .proactive import Opportunity
+from .proactive import Opportunity, OpportunityStore
 
 DEFAULT_WEIGHTS = {"goal_relevance": 0.25, "urgency": 0.2, "confidence": 0.2,
                    "benefit": 0.2, "effort": 0.1, "interruption": 0.05}
@@ -57,6 +57,30 @@ def load_weights(root: Path) -> dict[str, float]:
 def _warn_invalid(path: Path) -> None:
     warnings.warn(f"initiative weights file invalid or has unusable entries; "
                   f"using defaults: {path}", stacklevel=3)
+
+
+def kind_success_rate(store: OpportunityStore, kind: str) -> float | None:
+    """Success rate for one opportunity kind, from recorded outcomes only.
+
+    Counted items: opportunities of `kind` whose `result` is a decided
+    outcome (tests_passed / tests_failed / error), plus rejected/dismissed
+    records with less_like_this true (a "less of this" signal is a failure).
+    Returns None with fewer than 3 decided items: no evidence, no tuning.
+    """
+    decided = 0
+    successes = 0
+    for item in store.list_all():
+        if item.kind != kind:
+            continue
+        if item.result in {"tests_passed", "tests_failed", "error"}:
+            decided += 1
+            if item.result == "tests_passed":
+                successes += 1
+        elif item.status in {"rejected", "dismissed"} and item.less_like_this:
+            decided += 1
+    if decided < 3:
+        return None
+    return successes / decided
 
 
 def score(opp: Opportunity, *, kind_success: float | None = None,
