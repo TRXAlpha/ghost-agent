@@ -775,9 +775,12 @@ class Orchestrator:
                         "The goal explicitly requires tests, but this run has not written or "
                         "updated a test file. Add focused Python or Node test coverage for the changed behavior."
                     )
-                elif test_commands:
+                elif test_commands or self._declared_check_gates(task):
                     gates = [("focused", command) for command in self._focused_test_commands(state)]
                     gates += [("suite", command) for command in test_commands]
+                    # Declared compile/smoke gates must run even when no test
+                    # commands were discovered; they are appended below.
+                    result = {"returncode": 0, "output": ""}
                     state["verification_gates"] = []
                     for verification_stage, command in gates:
                         gate = {"stage": verification_stage, "command": redact_secrets(command),

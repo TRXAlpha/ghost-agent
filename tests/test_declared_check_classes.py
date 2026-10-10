@@ -77,6 +77,29 @@ def test_unit_check_and_defaults_are_unchanged():
     assert Task("t", "title", "goal", {}, {}).required_checks() == []
 
 
+def test_compile_gate_runs_without_discoverable_test_commands(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    # Scripted model writes only source; no test files are ever created, so
+    # _verification_commands finds nothing and the declared compile gate must
+    # still run instead of falling through to verification_missing.
+    def source_only_model(_model, messages, **kwargs):
+        planning = "Create the plan now" in messages[-1]["content"]
+        actions = ([{"tool": "write_file", "path": "plan.md", "content": "Implement"}]
+                   if planning else
+                   [{"tool": "write_file", "path": "app.py", "content": "answer = 42\n"}])
+        return json.dumps({"thought": "implement", "actions": actions})
+    monkeypatch.setattr(orchestrator_module, "ollama_chat", source_only_model)
+    artifacts = project / ".ghost" / "outcomes" / "job5"
+    task = Task("job5", "Feature", "Implement",
+                {"iteration_limit": 3, "required_checks": ["compile"]}, {})
+    Orchestrator(project, model="scripted").run_task_with_roots(task, project, artifacts)
+    state = json.loads((artifacts / "state.json").read_text())
+    stages = {gate["stage"]: gate["status"] for gate in state["verification_gates"]}
+    assert stages.get("compile") == "passed"
+    assert state["last_result"] == "tests_passed"
+
+
 def test_smoke_cmd_runs_through_allowlisted_runner(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()

@@ -67,7 +67,7 @@ class OutcomeStore:
         job = OutcomeJob(job_id=job_id, goal=clean, acceptance_contract={
             "deliverable": clean,
             "sandbox_only": True,
-            "required_checks": [],
+            "required_checks": ["unit"],
             "promotion_requires_approval": True,
             "success_condition": "verification reports tests_passed",
         })
