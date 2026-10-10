@@ -12,6 +12,7 @@ from .identity import IdentityStore
 from .autonomy import CapabilityRegistry
 from .kernel import GoalStore
 from .runtime import EventBus, WorldModel
+from .context_synthesizer import ContextItem, ContextSynthesizer
 from .utils.storage import atomic_json, exclusive_lock
 
 
@@ -317,6 +318,23 @@ class ContextAssembler:
             "prior_failures": self.capabilities._load().get("gaps", [])[-6:],
             "recent_events": [asdict(event) for event in self.events.recent(12)],
         }
+        # Surface contradictions between validated memories so the model is
+        # told not to assume either record is true.
+        memory_items = [
+            ContextItem(item_id=m["memory_id"], content=m["content"], source="validated_memory")
+            for m in payload["validated_memories"]
+        ]
+        conflicts = ContextSynthesizer(self.root).detect_conflicts(memory_items)[:5]
+        if conflicts:
+            payload["conflicts"] = [
+                {"a": c.item_ids[0], "b": c.item_ids[1], "reason": c.summary} for c in conflicts
+            ]
+            payload["conflict_warnings"] = [
+                f"Conflicting records: {c.item_ids[0]} vs {c.item_ids[1]} ({c.summary});"
+                " do not assume either is true."
+                for c in conflicts
+            ]
+
         def fits() -> bool:
             return len(json.dumps(payload, ensure_ascii=False)) <= max_chars
 
@@ -325,10 +343,11 @@ class ContextAssembler:
         # Remove whole optional records, never sever a quote, policy, or goal
         # contract mid-string. Surface omissions so context is not mistaken for
         # a complete view of the user's state.
-        order = ("recent_events", "active_goals", "prior_failures", "world_state", "validated_memories")
+        order = ("conflicts", "conflict_warnings", "recent_events", "active_goals",
+                 "prior_failures", "world_state", "validated_memories")
         payload["omitted_for_budget"] = {key: 0 for key in order}
         for key in order:
-            while payload[key] and not fits():
+            while payload.get(key) and not fits():
                 # Event/gap stores return chronological lists; discard their
                 # oldest entries first. Active goals are priority ordered.
                 payload[key].pop(0 if key in {"recent_events", "prior_failures"} else -1)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import re
 import math
 import os
 import sys
@@ -17,6 +18,32 @@ from . import UPSTREAM_COMMIT, UPSTREAM_VERSION_PREFIX
 
 class IntegrationError(RuntimeError):
     """An actionable integration/configuration error, not a model response."""
+
+
+class UpstreamTransportError(ConnectionError):
+    """Transient upstream failure (HTTP 5xx/429, unreachable, timeout).
+
+    A ConnectionError, so models.chat retries it with bounded backoff and the
+    orchestrator treats a final failure as one failed turn, not a dead job.
+    """
+
+
+_TRANSIENT_HTTP = re.compile(r"returned HTTP (\d{3})")
+
+
+def _classify_engine_error(exc: Exception) -> Exception:
+    """Map upstream EngineConnectionError to transient vs configuration errors."""
+    from openjarvis.engine._base import EngineContextLengthError
+    message = str(exc)
+    if isinstance(exc, EngineContextLengthError):
+        return IntegrationError(message)
+    match = _TRANSIENT_HTTP.search(message)
+    if match:
+        status = int(match.group(1))
+        return UpstreamTransportError(message) if status >= 500 or status == 429 else IntegrationError(message)
+    if "not reachable" in message or "timed out" in message.lower():
+        return UpstreamTransportError(message)
+    return IntegrationError(message)
 
 
 def require_upstream() -> str:
@@ -126,8 +153,13 @@ def _request(messages, options, response_format, engine):
     temp = opts.pop("temperature", 0.7)
     if type(temp) not in (int, float) or not math.isfinite(temp) or not 0 <= temp <= 2:
         raise IntegrationError("temperature must be between 0 and 2.")
-    if engine != "ollama" and opts:
-        raise IntegrationError("num_ctx/num_gpu are Ollama-only options.")
+    if engine != "ollama":
+        # num_ctx/num_gpu are local Ollama resource hints (context window and GPU
+        # layers). OpenAI-compatible servers manage these themselves, so the hint
+        # is dropped rather than failing every coding turn (the orchestrator sends
+        # num_ctx unconditionally). It never changes request semantics.
+        opts.pop("num_ctx", None)
+        opts.pop("num_gpu", None)
     for key, value in opts.items():
         if type(value) is not int or not 0 <= value <= 131072:
             raise IntegrationError(f"Invalid {key} option.")
@@ -166,7 +198,11 @@ def chat(model, messages, options=None, base_url=None, timeout=60, stream=False,
             return content
 
     if not stream:
-        return generate()
+        from openjarvis.engine._base import EngineConnectionError
+        try:
+            return generate()
+        except EngineConnectionError as exc:
+            raise _classify_engine_error(exc) from exc
 
     def iterate():
         # The pinned upstream stream path omits response_format. Preserve JSON

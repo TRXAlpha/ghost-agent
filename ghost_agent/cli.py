@@ -1804,7 +1804,7 @@ def main() -> None:
     why_parser.add_argument("item_id", help="Job id or opportunity id")
     why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
-    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less"])
+    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less", "ranking"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
     proactive_parser.add_argument("--interval-seconds", type=float, default=900)
     proactive_parser.add_argument("--idle-after-seconds", type=float, default=900)
@@ -1814,6 +1814,12 @@ def main() -> None:
     proactive_parser.add_argument("--context-file", action="append", default=[],
                                   help="Project-relative text context for initiative planning; repeatable")
     proactive_parser.add_argument("opportunity_id", nargs="?", default="")
+    # TN3: transparent ranking of proposed/queued opportunities by score.
+    proactive_parser.add_argument("--limit", type=int, default=10,
+                                   help="Max opportunities shown by `proactive ranking`")
+    # TN3: JSON output for `proactive ranking` (read by args.json).
+    proactive_parser.add_argument("--json", action="store_true",
+                                  help="Print ranking as JSON")
     repair_parser = sub.add_parser("self-repair", help="Manage bounded Ghost self-repair proposals")
     repair_parser.add_argument("action", choices=["propose", "verify", "request-promotion"])
     repair_parser.add_argument("value", help="Diagnosis for propose or proposal ID otherwise")
@@ -1825,7 +1831,7 @@ def main() -> None:
                                help="Where the evaluator runs: container when available, host fallback, or host only")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
     device_parser.add_argument("action", choices=["list", "register", "pair", "revoke",
-                                                  "status", "simulate"])
+                                                  "status", "simulate", "ingest"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
@@ -1840,6 +1846,9 @@ def main() -> None:
                                help="Command duration in seconds")
     device_parser.add_argument("--disconnect", action="store_true",
                                help="Disconnect the simulator after the command")
+    # TL4: telemetry ingest — validated data, never instructions.
+    device_parser.add_argument("--file", default=None,
+                               help="JSON file of telemetry samples (ingest)")
     # TF1/TF4: `ghost huawei` — synthetic/manual data only until Huawei
     # credentials are configured (S02). One CLI action per existing public
     # HuaweiRoute method; no network calls.
@@ -2139,6 +2148,9 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
         if args.action == "status":
             print(json.dumps([item.__dict__ for item in OpportunityStore(root).list()], indent=2))
             return
+        if args.action == "ranking":
+            _cmd_proactive_ranking(root, limit=args.limit, as_json=args.json)
+            return
         model = _resolve_model(args.model)
         engine = ProactiveEngine(root, model, context_paths=args.context_file)
         if args.action == "tick":
@@ -2164,6 +2176,25 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except ProactiveError as exc:
         print(f"Proactive action refused: {exc}")
+
+
+def _cmd_proactive_ranking(root, *, limit: int = 10, as_json: bool = False) -> None:
+    """TN3: print proposed/queued opportunities sorted by score, with reasons."""
+    from .proactive import OpportunityStore
+    items = [item for item in OpportunityStore(root).list(100)
+             if item.status in {"proposed", "queued"}]
+    items.sort(key=lambda o: o.score, reverse=True)
+    items = items[:max(0, limit)]
+    if as_json:
+        print(json.dumps([item.__dict__ for item in items], indent=2, ensure_ascii=False))
+        return
+    if not items:
+        print("No proposed or queued opportunities.")
+        return
+    for item in items:
+        print(f"{item.score:.3f}  [{item.status}] {item.opportunity_id} {item.goal}")
+        for reason in item.score_reasons:
+            print(f"    - {reason}")
 
 
 def _resolve_model(cli_override: str | None = None) -> str:
@@ -3422,7 +3453,8 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
             job.status = "paused"
             job.errors.append("paused: yielded_to_owner")
             store.save(job)
-            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"})
+            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"},
+                                         paused_by="yield_to_owner")
             return WorkerResult(job.job_id, "paused", "yielded_to_owner")
         job.status = "completed" if job.result == "tests_passed" else "needs_review"
         store.save(job)
@@ -3490,25 +3522,11 @@ def _cmd_notifications(args: argparse.Namespace) -> None:
             note = attention.acknowledge(args.notification_id)
             print(json.dumps(note.__dict__, indent=2))
             return
-        prefs = sdk.notification_preferences()
-        quiet_hours: tuple[int, int] | None = None
-        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
-        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
-            quiet_hours = (start, end)
-        from .focus import FocusStore
-        active_focus = FocusStore(Path.cwd()).active()
-        focus = active_focus is not None and "hold_notifications" in active_focus.interventions
-        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)}
+        overview = sdk.notifications_overview()
         if not args.all:
-            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)], indent=2))
+            print(json.dumps(overview["deliverable"], indent=2))
             return
-        payload = []
-        for note in attention.pending():
-            record = note.__dict__.copy()
-            if note.notification_id not in deliverable_ids:
-                record["held"] = "focus" if focus and note.priority in ("normal", "silent") else "quiet hours"
-            payload.append(record)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(overview["deliverable"] + overview["held"], indent=2))
     except (ValueError, OSError) as exc:
         print(f"Notifications refused: {exc}")
 
@@ -3892,6 +3910,29 @@ def _cmd_device(args: argparse.Namespace) -> None:
     """Manage declared devices; registration does not grant control permissions."""
     registry = DeviceRegistry(Path.cwd())
     try:
+        if args.action == "ingest":
+            # TL4: telemetry is data, never instructions. Rejected string
+            # content is never echoed — counts and reason categories only.
+            from .telemetry import TelemetryError, ingest_samples
+            if not args.device_id or not args.file:
+                print("ingest requires a device_id and --file")
+                return
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            try:
+                raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"Cannot read samples file: {type(exc).__name__}")
+                return
+            try:
+                result = ingest_samples(raw, device=device, registry=registry)
+            except TelemetryError as exc:
+                print(f"Telemetry refused: {exc}")
+                return
+            print(json.dumps(result, indent=2))
+            return
         if args.action == "list":
             print(json.dumps([device.__dict__ for device in registry.list()], indent=2))
             return

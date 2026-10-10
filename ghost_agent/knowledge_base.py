@@ -32,6 +32,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .extractors import ExtractionUnavailable, extract_any
 from .utils.storage import atomic_json, exclusive_lock
 
 # File extensions we will index as text. Zim exports notes as .txt; we also
@@ -41,6 +42,9 @@ _TEXT_EXTS = {
     ".java", ".c", ".cpp", ".h", ".hpp", ".sh", ".json", ".yaml", ".yml",
     ".toml", ".ini", ".cfg", ".html", ".css", ".sql", ".xml", ".ipynb",
 }
+
+# Binary document types handled by the external extraction adapters (TP1).
+_EXTRACT_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 MAX_FILE_BYTES = 512 * 1024      # skip oversized binaries/artifacts
 CHUNK_WORDS = 220                 # rough chunk size for retrieval granularity
@@ -67,6 +71,7 @@ class KnowledgeBaseStats:
     chunk_count: int
     total_chars: int
     last_ingest_at: Optional[float]
+    skipped: List[Dict[str, str]] = field(default_factory=list)  # [{path, reason}]
 
 
 class OwnerKnowledgeBase:
@@ -115,9 +120,11 @@ class OwnerKnowledgeBase:
         if not target.exists():
             raise FileNotFoundError(f"No such file or directory: {target}")
         files = [target] if target.is_file() else sorted(
-            p for p in target.rglob("*") if p.is_file() and p.suffix.lower() in _TEXT_EXTS
+            p for p in target.rglob("*")
+            if p.is_file() and p.suffix.lower() in (_TEXT_EXTS | _EXTRACT_EXTS)
         )
         added = 0
+        self.last_skipped: List[Dict[str, str]] = []
         for file_path in files:
             added += self._ingest_file(file_path)
         self.last_ingest_at = time.time()
@@ -125,6 +132,8 @@ class OwnerKnowledgeBase:
         return self.stats()
 
     def _ingest_file(self, file_path: Path) -> int:
+        if file_path.suffix.lower() in _EXTRACT_EXTS:
+            return self._ingest_extracted(file_path)
         try:
             if file_path.stat().st_size > MAX_FILE_BYTES:
                 return 0
@@ -133,6 +142,43 @@ class OwnerKnowledgeBase:
             return 0
         if not text.strip():
             return 0
+        return self._index_text(file_path, text)
+
+    def _ingest_extracted(self, file_path: Path) -> int:
+        # PDF/image: run the external extraction tool. When it is not
+        # installed, record a skip rather than crashing the whole ingest.
+        try:
+            extraction = extract_any(file_path)
+        except ExtractionUnavailable as exc:
+            self.last_skipped.append(
+                {"path": self._relabel(file_path), "reason": str(exc)})
+            return 0
+        except (RuntimeError, OSError, ValueError):
+            return 0
+        if not extraction.text.strip():
+            return 0
+        digest = hashlib.sha256(extraction.text.encode("utf-8")).hexdigest()
+        label = self._relabel(file_path)
+        existing = [c for c in self.chunks if c.source == label]
+        if any(c.sha256 == digest for c in existing):
+            return 0
+        version = (max((c.version for c in existing), default=0) + 1) if existing else 1
+        for c in existing:
+            c.superseded = True
+        added = 0
+        for i, (page_no, page_text) in enumerate(extraction.pages):
+            piece = page_text.strip()
+            if not piece:
+                continue  # blank/scanned page: no retrievable text
+            chunk_id = f"{digest[:12]}:{i}"
+            self.chunks.append(DocChunk(chunk_id=chunk_id, source=label,
+                                        content=piece, sha256=digest,
+                                        version=version, page=page_no,
+                                        extraction_quality=extraction.quality))
+            added += 1
+        return added
+
+    def _index_text(self, file_path: Path, text: str) -> int:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         label = self._relabel(file_path)
         # Same source, same bytes -> idempotent no-op. Same source, changed
@@ -323,4 +369,5 @@ class OwnerKnowledgeBase:
             chunk_count=len(self.chunks),
             total_chars=sum(len(c.content) for c in self.chunks),
             last_ingest_at=self.last_ingest_at,
+            skipped=list(self.last_skipped),
         )

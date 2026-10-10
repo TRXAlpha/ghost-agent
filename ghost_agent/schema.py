@@ -111,7 +111,9 @@ def _extract_json_object(text: str) -> str | None:
 
 def _parse_candidate(candidate: str) -> ActionResponse:
     try:
-        data = json.loads(candidate)
+        # strict=False: small models often emit literal newlines/tabs inside
+        # JSON strings (file content); accept them instead of failing the turn.
+        data = json.loads(candidate, strict=False)
     except json.JSONDecodeError:
         # Qwen-sized local models often use Python triple-quoted content for a
         # multi-line write_file payload. Convert that one unambiguous form to
@@ -126,7 +128,7 @@ def _parse_candidate(candidate: str) -> ActionResponse:
         # otherwise valid JSON. Escape only illegal backslashes; valid JSON
         # escapes (\n, \t, \\, etc.) retain their normal meaning.
         repaired = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r"\\\\", candidate)
-        data = json.loads(repaired)
+        data = json.loads(repaired, strict=False)
     if not isinstance(data, dict):
         raise ValueError("Model response must be a JSON object")
     # Common local-model aliases.  Keep the canonical schema internally.

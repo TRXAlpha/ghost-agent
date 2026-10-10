@@ -79,6 +79,7 @@ class OutcomeWorker:
                 self.events.emit(Event("worker.interrupted", {"job_id": previous.job_id}, source="worker",
                                        correlation_id=previous.job_id))
         if any(job.owner and job.owner.startswith("worker_") and job.status == "paused"
+               and not job.paused_by
                for job in self.scheduler.list()):
             return None
         if EmergencyStop(self.root).active():

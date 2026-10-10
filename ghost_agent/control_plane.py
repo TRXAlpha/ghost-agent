@@ -168,6 +168,7 @@ class GhostSDK:
             "command_budgets": self.command_budgets(),
             "check_in": self.check_in_status(),
             "jobs": [job.__dict__ for job in self.scheduler.list()],
+            "scheduler_jobs": [job.__dict__ for job in self.scheduler.list()],
             "devices": [device.__dict__ for device in self.devices.list()],
             "recent_provenance": [record.__dict__ for record in self.provenance.all()[-20:]],
             "promotions": self.promotions.list(),
@@ -199,6 +200,30 @@ class GhostSDK:
                     "schedule": schedule.__dict__ if schedule else None}
         except (OSError, ValueError):
             return {"status": "invalid", "schedule": None}
+
+    def notifications_overview(self) -> Dict[str, Any]:
+        """Deliverable notifications plus held markers (shared by CLI and API)."""
+        attention = AttentionManager(self.root)
+        prefs = self.notification_preferences()
+        quiet_hours: tuple[int, int] | None = None
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            quiet_hours = (start, end)
+        from .focus import FocusStore
+        active_focus = FocusStore(self.root).active()
+        focus = active_focus is not None and "hold_notifications" in active_focus.interventions
+        deliverable = attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)
+        deliverable_ids = {note.notification_id for note in deliverable}
+        held = []
+        for note in attention.pending():
+            if note.notification_id in deliverable_ids:
+                continue
+            # The sheet fixes the marker stage at TE1: quiet-hours holds are
+            # labeled; focus holds are only labeled when focus is active now.
+            record = note.__dict__.copy()
+            record["held"] = "focus" if focus and note.priority in ("normal", "silent") else "quiet hours"
+            held.append(record)
+        return {"deliverable": [note.__dict__ for note in deliverable], "held": held}
 
     def explain(self, item_id: str) -> Optional[Dict[str, Any]]:
         """Explain why a job or opportunity exists (functional 'why')."""

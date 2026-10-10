@@ -95,6 +95,8 @@ class Opportunity:
     less_like_this: bool = False
     cost_effort: str = "small"  # "small" | "medium" | "large"
     benefit: str = "medium"    # "low" | "medium" | "high"
+    score: float = 0.0  # TN1 composite initiative score (heuristic, not utility)
+    score_reasons: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -344,7 +346,8 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
         "promotion_requires_approval": True,
         # Unattended sources yield to the owner when they return (TO1);
         # the owner's own Telegram requests keep False.
-        "yield_on_owner_return": source != "telegram",
+        # The owner-started benchmark and Telegram requests are not unattended work.
+        "yield_on_owner_return": source not in {"telegram", "benchmark"},
         "inference_route": route_identity(),
         "workspace_mode": workspace_mode,
     })
@@ -427,6 +430,10 @@ class ProactiveEngine:
         self.context_paths = list(context_paths or [])
         self.inference_budget = inference_budget  # TD5 (S06): daily call cap
         self.store = OpportunityStore(self.root)
+
+    def _score_weights(self) -> dict[str, float]:
+        from .initiative import load_weights
+        return load_weights(self.root)
 
     def _provided_context(self) -> list[dict[str, str]]:
         documents: list[dict[str, str]] = []
@@ -614,6 +621,36 @@ class ProactiveEngine:
             return {"status": "suppressed", "opportunity": asdict(proposal),
                     "note": f"Similar to recently decided idea {similar_to.opportunity_id}; not queued."}
         self.store.save(proposal)
+        # TN1: compute the composite score after building the proposal, before
+        # the auto-queue decision reads it.
+        from .initiative import MAX_ACTIVE_INITIATIVES, QUEUE_THRESHOLD, \
+            score as score_opportunity
+        weights = self._score_weights()
+        threshold = float(weights.pop("threshold", QUEUE_THRESHOLD))
+        max_active = int(weights.pop("max_active", MAX_ACTIVE_INITIATIVES))
+        # TN2: tune the score by this kind's recorded outcome rate (None when
+        # there is not enough evidence, which score treats as untuned).
+        from .initiative import kind_success_rate
+        kind_success = kind_success_rate(self.store, proposal.kind)
+        opportunity_score, score_reasons = score_opportunity(
+            proposal, kind_success=kind_success, weights=weights)
+        proposal.score = opportunity_score
+        proposal.score_reasons = list(score_reasons)
+        queued = False
+        active_count = sum(
+            1 for item in self.store.list(100)
+            if item.status in {"queued", "running"})
+        if proposal.status == "proposed" and proposal.confidence >= 0.65 \
+                and proposal.kind != "focus":
+            # TN3: bound active initiatives before the score gate.
+            if active_count >= max_active:
+                proposal.score_reasons.append(
+                    f"active initiative limit reached ({active_count}/{max_active})")
+            elif auto_queue and opportunity_score >= threshold:
+                queued = True
+            elif auto_queue:
+                # Score blocked queueing; stay proposed with the threshold reason.
+                proposal.score_reasons.append(f"below queue threshold {threshold}")
         # TD4 (S07): when an opportunity needs owner input, surface one
         # clarifying question instead of parking it silently. AttentionManager
         # dedups by notification_id, so repeated ticks do not re-notify.
@@ -624,11 +661,15 @@ class ProactiveEngine:
                 notification_id=f"opp-question-{proposal.opportunity_id}",
                 source="proactive"))
         job_id = ""
-        if auto_queue and proposal.status == "proposed" and proposal.confidence >= 0.65 and proposal.kind != "focus":
-            queued = self._queue(proposal)
+        if queued:
+            job = self._queue(proposal)
             proposal.status = "queued"
-            proposal.job_id = queued.job_id
-            job_id = queued.job_id
+            proposal.job_id = job.job_id
+            job_id = job.job_id
+            proposal.updated_at = time.time()
+            self.store.save(proposal)
+        elif proposal.score_reasons and proposal.score_reasons[-1].startswith(
+                ("below queue threshold", "active initiative limit reached")):
             proposal.updated_at = time.time()
             self.store.save(proposal)
         # Enforce bounded backlog whenever a proposal exists, whether it was

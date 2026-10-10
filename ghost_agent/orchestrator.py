@@ -748,6 +748,10 @@ class Orchestrator:
                     state["phase"] = "REPAIR"
                     state["last_result"] = "implement_failed"
                     last_feedback = self._format_results(results)
+                elif self._read_only_turn(action_response):
+                    # Stay in IMPLEMENT and show the model what it read.
+                    state["last_result"] = "read_only"
+                    last_feedback = self._read_feedback(results)
                 else:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "implement_ok"
@@ -899,6 +903,10 @@ class Orchestrator:
                     state["phase"] = "REPAIR"
                     state["last_result"] = "repair_failed"
                     last_feedback = self._format_results(results)
+                elif self._read_only_turn(action_response):
+                    # Stay in REPAIR and show the model what it read.
+                    state["last_result"] = "read_only"
+                    last_feedback = self._read_feedback(results)
                 else:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "repair_ok"
@@ -1438,6 +1446,22 @@ class Orchestrator:
         with budget.slot(timeout=per_command) as timeout:
             return execute(timeout)
 
+    READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "search_in_files", "web_search"})
+    READ_FEEDBACK_LIMIT = 8000
+
+    def _read_only_turn(self, action_response: Any) -> bool:
+        """True when the turn only gathered information (nothing written or run)."""
+        actions = getattr(action_response, "actions", None) or []
+        return bool(actions) and all(getattr(a, "tool", "") in self.READ_ONLY_TOOLS for a in actions)
+
+    def _read_feedback(self, results: List[Dict[str, Any]]) -> str:
+        """Hand read results back to the model; turns are otherwise stateless."""
+        text = self._format_results(results)
+        if len(text) > self.READ_FEEDBACK_LIMIT:
+            text = text[: self.READ_FEEDBACK_LIMIT] + "\n... (truncated)"
+        return ("Results of your read actions are below. Do not read the same files again; "
+                "now write the needed files (implementation and tests).\n" + text)
+
     def _format_results(self, results: List[Dict[str, Any]]) -> str:
         try:
             return json.dumps(results, indent=2)
@@ -1517,6 +1541,24 @@ class Orchestrator:
                 "Use relative paths and do not substitute different filenames."
             )
         elif "tests_missing" in last_result:
+            # A generic "add tests" message made models rewrite the module over and
+            # over (live benchmark: rpn.py rewritten 10x). Name the exact file.
+            sources = [path.replace("\\", "/") for path in state.get("files_touched", [])
+                       if path.endswith((".py", ".js", ".mjs", ".cjs"))
+                       and not self._is_python_test(path) and not self._is_node_test(path)]
+            if sources:
+                first = Path(sources[0])
+                if first.suffix == ".py":
+                    test_path = str(first.with_name(f"test_{first.stem}.py")).replace("\\", "/")
+                    kind = f"pytest tests (def test_...) that import from {first.stem}"
+                else:
+                    test_path = str(first.with_name(f"{first.stem}.test{first.suffix}")).replace("\\", "/")
+                    kind = "node:test tests"
+                return (
+                    "The goal requires tests and no test file has been written yet. Your next "
+                    f"response must write exactly ONE file: {test_path}, containing {kind}. "
+                    f"Do NOT rewrite {', '.join(sources)} again; it already exists."
+                )
             return (
                 "The goal requires tests and none were written in this run. Output JSON actions "
                 "that write focused coverage for the behavior you implemented: pytest for Python, "

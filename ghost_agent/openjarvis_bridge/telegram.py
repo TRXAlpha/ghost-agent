@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..proactive import queue_sandbox_outcome
-from ..runtime import EmergencyStop
+from ..runtime import AttentionManager, EmergencyStop, Notification
 from ..security import redact_secrets
 from ..utils.storage import atomic_json, exclusive_lock
 from .runtime import IntegrationError, require_upstream, state_root
@@ -175,6 +175,49 @@ def revoke(root: Path) -> dict:
     return value
 
 
+def reconcile_receipts(root: Path) -> list[dict]:
+    """Mark interrupted sends as explicitly uncertain and tell the owner once.
+
+    A receipt still in processing/sending without finished_at means Ghost
+    stopped mid-send: the owner message may or may not have been answered.
+    """
+    receipts_dir = state_root(root) / "telegram-receipts"
+    reconciled: list[dict] = []
+    for path in sorted(receipts_dir.glob("*.json")):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # an unreadable receipt is not evidence; leave it for review
+        if not isinstance(receipt, dict) or receipt.get("finished_at") is not None:
+            continue
+        if receipt.get("status") not in ("processing", "sending"):
+            continue
+        message_id = str(receipt.get("message_id", "unknown"))
+        receipt["status"] = "uncertain"
+        receipt["reconciled_at"] = time.time()
+        atomic_json(path, receipt)
+        AttentionManager(root).notify(Notification(
+            "important",
+            f"Telegram message {message_id} may or may not have been answered (Ghost stopped mid-send). Check the chat.",
+            notification_id=f"tg-uncertain-{message_id}", source="telegram"))
+        reconciled.append(receipt)
+    return reconciled
+
+
+def list_receipts(root: Path, status: str = "") -> list[dict]:
+    """List delivery receipts, newest first; optionally filter by status."""
+    receipts_dir = state_root(root) / "telegram-receipts"
+    receipts: list[dict] = []
+    for path in sorted(receipts_dir.glob("*.json")):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(receipt, dict) and (not status or receipt.get("status") == status):
+            receipts.append(receipt)
+    return sorted(receipts, key=lambda r: float(r.get("received_at", 0.0)), reverse=True)
+
+
 class TelegramBridge:
     def __init__(self, root: Path, channel, model: str, *, memory=False, responder=None,
                  allow_sandbox_builds=False):
@@ -212,7 +255,9 @@ class TelegramBridge:
         # imported-document retrieval. It has no arbitrary filesystem tools.
         with exclusive_lock(path.with_suffix(".lock")):
             if path.exists():
-                return  # duplicate, failed, or interrupted: review instead of replay
+                # Also skip uncertain receipts: a redelivery of a message Ghost
+                # may have already answered must never be processed again.
+                return  # duplicate, failed, uncertain, or interrupted: review instead of replay
             receipt = {"message_id": message.message_id, "received_at": time.time(), "status": "processing"}
             atomic_json(path, receipt)
             try:
@@ -243,6 +288,36 @@ class TelegramBridge:
                 atomic_json(path, receipt)
 
 
+def _monitor_transport(root: Path, channel, stopped: threading.Event, *, sleep=time.sleep,
+                       initial_delay: float = 1.0, max_delay: float = 60.0,
+                       after_reconnect: Callable[[], None] | None = None) -> None:
+    """Watch the transport and reconnect with exponential backoff on failure.
+
+    Delays grow 1, 2, 4 ... capped at max_delay seconds and reset after a
+    healthy status. The emergency stop is checked on every retry and ends the
+    loop; upstream redeliveries stay safe because the receipt ledger dedups.
+    """
+    from openjarvis.channels._stubs import ChannelStatus
+    delay = initial_delay
+    while not stopped.is_set():
+        if not pairing(root)["enabled"]:
+            return
+        if channel.status() == ChannelStatus.ERROR:
+            if EmergencyStop(root).active():
+                raise IntegrationError("Emergency stop engaged during transport failure; not retrying.")
+            sleep(delay)
+            if stopped.is_set():
+                return
+            delay = min(delay * 2, max_delay)
+            channel.disconnect()
+            channel.connect()
+            if after_reconnect is not None and channel.status() != ChannelStatus.ERROR:
+                after_reconnect()
+            continue
+        delay = initial_delay
+        sleep(0.5)
+
+
 def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
           run_worker=False):
     require_upstream()
@@ -252,6 +327,9 @@ def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
     owner = pairing(root)
     if not owner["enabled"]:
         raise IntegrationError("Pair Telegram locally before starting its transport.")
+    # Before polling: any send interrupted by a previous crash becomes an
+    # explicit uncertain record the owner is told about, never a silent replay.
+    reconcile_receipts(root)
     token = os.environ.get("GHOST_TELEGRAM_BOT_TOKEN", "")
     if not token:
         raise IntegrationError("Set GHOST_TELEGRAM_BOT_TOKEN in this process; do not put it in a task or document.")
@@ -305,12 +383,7 @@ def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
             mode = "read-only"
         print(f"Telegram transport started (paired private chat, {mode}). Ctrl+C stops it.", flush=True)
         try:
-            while True:
-                if not pairing(root)["enabled"]:
-                    break
-                if channel.status() == ChannelStatus.ERROR:
-                    raise IntegrationError("Telegram transport failed; check credentials/network. No automatic duplicate poller started.")
-                time.sleep(0.5)
+            _monitor_transport(root, channel, bridge.stopped)
         finally:
             bridge.stopped.set()
             worker_stop.set()

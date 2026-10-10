@@ -152,10 +152,71 @@ class ResourceMonitor:
             page_size = os.sysconf("SC_PAGE_SIZE")
             pages = os.sysconf("SC_AVPHYS_PAGES")
             snapshot["ram_bytes"] = float(page_size * pages)
+            snapshot["ram_total_bytes"] = float(page_size * os.sysconf("SC_PHYS_PAGES"))
         except (AttributeError, OSError, ValueError):
-            # RAM availability is intentionally absent rather than guessed.
-            pass
+            # POSIX unavailable (e.g. Windows): use GlobalMemoryStatusEx.
+            try:
+                import ctypes
+
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+
+                statex = MEMORYSTATUSEX()
+                statex.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+                if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(statex)):
+                    snapshot["ram_bytes"] = float(statex.ullAvailPhys)
+                    snapshot["ram_total_bytes"] = float(statex.ullTotalPhys)
+            except (AttributeError, OSError, ValueError):
+                # RAM availability is intentionally absent rather than guessed.
+                pass
+        gpu = self._gpu()
+        if gpu is not None:
+            snapshot["gpu_vram_total_bytes"] = gpu[0]
+            snapshot["gpu_vram_free_bytes"] = gpu[1]
         return snapshot
+
+    @staticmethod
+    def _gpu() -> Optional[tuple[float, float]]:
+        """Sum all NVIDIA GPUs via nvidia-smi; None on any failure (never guess)."""
+        import subprocess as sp
+
+        if shutil.which("nvidia-smi") is None:
+            return None
+        try:
+            proc = sp.run(
+                ["nvidia-smi", "--query-gpu=memory.total,memory.used",
+                 "--format=csv,noheader,nounits"],
+                stdout=sp.PIPE, stderr=sp.DEVNULL, text=True, timeout=3.0)
+        except (OSError, sp.SubprocessError):
+            return None
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        totals: List[float] = []
+        free: List[float] = []
+        for line in proc.stdout.strip().splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) != 2:
+                return None
+            try:
+                total_mib, used_mib = float(parts[0]), float(parts[1])
+            except ValueError:
+                return None
+            totals.append(total_mib)
+            free.append(total_mib - used_mib)
+        if not totals:
+            return None
+        mib = 1048576.0
+        return sum(totals) * mib, sum(free) * mib
 
 
 class Scheduler:
@@ -268,12 +329,13 @@ class Scheduler:
             return self._mark_locked(job.job_id, "running", owner=owner) if job else None
 
     def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None,
-             generation: Optional[int] = None) -> ScheduledJob:
+             generation: Optional[int] = None, paused_by: Optional[str] = None) -> ScheduledJob:
         with exclusive_lock(self.path.with_suffix(".lock")):
-            return self._mark_locked(job_id, status, expected, generation=generation)
+            return self._mark_locked(job_id, status, expected, generation=generation, paused_by=paused_by)
 
     def _mark_locked(self, job_id: str, status: str, expected: Optional[set[str]] = None,
-                     owner: Optional[str] = None, generation: Optional[int] = None) -> ScheduledJob:
+                     owner: Optional[str] = None, generation: Optional[int] = None,
+                     paused_by: Optional[str] = None) -> ScheduledJob:
         if status not in {"queued", "running", "paused", "completed", "failed", "cancelled"}:
             raise ValueError(f"Unknown job status: {status}")
         jobs = self._load()
@@ -303,6 +365,13 @@ class Scheduler:
                 raw["status"] = status
                 if status != "running":
                     raw["lease_expires_at"] = None
+                # An explained pause (yield, policy, emergency stop) carries its
+                # reason; an unexplained one is a crashed worker needing review.
+                if status == "paused":
+                    if paused_by is not None:
+                        raw["paused_by"] = paused_by
+                elif "paused_by" in raw:
+                    raw["paused_by"] = None
                 recurrence_event: Optional[Event] = None
                 if status in {"completed", "failed"} and raw.get("recurrence"):
                     # OJ07: a recurring job settles terminal AND re-queues in the
@@ -647,7 +716,24 @@ class Doctor:
             status["telegram_credentials"] = "absent"
         status["huawei"] = huawei_health_check()["status"]
         status["desksentinel"] = sentinel_health_check()["status"]
+        status["resources"] = self._resources_line()
         return status
+
+    def _resources_line(self) -> str:
+        """Short RAM/GPU summary; parts that cannot be measured read 'unknown'."""
+        snapshot = ResourceMonitor(self.root).available()
+        parts = []
+        if "ram_bytes" in snapshot and "ram_total_bytes" in snapshot:
+            parts.append(f"ram {snapshot['ram_bytes'] / 1e9:.1f}/"
+                         f"{snapshot['ram_total_bytes'] / 1e9:.1f} GB free")
+        else:
+            parts.append("ram unknown")
+        if "gpu_vram_free_bytes" in snapshot and "gpu_vram_total_bytes" in snapshot:
+            parts.append(f"gpu {snapshot['gpu_vram_free_bytes'] / 1e9:.1f}/"
+                         f"{snapshot['gpu_vram_total_bytes'] / 1e9:.1f} GB free")
+        else:
+            parts.append("gpu unknown")
+        return ", ".join(parts)
 
     def available_models(self, timeout: float = 3.0) -> List[str]:
         """Return the names of installed Ollama models ([] if unreachable)."""

@@ -22,13 +22,13 @@ say so in your report.
   ```bash
   "$PY" -m pytest -q -p no:cacheprovider tests/test_proactive.py
   ```
-- **Run the full suite.** Until T02 is merged, you must deselect the hanging
-  test:
+- **Run the full suite** (no deselects: the old hanging overnight test was fixed by T02 and passes):
   ```bash
-  "$PY" -m pytest -q -p no:cacheprovider --deselect tests/test_overnight.py::TestRun::test_max_cycles_stops
+  "$PY" -m pytest -q -p no:cacheprovider
   ```
-  Expected at a602677: `995 passed, 1 deselected` in about 2 minutes. If the
-  full suite takes more than 10 minutes, it is hanging. Stop it and report.
+  Never use `--deselect` unless a task file explicitly says so. As of 2026-10-10 master runs ~1300
+  tests in about 3 minutes. If the full suite takes more than 10 minutes it is hanging: stop it and
+  report.
 - `pytest-timeout` is **not installed**. Do not pass `--timeout`.
 - `--timeout`-style protection comes from T02's `faulthandler_timeout` once
   merged. That setting only dumps stack traces; it does not kill the run.
