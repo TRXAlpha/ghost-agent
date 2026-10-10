@@ -1946,6 +1946,34 @@ def main() -> None:
     bench_run.add_argument("--iterations", type=int, default=10, help="Max iterations per goal (default: 10)")
     bench_sub.add_parser("report", help="Show the latest benchmark report")
 
+    # Protocol benchmark CLI (R05) — forwards to protocol_benchmark.main()
+    protocol_bench_parser = sub.add_parser(
+        "protocol-bench",
+        help="Run the non-executing protocol benchmark (LLM protocol fidelity)"
+    )
+    protocol_bench_parser.add_argument("--output-root", type=Path, default=Path("outputs/benchmarks"))
+    protocol_bench_parser.add_argument("--model", default="qwen2.5-coder:1.5b")
+    protocol_bench_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
+    protocol_bench_parser.add_argument("--repetitions", type=int, default=2)
+    protocol_bench_parser.add_argument("--prompt-style", choices=["production", "compact"], default="production")
+    protocol_bench_parser.add_argument("--dataset", choices=["baseline", "validation"], default="baseline")
+    protocol_bench_parser.add_argument("--output-format", choices=["unconstrained", "json", "schema"], default="unconstrained")
+
+    # TH2: ghost model-profile
+    model_profile_parser = sub.add_parser("model-profile", help="Show, set or probe model profiles (unknown values stay unknown)")
+    mp_sub = model_profile_parser.add_subparsers(dest="model_profile_action")
+    mp_show = mp_sub.add_parser("show", help="Show a model profile")
+    mp_show.add_argument("model", help="Model name")
+    mp_set = mp_sub.add_parser("set", help="Set known values for a model")
+    mp_set.add_argument("model", help="Model name")
+    mp_set.add_argument("--context", type=int, default=None, help="Context window in tokens")
+    mp_set.add_argument("--max-output", type=int, default=None, help="Max output tokens")
+    mp_set.add_argument("--cost-in", type=float, default=None, help="Cost per 1k input tokens")
+    mp_set.add_argument("--cost-out", type=float, default=None, help="Cost per 1k output tokens")
+    mp_probe = mp_sub.add_parser("probe", help="Probe Ollama /api/show for a model")
+    mp_probe.add_argument("model", help="Model name")
+    mp_probe.add_argument("--base-url", default=None, help="Ollama base URL (default: configured or $OLLAMA_BASE_URL)")
+
     # Capabilities CLI
     perception_parser = sub.add_parser("perception", help="Read-only observation: filesystem, git, processes")
     perception_sub = perception_parser.add_subparsers(dest="perception_action")
@@ -2015,6 +2043,8 @@ def main() -> None:
         "perception": lambda: _cmd_perception(args),
         "context": lambda: _cmd_context(args),
         "bench": lambda: _cmd_bench(args),
+        "protocol-bench": lambda: _cmd_protocol_bench(args),
+        "model-profile": lambda: _cmd_model_profile(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -2162,7 +2192,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     task_data = json.loads(task_path.read_text(encoding="utf-8"))
     task_id = task_data.get("id", task_path.stem)
@@ -2200,7 +2230,7 @@ def _cmd_resume(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     tui = create_tui(task_id=args.task_id, verbose=args.verbose)
     tui.start(task_id=args.task_id)
@@ -2243,7 +2273,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
     """Interactive mode with file watching."""
     project_root = Path(args.project_root).resolve()
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     model_state = {"model": _resolve_model()}
     if not model_state["model"]:
@@ -2646,7 +2676,7 @@ def _cmd_research(args: argparse.Namespace) -> None:
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
     if not model:
         model = _pick_model_interactive(base_url)
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     topic = " ".join(args.topic).strip()
     if not topic:
         print("Research topic cannot be empty.")
@@ -3164,7 +3194,7 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", "Inference route differs from the queued job. Start the matching worker/environment; no provider was contacted.")
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     research = "Research intentionally skipped for this job."
     try:
         if not job.skip_research:
@@ -3770,7 +3800,7 @@ def _cmd_parallel(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     project_root = Path.cwd()
 
     def make_orchestrator(workspace: Path) -> Orchestrator:
@@ -4169,6 +4199,66 @@ def _cmd_bench(args: argparse.Namespace) -> None:
 
     print(f"Unknown bench action: {action}")
     print("Available: list, run, report")
+
+
+def _cmd_protocol_bench(args: argparse.Namespace) -> None:
+    """Forward to the non-executing protocol benchmark's own argparse entry."""
+    import sys as _sys
+    from .protocol_benchmark import main as run_protocol_benchmark
+
+    # protocol_benchmark.main() parses sys.argv itself; rebuild it from our
+    # already-validated namespace so unknown top-level flags never reach it.
+    forward: list[str] = []
+    for key in ("output_root", "model", "base_url", "repetitions",
+                "prompt_style", "dataset", "output_format"):
+        forward.append(f"--{key.replace('_', '-')}={getattr(args, key)}")
+    _sys.argv = ["ghost protocol-bench"] + forward
+    run_protocol_benchmark()
+
+
+def _cmd_model_profile(args: argparse.Namespace) -> None:
+    """TH2: model profiles with explicit unknowns (unknown != free/zero)."""
+    from .models.profiles import ModelProfileStore
+
+    root = Path.cwd()
+    store = ModelProfileStore(root)
+    action = getattr(args, "model_profile_action", None) or "show"
+    model = args.model
+    profile = store.get(model)
+
+    if action == "show":
+        print(f"model: {profile.model}")
+        print(f"provider: {profile.provider}")
+        print(f"context_tokens: {profile.context_tokens}")
+        print(f"max_output_tokens: {profile.max_output_tokens}")
+        print(f"supports_tools: {profile.supports_tools}")
+        print(f"modalities: {', '.join(profile.modalities)}")
+        print(f"cost_per_1k_input: {profile.cost_per_1k_input if profile.cost_per_1k_input is not None else 'unknown'}")
+        print(f"cost_per_1k_output: {profile.cost_per_1k_output if profile.cost_per_1k_output is not None else 'unknown'}")
+        print(f"source: {profile.source}")
+        return
+
+    if action == "set":
+        if getattr(args, "context", None) is not None:
+            profile.context_tokens = args.context
+        if getattr(args, "max_output", None) is not None:
+            profile.max_output_tokens = args.max_output
+        if getattr(args, "cost_in", None) is not None:
+            profile.cost_per_1k_input = args.cost_in
+        if getattr(args, "cost_out", None) is not None:
+            profile.cost_per_1k_output = args.cost_out
+        store.set(profile)
+        print(f"Saved profile for {model} to {store.path}")
+        return
+
+    if action == "probe":
+        base_url = getattr(args, "base_url", None) or os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"
+        probed = store.probe_ollama(model, base_url)
+        print(f"probed {model}: context_tokens={probed.context_tokens if probed.context_tokens is not None else 'unknown'} source={probed.source}")
+        return
+
+    print(f"Unknown model-profile action: {action}")
+    print("Available: show, set, probe")
 
 
 if __name__ == "__main__":
