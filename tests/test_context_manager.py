@@ -32,6 +32,56 @@ def test_context_assembler_includes_current_goals_validated_memory_and_events(tm
     assert context["recent_events"][0]["kind"] == "job.queued"
 
 
+def test_context_assembler_surfaces_contradictory_memories(tmp_path: Path) -> None:
+    store = ValidatedMemoryStore(tmp_path)
+    store.remember(MemoryRecord(
+        "c1", "semantic", "Latency for service is 100 ms", "probe", 0.9, validation="validated"
+    ))
+    store.remember(MemoryRecord(
+        "c2", "semantic", "Latency for service is 900 ms", "probe", 0.9, validation="validated"
+    ))
+
+    context = ContextAssembler(tmp_path).assemble()
+
+    assert context["conflicts"] == [{
+        "a": "c1", "b": "c2", "reason": "Conflicting values for 'latency for service': ['100', '900']"
+    }]
+    assert context["conflict_warnings"] == [
+        "Conflicting records: c1 vs c2 (Conflicting values for 'latency for service': ['100', '900']);"
+        " do not assume either is true."
+    ]
+
+
+def test_context_assembler_omits_conflicts_when_no_contradiction(tmp_path: Path) -> None:
+    ValidatedMemoryStore(tmp_path).remember(MemoryRecord(
+        "m3", "semantic", "Bridge API requires a token", "research", 0.8, validation="validated"
+    ))
+
+    context = ContextAssembler(tmp_path).assemble()
+
+    assert "conflicts" not in context
+    assert "conflict_warnings" not in context
+
+
+def test_context_assembler_drops_conflicts_before_required_content(tmp_path: Path) -> None:
+    store = ValidatedMemoryStore(tmp_path)
+    store.remember(MemoryRecord(
+        "c1", "semantic", "Latency for service is 100 ms", "probe", 0.9, validation="validated"
+    ))
+    store.remember(MemoryRecord(
+        "c2", "semantic", "Latency for service is 900 ms", "probe", 0.9, validation="validated"
+    ))
+    goal = GoalStore(tmp_path).create("Build a bridge")
+    context = ContextAssembler(tmp_path).assemble(goal.goal_id, max_chars=1100)
+
+    assert not context["conflicts"]
+    assert not context["conflict_warnings"]
+    assert context["omitted_for_budget"]["conflicts"] == 1
+    assert context["omitted_for_budget"]["conflict_warnings"] == 1
+    assert context["goal"]["goal_id"] == goal.goal_id
+    assert context["validated_memories"]
+
+
 def test_memory_store_rejects_unknown_classes_and_context_includes_fresh_world(tmp_path: Path) -> None:
     store = ValidatedMemoryStore(tmp_path)
     with pytest.raises(ValueError, match="memory kind"):
