@@ -44,6 +44,7 @@ class AcquisitionRecord:
     retired_reason: str = ""
     operationally_verified: bool = False  # R08: live evidence, not just activation
     verification_evidence: str = "" # recorded by mark_operationally_verified
+    feasibility: dict = field(default_factory=dict)  # TJ1: feasibility record
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -173,6 +174,83 @@ class CapabilityAcquisition:
         if not candidate:
             raise AcquisitionError("Candidate path must be provided")
         return self._transition(record_id, None, {"candidate": candidate})
+
+    # -- TJ1 feasibility record --------------------------------------------
+    FEASIBILITY_KEYS = {
+        "need", "approaches", "sources", "constraints", "prerequisites",
+        "scopes", "expected_data", "cost", "maintenance", "unknowns", "next_step",
+    }
+    FEASIBILITY_SOURCE_KINDS = {"official_docs", "repo", "article", "local"}
+    _FEASIBILITY_STR_KEYS = {
+        "need", "expected_data", "cost", "maintenance", "next_step",
+    }
+    _FEASIBILITY_LIST_KEYS = {
+        "approaches", "constraints", "prerequisites", "scopes", "unknowns",
+    }
+    _FEASIBILITY_MAX_STR = 500
+    _FEASIBILITY_MAX_LIST = 10
+
+    @classmethod
+    def validate_feasibility(cls, data: Any) -> dict[str, Any]:
+        """Validate a feasibility payload; returns a normalized copy."""
+        if not isinstance(data, dict):
+            raise AcquisitionError("Feasibility data must be an object")
+        unknown = set(data) - cls.FEASIBILITY_KEYS
+        if unknown:
+            raise AcquisitionError(f"Unknown feasibility keys: {sorted(unknown)}")
+        clean: dict[str, Any] = {}
+        for key in cls._FEASIBILITY_STR_KEYS:
+            if key in data:
+                value = data[key]
+                if not isinstance(value, str) or len(value) > cls._FEASIBILITY_MAX_STR:
+                    raise AcquisitionError(
+                        f"Feasibility {key} must be a string up to {cls._FEASIBILITY_MAX_STR} chars")
+                clean[key] = value
+        for key in cls._FEASIBILITY_LIST_KEYS:
+            if key in data:
+                value = data[key]
+                if (not isinstance(value, list) or len(value) > cls._FEASIBILITY_MAX_LIST
+                        or not all(isinstance(v, str) and len(v) <= cls._FEASIBILITY_MAX_STR
+                                   for v in value)):
+                    raise AcquisitionError(
+                        f"Feasibility {key} must be a list of up to {cls._FEASIBILITY_MAX_LIST} "
+                        f"strings (each up to {cls._FEASIBILITY_MAX_STR} chars)")
+                clean[key] = value
+        if "sources" in data:
+            value = data["sources"]
+            if not isinstance(value, list) or len(value) > cls._FEASIBILITY_MAX_LIST:
+                raise AcquisitionError(
+                    f"Feasibility sources must be a list of up to {cls._FEASIBILITY_MAX_LIST} sources")
+            clean_sources = []
+            for source in value:
+                if not isinstance(source, dict):
+                    raise AcquisitionError("Feasibility sources must be objects")
+                location = [k for k in ("url", "path") if k in source]
+                if len(location) != 1 or not isinstance(source[location[0]], str):
+                    raise AcquisitionError("Each feasibility source needs exactly one of url/path (string)")
+                if "checked_at" not in source or not isinstance(source["checked_at"], (int, float)) \
+                        or isinstance(source["checked_at"], bool):
+                    raise AcquisitionError("Each feasibility source needs a numeric checked_at")
+                if source.get("kind") not in cls.FEASIBILITY_SOURCE_KINDS:
+                    raise AcquisitionError(
+                        f"Feasibility source kind must be one of {sorted(cls.FEASIBILITY_SOURCE_KINDS)}")
+                extra = set(source) - {"url", "path", "checked_at", "kind"}
+                if extra:
+                    raise AcquisitionError(f"Unknown feasibility source keys: {sorted(extra)}")
+                clean_sources.append(dict(source))
+            clean["sources"] = clean_sources
+        return clean
+
+    def record_feasibility(self, record_id: str, data: dict[str, Any]) -> AcquisitionRecord:
+        """Merge a validated feasibility payload into a record (TJ1)."""
+        clean = self.validate_feasibility(data)
+        record = self.get(record_id)
+        if record is None:
+            raise AcquisitionError("Acquisition record not found")
+        merged = dict(record.feasibility)
+        merged.update(clean)
+        target = "researched" if record.status == "discovered" else None
+        return self._transition(record_id, target, {"feasibility": merged})
 
     # -- transitions ------------------------------------------------------
     def _transition(self, record_id: str, target: Optional[str],

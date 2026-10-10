@@ -1646,6 +1646,9 @@ def main() -> None:
     capability_verify_live = capability_sub.add_parser("verify-live", help="Record live operational verification")
     capability_verify_live.add_argument("record_id", help="Acquisition record id")
     capability_verify_live.add_argument("--evidence", default="", help="Live verification evidence")
+    capability_feasibility = capability_sub.add_parser("feasibility", help="Record or show a feasibility record (TJ1)")
+    capability_feasibility.add_argument("record_id", help="Acquisition record id")
+    capability_feasibility.add_argument("--set-json", default="", help="JSON file with feasibility data to record")
 
     memory_parser = sub.add_parser("memory",
         help="Manage validated memories (retract/purge/list/edit/export/retention)")
@@ -2855,6 +2858,38 @@ def _cmd_capability(args: argparse.Namespace) -> None:
                 store.advance(args.record_id, "disabled")
             record = store.retire(args.record_id, args.reason or "")
             print(json.dumps(record.__dict__, indent=2))
+        elif action == "feasibility":
+            if getattr(args, "set_json", ""):
+                payload = json.loads(Path(args.set_json).read_text(encoding="utf-8"))
+                record = store.record_feasibility(args.record_id, payload)
+                print(json.dumps(record.__dict__, indent=2))
+            else:
+                record = store.get(args.record_id)
+                if record is None:
+                    raise ValueError("Acquisition record not found")
+                feasibility = record.feasibility or {}
+                if not feasibility:
+                    print(f"No feasibility record for {args.record_id}")
+                else:
+                    print(f"Feasibility for {record.record_id} (status: {record.status})")
+                    print(f"need: {feasibility.get('need', '') or '(empty)'}")
+                    for key in ("approaches", "constraints", "prerequisites", "scopes", "unknowns"):
+                        items = feasibility.get(key) or []
+                        print(f"{key}:")
+                        for item in items:
+                            print(f"  - {item}")
+                    if "expected_data" in feasibility:
+                        print(f"expected_data: {feasibility['expected_data'] or '(empty)'}")
+                    print(f"cost: {feasibility.get('cost') or 'unknown'}")
+                    print(f"maintenance: {feasibility.get('maintenance') or 'unknown'}")
+                    if "next_step" in feasibility:
+                        print(f"next_step: {feasibility['next_step'] or '(empty)'}")
+                    sources = feasibility.get("sources") or []
+                    print(f"sources ({len(sources)}):")
+                    for source in sources:
+                        location = source.get("url") or source.get("path") or ""
+                        checked = time.strftime("%Y-%m-%d", time.gmtime(source.get("checked_at", 0)))
+                        print(f"  - [{source.get('kind', '?')}] {location} (checked {checked})")
         else:
             raise ValueError(f"Unknown capability action: {action}")
     except (AcquisitionError, ValueError, OSError) as exc:
