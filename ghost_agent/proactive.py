@@ -95,6 +95,8 @@ class Opportunity:
     less_like_this: bool = False
     cost_effort: str = "small"  # "small" | "medium" | "large"
     benefit: str = "medium"    # "low" | "medium" | "high"
+    score: float = 0.0  # TN1 composite initiative score (heuristic, not utility)
+    score_reasons: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -425,6 +427,10 @@ class ProactiveEngine:
         self.inference_budget = inference_budget  # TD5 (S06): daily call cap
         self.store = OpportunityStore(self.root)
 
+    def _score_weights(self) -> dict[str, float]:
+        from .initiative import load_weights
+        return load_weights(self.root)
+
     def _provided_context(self) -> list[dict[str, str]]:
         documents: list[dict[str, str]] = []
         total = 0
@@ -611,6 +617,22 @@ class ProactiveEngine:
             return {"status": "suppressed", "opportunity": asdict(proposal),
                     "note": f"Similar to recently decided idea {similar_to.opportunity_id}; not queued."}
         self.store.save(proposal)
+        # TN1: compute the composite score after building the proposal, before
+        # the auto-queue decision reads it.
+        from .initiative import QUEUE_THRESHOLD, score as score_opportunity
+        weights = self._score_weights()
+        threshold = float(weights.pop("threshold", QUEUE_THRESHOLD))
+        opportunity_score, score_reasons = score_opportunity(proposal, weights=weights)
+        proposal.score = opportunity_score
+        proposal.score_reasons = list(score_reasons)
+        queued = False
+        if proposal.status == "proposed" and proposal.confidence >= 0.65 \
+                and proposal.kind != "focus":
+            if auto_queue and opportunity_score >= threshold:
+                queued = True
+            elif auto_queue:
+                # Score blocked queueing; stay proposed with the threshold reason.
+                proposal.score_reasons.append(f"below queue threshold {threshold}")
         # TD4 (S07): when an opportunity needs owner input, surface one
         # clarifying question instead of parking it silently. AttentionManager
         # dedups by notification_id, so repeated ticks do not re-notify.
@@ -621,11 +643,14 @@ class ProactiveEngine:
                 notification_id=f"opp-question-{proposal.opportunity_id}",
                 source="proactive"))
         job_id = ""
-        if auto_queue and proposal.status == "proposed" and proposal.confidence >= 0.65 and proposal.kind != "focus":
-            queued = self._queue(proposal)
+        if queued:
+            job = self._queue(proposal)
             proposal.status = "queued"
-            proposal.job_id = queued.job_id
-            job_id = queued.job_id
+            proposal.job_id = job.job_id
+            job_id = job.job_id
+            proposal.updated_at = time.time()
+            self.store.save(proposal)
+        elif proposal.score_reasons and proposal.score_reasons[-1].startswith("below queue threshold"):
             proposal.updated_at = time.time()
             self.store.save(proposal)
         # Enforce bounded backlog whenever a proposal exists, whether it was
