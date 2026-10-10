@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,37 @@ from .kernel import ActionProposal, TransactionJournal
 from .runtime import EmergencyStop
 from .utils.storage import atomic_write, atomic_json, exclusive_lock
 from .provenance import ProvenanceLedger
+
+# S08/R13: owner-controlled update policy and observation window.
+UPDATE_POLICY_DEFAULTS: dict[str, Any] = {
+    "version": 1,
+    "auto_activate": False,
+    "observation_window_seconds": 86400,
+    "protected_paths": [
+        "ghost_agent/policy.py", "ghost_agent/approvals.py",
+        "ghost_agent/self_repair.py", "ghost_agent/promotion.py",
+        "ghost_agent/evaluation.py", "ghost_agent/security.py",
+        "ghost_agent/kernel.py",
+    ],
+}
+
+
+def load_update_policy(root: Path) -> dict[str, Any]:
+    """Read the owner's update policy; code defaults apply when it is missing."""
+    path = Path(root) / ".ghost" / "update_policy.json"
+    if not path.exists():
+        return json.loads(json.dumps(UPDATE_POLICY_DEFAULTS))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("update_policy.json must contain an object")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"update_policy.json is unreadable or malformed: {exc}") from exc
+    policy = dict(UPDATE_POLICY_DEFAULTS)
+    for key in ("auto_activate", "observation_window_seconds", "protected_paths"):
+        if key in data:
+            policy[key] = data[key]
+    return policy
 
 
 class PromotionManager:
@@ -72,6 +104,7 @@ class PromotionManager:
     def list(self) -> list[dict[str, Any]]:
         records = []
         for path in sorted(self.backups.glob("*/journal.json")):
+            journal: dict[str, Any] = {}
             try:
                 journal = json.loads(path.read_text(encoding="utf-8"))
                 status = journal.get("status", "legacy_manual_review")
@@ -82,7 +115,16 @@ class PromotionManager:
                     status = "corrupt_manual_review"
             except (OSError, ValueError, AttributeError):
                 status = "corrupt_manual_review"
-            records.append({"promotion_id": path.parent.name, "status": status})
+            record = {"promotion_id": path.parent.name, "status": status}
+            if status == "verified":
+                # Computed on read (R13): observing until the window passes
+                # with no rollback, then operationally_verified.
+                observe_until = journal.get("observe_until")
+                if isinstance(observe_until, (int, float)) and time.time() < observe_until:
+                    record["observation"] = "observing"
+                else:
+                    record["observation"] = "operationally_verified"
+            records.append(record)
         return records
 
     def _promote_locked(self, sandbox: Path, files: list[str], approval_id: str) -> str:
@@ -141,6 +183,8 @@ class PromotionManager:
                 if self._hash(target) != item["sha256"]:
                     raise ValueError("Promoted file failed content verification")
             journal["status"] = "verified"
+            journal["applied_at"] = time.time()
+            journal["observe_until"] = journal["applied_at"] + load_update_policy(self.root)["observation_window_seconds"]
             atomic_json(backup / "journal.json", journal)
         except Exception:
             # Atomic target replacement leaves each file at a known before or
