@@ -67,7 +67,7 @@ class OutcomeStore:
         job = OutcomeJob(job_id=job_id, goal=clean, acceptance_contract={
             "deliverable": clean,
             "sandbox_only": True,
-            "required_checks": ["focused tests", "relevant project verification"],
+            "required_checks": [],
             "promotion_requires_approval": True,
             "success_condition": "verification reports tests_passed",
         })
@@ -135,7 +135,8 @@ class OutcomeStore:
     def make_task_payload(self, job: OutcomeJob, research: str, iterations: int) -> Dict[str, Any]:
         job.validate()
         constraints = {"iteration_limit": iterations}
-        for key in ("required_files", "command_budget_seconds", "command_budget_calls",
+        for key in ("required_files", "required_checks", "smoke_cmd",
+                    "command_budget_seconds", "command_budget_calls",
                     "command_timeout_seconds", "workspace_mode", "yield_on_owner_return"):
             if key in job.acceptance_contract:
                 constraints[key] = deepcopy(job.acceptance_contract[key])

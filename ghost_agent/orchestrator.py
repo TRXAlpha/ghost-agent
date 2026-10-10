@@ -161,6 +161,19 @@ class Task:
             raise ValueError("Task constraints and context must be objects")
         self.required_files()
         self.iteration_limit()
+        self.required_checks()
+
+    _CHECK_CLASSES = ("unit", "compile", "smoke")
+
+    def required_checks(self) -> List[str]:
+        checks = self.constraints.get("required_checks", [])
+        if (not isinstance(checks, list) or len(checks) > 16
+                or not all(isinstance(value, str) and value in self._CHECK_CLASSES
+                           for value in checks)):
+            raise ValueError(
+                "required_checks must be a list from the allowlist: unit, compile, smoke"
+            )
+        return checks
 
     def iteration_limit(self) -> int:
         for key in ("iteration_limit", "time_budget_iters"):
@@ -788,6 +801,20 @@ class Orchestrator:
                                 "status": "failed", "result": result})
                             self._write_state(state_path, state, last_feedback)
                     if self._command_succeeded(result):
+                        for stage, command in self._declared_check_gates(task):
+                            result = ({"returncode": 1, "output":
+                                "smoke check declared but no smoke_cmd given"}
+                                if command is None else
+                                self._run_verification_command(command, workspace, actions_log))
+                            state["verification_gates"].append({"stage": stage,
+                                "status": "passed" if self._command_succeeded(result) else "failed",
+                                "result": {"returncode": result.get("returncode", 1),
+                                           "output": redact_secrets(str(result.get("output", "")))}})
+                            self._write_state(state_path, state, last_feedback)
+                            if not self._command_succeeded(result):
+                                verification_stage = stage
+                                break
+                    if self._command_succeeded(result):
                         state["phase"] = "DONE"
                         state["last_result"] = "tests_passed"
                         last_feedback = self._format_results([result])
@@ -964,6 +991,25 @@ class Orchestrator:
         # Without discovered tests or an explicit user contract, refuse to
         # manufacture a tests_passed result from a source-only project.
         return commands
+
+    @staticmethod
+    def _declared_check_gates(task: Task) -> List[tuple]:
+        """Gates for check classes the task declared beyond the default tests.
+
+        Each entry is (stage_name, command_or_None). `None` means the class
+        is misconfigured (declared smoke without smoke_cmd) and the gate must
+        fail rather than be silently skipped.
+        """
+        checks = task.required_checks()
+        gates = []
+        for check in checks:
+            if check == "compile":
+                gates.append(("compile", "python -m compileall -q ."))
+            elif check == "smoke":
+                cmd = task.constraints.get("smoke_cmd")
+                gates.append(("smoke", cmd.strip() if isinstance(cmd, str) and cmd.strip() else None))
+            # "unit" is the default discovered-tests gate, already run above.
+        return gates
 
     @staticmethod
     def _requires_focused_tests(task: Task) -> bool:
