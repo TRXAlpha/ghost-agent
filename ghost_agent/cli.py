@@ -1679,6 +1679,12 @@ def main() -> None:
     accomplish_parser.add_argument("--queue", action="store_true", help="Persist the outcome for ghost worker")
 
     sub.add_parser("doctor", help="Check Ghost runtime health")
+    migrate_parser = sub.add_parser("migrate", help="Check or apply .ghost data schema migrations")
+    migrate_group = migrate_parser.add_mutually_exclusive_group(required=True)
+    migrate_group.add_argument("--check", action="store_true", help="Report version problems only")
+    migrate_group.add_argument("--apply", action="store_true", help="Run pending migrations")
+    migrate_group.add_argument("--stamp", action="store_true", help="Record current versions for existing store files")
+    migrate_parser.add_argument("--dry-run", action="store_true", help="With --apply: report without writing")
     events_parser = sub.add_parser("events", help="Inspect the event log with cursors")
     events_parser.add_argument("action", choices=["tail", "failed"])
     events_parser.add_argument("--cursor", default="", help="tail: cursor name (a-z0-9_-)")
@@ -1881,6 +1887,7 @@ def main() -> None:
         "research": lambda: _cmd_research(args),
         "accomplish": lambda: _cmd_accomplish(args),
         "doctor": _cmd_doctor,
+        "migrate": lambda: _cmd_migrate(args),
         "events": lambda: _cmd_events(args),
         "jobs": lambda: _cmd_jobs(args),
         "emergency-stop": lambda: _cmd_emergency_stop(args),
@@ -2790,6 +2797,31 @@ def _cmd_doctor() -> None:
             models = doctor.available_models()
             if models:
                 print(f"    models: {', '.join(models)}")
+
+
+def _cmd_migrate(args: argparse.Namespace) -> None:
+    """Check, apply, or stamp .ghost data schema versions."""
+    from . import migrations
+
+    root = Path.cwd()
+    if args.check:
+        problems = migrations.check(root)
+        if problems:
+            for problem in problems:
+                print(problem)
+        else:
+            print("schema: ok")
+        return
+    if args.apply:
+        reports = migrations.apply(root, dry_run=args.dry_run)
+        if reports:
+            for report in reports:
+                print(report)
+        else:
+            print("no pending migrations")
+        return
+    stamped = migrations.stamp(root)
+    print(f"schema.json records: {', '.join(stamped) if stamped else 'none'}")
 
 
 def _cmd_events(args: argparse.Namespace) -> None:
