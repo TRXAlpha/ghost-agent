@@ -265,16 +265,70 @@ class LearnerStore:
 class RustCompileOracle:
     """Concrete oracle: a submission is correct if it compiles under rustc."""
 
-    def __init__(self, rustc: str = "rustc", timeout: int = 60) -> None:
+    DEPENDENCY_PLAN_SOURCE = "https://rustup.rs"
+
+    def __init__(self, rustc: str = "rustc", timeout: int = 60,
+                 plan_root: Optional[Path] = None) -> None:
         self.rustc = rustc
         self.timeout = timeout
+        self.plan_root = Path(plan_root) if plan_root is not None else None
+        self._toolchain: Optional[str] = None
+        self._toolchain_checked = False
+
+    def toolchain(self) -> Optional[str]:
+        """Return stripped ``rustc --version`` output, or None. Cached."""
+        if not self._toolchain_checked:
+            self._toolchain_checked = True
+            try:
+                probe = subprocess.run(
+                    [self.rustc, "--version"], capture_output=True, text=True,
+                    timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                self._toolchain = None
+            else:
+                if probe.returncode == 0:
+                    self._toolchain = (probe.stdout or "").strip() or None
+        return self._toolchain
 
     def available(self) -> bool:
         return shutil.which(self.rustc) is not None
 
+    def _write_dependency_plan(self, context: str = "") -> None:
+        if self.plan_root is None:
+            return
+        plan_dir = self.plan_root / ".ghost" / "learner"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "# Dependency plan: rustc",
+            "",
+            "## What is missing",
+            "",
+            "The `rustc` toolchain was not found on this system.",
+        ]
+        if context:
+            lines += ["", f"Why: needed for the exercise/concept '{context}'."]
+        lines += [
+            "",
+            "## How to install",
+            "",
+            f"Official install source: {self.DEPENDENCY_PLAN_SOURCE}",
+            "",
+            "The owner should run `rustup-init` themselves, downloaded from "
+            "rustup.rs.",
+            "",
+            "Ghost will not install toolchains itself.",
+            "",
+        ]
+        (plan_dir / "dependency_plan.md").write_text(
+            "\n".join(lines), encoding="utf-8")
+
     def check(self, submission: str, context: str = "") -> tuple[bool, str]:
         if not submission.strip():
             return False, "empty submission"
+        if not self.available():
+            self._write_dependency_plan(context)
+            return False, ("rustc not available; dependency plan written to "
+                           ".ghost/learner/dependency_plan.md")
         workdir = tempfile.mkdtemp(prefix="ghost-learner-")
         source = Path(workdir) / "solution.rs"
         source.write_text(submission, encoding="utf-8")
@@ -285,6 +339,12 @@ class RustCompileOracle:
         except FileNotFoundError:
             return False, f"rustc not available (searched '{self.rustc}')"
         if probe.returncode == 0:
-            return True, "compiles"
-        detail = (probe.stderr or probe.stdout or "unknown compiler error").strip()
-        return False, detail[-500:]
+            feedback = "compiles"
+        else:
+            detail = (probe.stderr or probe.stdout
+                      or "unknown compiler error").strip()
+            feedback = detail[-500:]
+        version = self.toolchain()
+        if version:
+            feedback = f"[rustc {version}] {feedback}"
+        return probe.returncode == 0, feedback

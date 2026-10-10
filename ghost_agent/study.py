@@ -176,7 +176,7 @@ class ExerciseGenerator:
             feedback = "correct" if correct else \
                 f"missing keywords: {', '.join(missing)}"
         else:  # rustc
-            correct, feedback = RustCompileOracle().check(
+            correct, feedback = RustCompileOracle(plan_root=self.root).check(
                 submission, context=exercise.concept_id)
         lesson_id = exercise.source_refs[0] if exercise.source_refs else ""
         LearnerStore(self.root).record_attempt(
