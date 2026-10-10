@@ -1704,6 +1704,10 @@ def main() -> None:
     policy_parser.add_argument("action", choices=["show", "set"])
     policy_parser.add_argument("mode", nargs="?")
     policy_parser.add_argument("state", nargs="?", choices=["on", "off"])
+    export_parser = sub.add_parser("export", help="Export a versioned, secret-free copy of personal state")
+    export_parser.add_argument("--out", required=True)
+    export_parser.add_argument("--only", default="",
+                               help="Comma-separated sections to include (default: all)")
     promote_parser = sub.add_parser("promote", help="Preview, approve, commit, or undo sandbox promotion")
     promote_parser.add_argument("action", choices=["request", "commit", "rollback", "list"])
     promote_parser.add_argument("value", nargs="?", default="", help="Sandbox path, transaction id, or promotion id")
@@ -1888,6 +1892,7 @@ def main() -> None:
         "extension": lambda: _cmd_extension(args),
         "approval": lambda: _cmd_approval(args),
         "policy": lambda: _cmd_policy(args),
+        "export": lambda: _cmd_export(args),
         "promote": lambda: _cmd_promote(args),
         "control-plane": lambda: _cmd_control_plane(args),
         "api": lambda: _cmd_api(args),
@@ -2863,6 +2868,26 @@ def _cmd_policy(args: argparse.Namespace) -> None:
         print(json.dumps(store.set(args.mode, args.state == "on"), indent=2))
     except PolicyError as exc:
         print(str(exc))
+
+
+def _cmd_export(args: argparse.Namespace) -> None:
+    """Write a versioned, secret-free export of personal state."""
+    from .control_plane import GhostSDK
+    from .utils.storage import atomic_write
+    sdk = GhostSDK(Path.cwd())
+    only = {name.strip() for name in args.only.split(",") if name.strip()}
+    try:
+        payload = sdk.export(only or None)
+    except ValueError as exc:
+        print(f"export refused: {exc}")
+        return
+    out = Path(args.out)
+    if out.exists():
+        print(f"export refused: {out} already exists")
+        return
+    atomic_write(out, json.dumps(payload, indent=2, default=str).encode("utf-8"))
+    print(json.dumps({"written": str(out), "version": payload["version"],
+                      "sections": sorted(payload["sections"])}, indent=2))
 
 
 def _cmd_promote(args: argparse.Namespace) -> None:

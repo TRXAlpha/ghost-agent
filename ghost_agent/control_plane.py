@@ -20,6 +20,7 @@ from .approvals import ApprovalStore
 from .command_budget import CommandBudget
 from .checkins import LocalCheckIns
 from .autonomy import OutcomeStore
+from .autonomy import CapabilityRegistry
 from .context_manager import ValidatedMemoryStore
 from .devices import DeviceRegistry
 from .provenance import ProvenanceLedger
@@ -472,6 +473,56 @@ class GhostSDK:
             "channel": channel,
             "status": "sent" if self.notification_preferences().get("channels", {}).get(channel, False) else "disabled",
             "timestamp": time.time(),
+        }
+
+# ── Versioned export (R14) ─────────────────────────────────────────────────────
+
+    def export(self, include: Optional[set] = None) -> Dict[str, Any]:
+        """Versioned, secret-free export of personal state for backup/portability.
+
+        Sections are read through each store's existing list/load method.
+        Secrets and credential references are redacted recursively.
+        """
+        from datetime import datetime, timezone
+
+        from .kernel import GoalStore
+        from .context_manager import ValidatedMemoryStore
+        from .devices import DeviceRegistry
+        from .proactive import OpportunityStore
+        from .policy import PolicyStore
+        from .security import redact_secrets
+
+        def _jobs() -> list:
+            return [job.__dict__ if hasattr(job, "__dict__") else job
+                    for job in self.scheduler.list()]
+
+        all_sections: Dict[str, Any] = {
+            "goals": [goal.__dict__ if hasattr(goal, "__dict__") else goal
+                      for goal in GoalStore(self.root)._load()],
+            "approvals": self.approvals._load(),
+            "notifications": [note.__dict__ if hasattr(note, "__dict__") else note
+                              for note in self.attention.pending(include_acknowledged=True)],
+            "validated_memories": [record.__dict__ if hasattr(record, "__dict__") else record
+                                   for record in self.memories.active()],
+            "devices": [device.__dict__ if hasattr(device, "__dict__") else device
+                        for device in self.devices.list()],
+            "opportunities": [opp.__dict__ if hasattr(opp, "__dict__") else opp
+                              for opp in OpportunityStore(self.root).list_all()],
+            "scheduler_jobs": [job.__dict__ if hasattr(job, "__dict__") else job
+                               for job in self.scheduler.list()],
+            "capability_gaps": CapabilityRegistry(self.root)._load().get("gaps", []),
+            "policy": PolicyStore(self.root).load(),
+        }
+        wanted = sorted(all_sections) if include is None else [
+            name for name in all_sections if name in set(include)]
+        unknown = set(include or ()) - set(all_sections)
+        if unknown:
+            raise ValueError(f"unknown export section(s): {sorted(unknown)}")
+        return {
+            "format": "ghost-export",
+            "version": 1,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "sections": {name: redact_secrets(all_sections[name]) for name in wanted},
         }
 
 
