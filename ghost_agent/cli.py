@@ -1840,6 +1840,19 @@ def main() -> None:
     bench_run.add_argument("--iterations", type=int, default=10, help="Max iterations per goal (default: 10)")
     bench_sub.add_parser("report", help="Show the latest benchmark report")
 
+    # Protocol benchmark CLI (R05) — forwards to protocol_benchmark.main()
+    protocol_bench_parser = sub.add_parser(
+        "protocol-bench",
+        help="Run the non-executing protocol benchmark (LLM protocol fidelity)"
+    )
+    protocol_bench_parser.add_argument("--output-root", type=Path, default=Path("outputs/benchmarks"))
+    protocol_bench_parser.add_argument("--model", default="qwen2.5-coder:1.5b")
+    protocol_bench_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
+    protocol_bench_parser.add_argument("--repetitions", type=int, default=2)
+    protocol_bench_parser.add_argument("--prompt-style", choices=["production", "compact"], default="production")
+    protocol_bench_parser.add_argument("--dataset", choices=["baseline", "validation"], default="baseline")
+    protocol_bench_parser.add_argument("--output-format", choices=["unconstrained", "json", "schema"], default="unconstrained")
+
     # Capabilities CLI
     perception_parser = sub.add_parser("perception", help="Read-only observation: filesystem, git, processes")
     perception_sub = perception_parser.add_subparsers(dest="perception_action")
@@ -1903,6 +1916,7 @@ def main() -> None:
         "perception": lambda: _cmd_perception(args),
         "context": lambda: _cmd_context(args),
         "bench": lambda: _cmd_bench(args),
+        "protocol-bench": lambda: _cmd_protocol_bench(args),
     }
     fn = dispatch.get(args.command)
     if fn:
@@ -3721,6 +3735,21 @@ def _cmd_bench(args: argparse.Namespace) -> None:
 
     print(f"Unknown bench action: {action}")
     print("Available: list, run, report")
+
+
+def _cmd_protocol_bench(args: argparse.Namespace) -> None:
+    """Forward to the non-executing protocol benchmark's own argparse entry."""
+    import sys as _sys
+    from .protocol_benchmark import main as run_protocol_benchmark
+
+    # protocol_benchmark.main() parses sys.argv itself; rebuild it from our
+    # already-validated namespace so unknown top-level flags never reach it.
+    forward: list[str] = []
+    for key in ("output_root", "model", "base_url", "repetitions",
+                "prompt_style", "dataset", "output_format"):
+        forward.append(f"--{key.replace('_', '-')}={getattr(args, key)}")
+    _sys.argv = ["ghost protocol-bench"] + forward
+    run_protocol_benchmark()
 
 
 if __name__ == "__main__":
