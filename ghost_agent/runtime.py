@@ -560,6 +560,9 @@ class Doctor:
         secret_file = ghost / "secrets.json"
         status["secret_references"] = "ok" if not secret_file.exists() or self._valid_json(secret_file) else "degraded"
         status["api"] = "loopback_only"  # Transport is intentionally not auto-started.
+        from . import migrations
+        problems = migrations.check(self.root)
+        status["schema"] = problems[0] if problems else "ok"
         status["execution_isolation"] = "not_implemented_host_user_access"
         status["ollama"] = self._probe_ollama()
         status["docker"] = self._probe_docker()
