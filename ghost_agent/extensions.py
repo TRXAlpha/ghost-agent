@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from .secrets import SecretStore
 from .approvals import ApprovalStore
 from .runtime import EmergencyStop
+from .security import SecurityMonitor
 from .utils.storage import atomic_json, exclusive_lock
 
 
@@ -161,6 +162,8 @@ class ExtensionManager:
         manifest = self.load(name)
         if not manifest:
             raise ValueError("Extension not found")
+        if manifest.status == "tampered":
+            raise ValueError("Extension is tampered; re-test and re-approve required")
         if manifest.status != "scaffolded":
             raise ValueError("Only scaffolded extensions can be marked tested")
         return self._transition(manifest, "tested")
@@ -171,8 +174,10 @@ class ExtensionManager:
 
     def _request_enable(self, name: str) -> str:
         manifest = self.load(name)
-        if not manifest or manifest.status not in {"tested", "disabled"}:
-            raise ValueError("Only tested or disabled extensions can request enablement")
+        if not manifest or manifest.status == "tampered":
+            raise ValueError("Extension is tampered; re-test and re-approve required"
+                             if manifest and manifest.status == "tampered"
+                             else "Only tested or disabled extensions can request enablement")
         approval = ApprovalStore(self.root.parents[1]).request(
             "extension.enable", f"Enable extension {manifest.name}",
             self._approval_scope(manifest), "high",
@@ -187,6 +192,8 @@ class ExtensionManager:
     def _enable(self, name: str, approval_id: str) -> ExtensionManifest:
         manifest = self.load(name)
         approval = ApprovalStore(self.root.parents[1]).get(approval_id)
+        if manifest and manifest.status == "tampered":
+            raise ValueError("Extension is tampered; re-test and re-approve required")
         if not manifest or manifest.status not in {"tested", "disabled"}:
             raise ValueError("Only tested or disabled extensions can be enabled")
         if (not approval or approval.status != "approved" or approval.capability != "extension.enable"
@@ -216,6 +223,32 @@ class ExtensionManager:
                 files[path.relative_to(directory).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         return {"extension": manifest.name, "permissions": manifest.permissions,
                 "side_effects": manifest.side_effects, "files": files}
+
+    def verify_integrity(self) -> list[dict[str, Any]]:
+        """Recompute package hashes for approved/enabled extensions; disable tampered ones (R08)."""
+        tampered: list[dict[str, Any]] = []
+        approvals = ApprovalStore(self.root.parents[1])
+        monitor = SecurityMonitor(self.root.parents[1])
+        for directory in sorted(self.root.iterdir()):
+            if not directory.is_dir():
+                continue
+            manifest = self.load(directory.name)
+            if manifest is None or manifest.status not in {"approved", "enabled"}:
+                continue
+            approval = approvals.get(manifest.enable_approval_id) if manifest.enable_approval_id else None
+            current = self._approval_scope(manifest)
+            # manifest.json is Ghost's own state and changes on enable; only the
+            # extension payload is compared against the approval scope.
+            stored_files = {k: v for k, v in (approval.scope.get("files", {}).items()
+                                              if approval else []) if k != "manifest.json"}
+            if stored_files != {k: v for k, v in current["files"].items() if k != "manifest.json"}:
+                manifest.status = "tampered"  # Not in STATES; re-enable requires re-test and re-approval.
+                manifest.updated_at = time.time()
+                self._save(manifest)
+                monitor.record_event("extension.tampered", {"extension": manifest.name,
+                                                            "approval_id": manifest.enable_approval_id})
+                tampered.append({"name": manifest.name, "status": "tampered"})
+        return tampered
 
     def transition(self, manifest: ExtensionManifest, target: str) -> ExtensionManifest:
         if target in {"approved", "enabled"}:
