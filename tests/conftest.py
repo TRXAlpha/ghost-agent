@@ -21,3 +21,19 @@ if not (3, 11) <= sys.version_info[:2] < (3, 14):
     ]
 
 pytest_collect_ignore = list(collect_ignore_glob)
+
+
+@pytest.fixture
+def permissive_policy(tmp_path, monkeypatch):
+    """Write an all-modes-on policy file into a project root.
+
+    Tests that call policy-gated entry points (queue_sandbox_outcome,
+    overnight/daemon loops, ProactiveEngine.watch) apply this fixture and
+    pass ``tmp_path`` as the project root.
+    """
+    from ghost_agent.policy import PolicyStore
+
+    store = PolicyStore(tmp_path)
+    for mode in ("suggest", "build", "operate", "improve", "idle_work"):
+        store.set(mode, True)
+    return tmp_path

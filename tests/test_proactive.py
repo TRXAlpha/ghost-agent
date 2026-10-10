@@ -118,7 +118,7 @@ def test_explicit_context_file_reaches_planner_and_is_scoped(tmp_path: Path):
         ProactiveEngine(tmp_path, "tiny", chat_fn=planner, context_paths=["../outside.md"]).context()
 
 
-def test_watch_runs_existing_worker_callback_after_queue(tmp_path: Path, monkeypatch):
+def test_watch_runs_existing_worker_callback_after_queue(tmp_path: Path, monkeypatch, permissive_policy):
     engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *args, **kwargs: proposal(), idle_fn=lambda: 1000)
     results = []
     def stop_after_sleep(_interval):

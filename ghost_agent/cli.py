@@ -1705,12 +1705,23 @@ def main() -> None:
     approval_parser.add_argument("action", choices=["list", "approve", "reject"])
     approval_parser.add_argument("approval_id", nargs="?")
     approval_parser.add_argument("--note", default="")
+    policy_parser = sub.add_parser("policy", help="Show or set standing autonomy policy modes")
+    policy_parser.add_argument("action", choices=["show", "set"])
+    policy_parser.add_argument("mode", nargs="?")
+    policy_parser.add_argument("state", nargs="?", choices=["on", "off"])
+    export_parser = sub.add_parser("export", help="Export a versioned, secret-free copy of personal state")
+    export_parser.add_argument("--out", required=True)
+    export_parser.add_argument("--only", default="",
+                               help="Comma-separated sections to include (default: all)")
     promote_parser = sub.add_parser("promote", help="Preview, approve, commit, or undo sandbox promotion")
     promote_parser.add_argument("action", choices=["request", "commit", "rollback", "list"])
     promote_parser.add_argument("value", nargs="?", default="", help="Sandbox path, transaction id, or promotion id")
     promote_parser.add_argument("--goal-id", default="", help="Goal ID required for request")
     promote_parser.add_argument("--approval-id", default="", help="Approved request required for commit")
-    sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser = sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser.add_argument("--view", default="snapshot",
+                                      choices=["snapshot", "goals", "opportunities", "resources",
+                                               "integrations", "notifications"])
     api_parser = sub.add_parser("api", help="Serve the local loopback control-plane API")
     api_parser.add_argument("--host", default="127.0.0.1")
     api_parser.add_argument("--port", type=int, default=8765)
@@ -1886,8 +1897,10 @@ def main() -> None:
         "emergency-stop": lambda: _cmd_emergency_stop(args),
         "extension": lambda: _cmd_extension(args),
         "approval": lambda: _cmd_approval(args),
+        "policy": lambda: _cmd_policy(args),
+        "export": lambda: _cmd_export(args),
         "promote": lambda: _cmd_promote(args),
-        "control-plane": _cmd_control_plane,
+        "control-plane": lambda: _cmd_control_plane(args),
         "api": lambda: _cmd_api(args),
         "integration": lambda: _cmd_integration(args),
         "worker": lambda: _cmd_worker(args),
@@ -2865,6 +2878,42 @@ def _cmd_approval(args: argparse.Namespace) -> None:
     print(json.dumps(request.__dict__, indent=2))
 
 
+def _cmd_policy(args: argparse.Namespace) -> None:
+    """Show or set standing autonomy policy modes (owner authority)."""
+    from .policy import PolicyError, PolicyStore
+    store = PolicyStore(Path.cwd())
+    try:
+        if args.action == "show":
+            print(json.dumps(store.load(), indent=2))
+            return
+        if not args.mode or not args.state:
+            print("usage: ghost policy set <mode> on|off")
+            return
+        print(json.dumps(store.set(args.mode, args.state == "on"), indent=2))
+    except PolicyError as exc:
+        print(str(exc))
+
+
+def _cmd_export(args: argparse.Namespace) -> None:
+    """Write a versioned, secret-free export of personal state."""
+    from .control_plane import GhostSDK
+    from .utils.storage import atomic_write
+    sdk = GhostSDK(Path.cwd())
+    only = {name.strip() for name in args.only.split(",") if name.strip()}
+    try:
+        payload = sdk.export(only or None)
+    except ValueError as exc:
+        print(f"export refused: {exc}")
+        return
+    out = Path(args.out)
+    if out.exists():
+        print(f"export refused: {out} already exists")
+        return
+    atomic_write(out, json.dumps(payload, indent=2, default=str).encode("utf-8"))
+    print(json.dumps({"written": str(out), "version": payload["version"],
+                      "sections": sorted(payload["sections"])}, indent=2))
+
+
 def _cmd_promote(args: argparse.Namespace) -> None:
     """Expose the explicit preview -> approval -> commit -> undo promotion flow."""
     service = PromotionService(Path.cwd())
@@ -2896,9 +2945,19 @@ def _cmd_promote(args: argparse.Namespace) -> None:
         print(f"Promotion refused: {exc}")
 
 
-def _cmd_control_plane() -> None:
+def _cmd_control_plane(args: argparse.Namespace | None = None) -> None:
     """Expose a structured local snapshot for future UI/API transports."""
-    print(GhostSDK(Path.cwd()).snapshot_json())
+    sdk = GhostSDK(Path.cwd())
+    views = {
+        "snapshot": lambda: json.loads(sdk.snapshot_json()),
+        "goals": sdk.goal_tree,
+        "opportunities": sdk.opportunity_pipeline,
+        "resources": sdk.resource_usage,
+        "integrations": sdk.integration_health,
+        "notifications": sdk.notification_preferences,
+    }
+    result = views[getattr(args, "view", "snapshot")]()
+    print(json.dumps(result, indent=2, default=str))
 
 
 def _cmd_api(args: argparse.Namespace) -> None:
