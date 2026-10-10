@@ -1679,6 +1679,11 @@ def main() -> None:
     accomplish_parser.add_argument("--queue", action="store_true", help="Persist the outcome for ghost worker")
 
     sub.add_parser("doctor", help="Check Ghost runtime health")
+    events_parser = sub.add_parser("events", help="Inspect the event log with cursors")
+    events_parser.add_argument("action", choices=["tail", "failed"])
+    events_parser.add_argument("--cursor", default="", help="tail: cursor name (a-z0-9_-)")
+    events_parser.add_argument("--max", type=int, default=100, help="tail: max events")
+    events_parser.add_argument("--no-commit", action="store_true", help="tail: do not advance the cursor")
     jobs_parser = sub.add_parser("jobs", help="Inspect jobs and control queued/paused work")
     jobs_parser.add_argument("action", choices=["list", "add", "remove", "pause", "resume", "retry", "cancel"])
     jobs_parser.add_argument("job_id", nargs="?", default="")
@@ -1876,6 +1881,7 @@ def main() -> None:
         "research": lambda: _cmd_research(args),
         "accomplish": lambda: _cmd_accomplish(args),
         "doctor": _cmd_doctor,
+        "events": lambda: _cmd_events(args),
         "jobs": lambda: _cmd_jobs(args),
         "emergency-stop": lambda: _cmd_emergency_stop(args),
         "extension": lambda: _cmd_extension(args),
@@ -2784,6 +2790,24 @@ def _cmd_doctor() -> None:
             models = doctor.available_models()
             if models:
                 print(f"    models: {', '.join(models)}")
+
+
+def _cmd_events(args: argparse.Namespace) -> None:
+    """Tail the event log through a named cursor, or show the failed queue."""
+    from .event_cursor import EventCursor
+
+    root = Path.cwd()
+    if args.action == "failed":
+        failed = root / ".ghost" / "events" / "failed.jsonl"
+        if failed.exists():
+            print(failed.read_text(encoding="utf-8"), end="")
+        return
+    cursor = EventCursor(root, args.cursor)
+    pairs = cursor.read_new(max_events=args.max)
+    for end_offset, event in pairs:
+        print(json.dumps(event.__dict__))
+    if pairs and not args.no_commit:
+        cursor.commit(pairs[-1][0])
 
 
 def _cmd_emergency_stop(args: argparse.Namespace) -> None:
