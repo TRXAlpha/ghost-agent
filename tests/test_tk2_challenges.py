@@ -116,3 +116,38 @@ def test_invalid_spec_rejected(tmp_path: Path):
                      {"kind": "bogus", "tests": "t"}, {"a.py": "y"})
     with pytest.raises(ChallengeError, match="starter files required"):
         store.create(["c"], "prompt", {}, ORACLE, SOLUTION)
+
+
+def test_rustc_oracle_path_invokes_rustcompileoracle(tmp_path: Path):
+    """The rustc kind routes through RustCompileOracle with the main.rs file."""
+    import ghost_agent.challenges as ch
+
+    calls = {}
+
+    class FakeOracle:
+        def __init__(self, plan_root=None):
+            calls["plan_root"] = plan_root
+
+        def check(self, submission, context=""):
+            calls["submission"] = submission
+            return True, "compiles"
+
+    store = ChallengeStore(tmp_path)
+    original = ch.RustCompileOracle
+    ch.RustCompileOracle = FakeOracle
+    try:
+        ok, feedback = store._run_oracle(
+            "rustc", "unused tests field",
+            {"main.rs": "fn main() {}"})
+    finally:
+        ch.RustCompileOracle = original
+    assert ok
+    assert feedback == "compiles"
+    assert calls["submission"] == "fn main() {}"
+
+
+def test_rustc_oracle_requires_rs_source(tmp_path: Path):
+    store = ChallengeStore(tmp_path)
+    ok, feedback = store._run_oracle("rustc", "t", {"x.txt": "no rust here"})
+    assert not ok
+    assert "no Rust source" in feedback
