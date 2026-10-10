@@ -2,6 +2,7 @@
 import asyncio
 import json
 import threading
+from itertools import chain, repeat
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ import pytest
 
 pytest.importorskip("openjarvis")
 
-from openjarvis.channels._stubs import ChannelMessage
+from openjarvis.channels._stubs import ChannelMessage, ChannelStatus
 from openjarvis.channels.telegram import TelegramChannel
 
 from ghost_agent.autonomy import OutcomeStore
@@ -153,3 +154,118 @@ def test_patched_real_poll_loop_registers_awaitable_callback_off_loop_thread():
 def test_patched_upstream_preserves_pending_updates():
     import inspect
     assert "drop_pending_updates=False" in inspect.getsource(TelegramChannel._run_polling_lifecycle)
+
+
+def _write_receipt(tmp_path, message_id, status, finished_at=None):
+    import hashlib
+
+    from ghost_agent.utils.storage import atomic_json
+    from ghost_agent.openjarvis_bridge.runtime import state_root
+    identifier = hashlib.sha256(f"1234:{message_id}".encode()).hexdigest()
+    path = state_root(tmp_path) / "telegram-receipts" / f"{identifier}.json"
+    atomic_json(path, {"message_id": message_id, "received_at": 1.0,
+                       "status": status, "finished_at": finished_at})
+    return path
+
+
+def test_reconcile_marks_stuck_sending_receipt_uncertain_once(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    pair(tmp_path, "1234", "1234")
+    _write_receipt(tmp_path, "5", "sending")
+    reconciled = reconcile_receipts(tmp_path)
+    assert len(reconciled) == 1
+    receipt = json.loads(
+        (tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json").__next__().read_text())
+    assert receipt["status"] == "uncertain"
+    assert receipt["reconciled_at"] > 0
+    from ghost_agent.runtime import AttentionManager
+    assert len(AttentionManager(tmp_path).pending()) == 1
+    # A second reconcile must not duplicate the owner notification.
+    reconcile_receipts(tmp_path)
+    assert len(AttentionManager(tmp_path).pending()) == 1
+
+
+def test_reconcile_leaves_finished_receipts_alone(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    _write_receipt(tmp_path, "5", "delivered", finished_at=2.0)
+    _write_receipt(tmp_path, "6", "processing")  # no finished_at but reconciled too
+    reconciled = reconcile_receipts(tmp_path)
+    statuses = {r["message_id"]: r["status"] for r in reconciled}
+    assert statuses == {"6": "uncertain"}
+    delivered = next((tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json")).read_text()
+    assert "delivered" in delivered and "uncertain" not in json.loads(delivered)["status"]
+
+
+def test_redelivered_message_with_uncertain_receipt_is_not_reprocessed(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    pair(tmp_path, "1234", "1234")
+    channel = MagicMock()
+    channel.send.return_value = True
+    responder = MagicMock(return_value={"task_id": "task", "content": "hi"})
+    bridge = TelegramBridge(tmp_path, channel, "tiny", responder=responder)
+    # Crash mid-send simulation: receipt written, no finished_at.
+    _write_receipt(tmp_path, "5", "sending")
+    reconcile_receipts(tmp_path)
+    bridge.handle(message())
+    responder.assert_not_called()
+    channel.send.assert_not_called()
+    assert len(list((tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json"))) == 1
+
+
+def _monitor(tmp_path, channel, **kwargs):
+    from ghost_agent.openjarvis_bridge.telegram import _monitor_transport
+    stopped = threading.Event()
+    timer = threading.Timer(5.0, stopped.set)
+    timer.daemon = True
+    timer.start()
+    try:
+        _monitor_transport(tmp_path, channel, stopped, **kwargs)
+    finally:
+        timer.cancel()
+
+
+def test_transient_error_is_retried_with_growing_backoff(tmp_path):
+    pair(tmp_path, "1234", "1234")
+    delays = []
+    # Two transient failures, then healthy; each error forces one reconnect.
+    # status() is polled once per loop pass and once after each reconnect.
+    statuses = chain([ChannelStatus.ERROR, ChannelStatus.ERROR, ChannelStatus.ERROR],
+                     repeat(ChannelStatus.CONNECTED))
+    reconnects = []
+    reconnected = []
+    channel = MagicMock()
+    channel.status.side_effect = lambda: next(statuses)
+    channel.connect.side_effect = lambda: reconnects.append(1)
+    _monitor(tmp_path, channel,
+             sleep=lambda s: delays.append(s) if s != 0.5 else None,
+             after_reconnect=lambda: reconnected.append(None),
+             )
+    # 1 then 2 seconds, reset to 1 after a healthy status.
+    assert delays == [1.0, 2.0]
+    assert len(reconnects) == 2  # one reconnect per error pass
+    assert reconnected == [None]  # after_reconnect was called back
+
+
+def test_backoff_delay_resets_after_success_and_caps_at_limit(tmp_path):
+    pair(tmp_path, "1234", "1234")
+    delays = []
+    statuses = iter([ChannelStatus.ERROR] * 7 + [ChannelStatus.CONNECTED])
+    channel = MagicMock()
+    channel.status.side_effect = lambda: next(statuses)
+    with pytest.raises(StopIteration):
+        _monitor(tmp_path, channel, sleep=delays.append, initial_delay=1.0, max_delay=60.0)
+    assert delays[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+    assert delays[6] == 60.0  # capped, never grows past max_delay
+
+
+def test_emergency_stop_ends_retry_loop(tmp_path):
+    pair(tmp_path, "1234", "1234")
+    EmergencyStop(tmp_path).engage("test")
+    delays = []
+    channel = MagicMock()
+    channel.status.return_value = ChannelStatus.ERROR
+    channel.connect.side_effect = AssertionError("must not reconnect under emergency stop")
+    with pytest.raises(IntegrationError):
+        _monitor(tmp_path, channel, sleep=delays.append)
+    assert delays == []
+    channel.disconnect.assert_not_called()
