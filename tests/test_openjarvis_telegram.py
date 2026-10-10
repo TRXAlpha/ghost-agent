@@ -153,3 +153,59 @@ def test_patched_real_poll_loop_registers_awaitable_callback_off_loop_thread():
 def test_patched_upstream_preserves_pending_updates():
     import inspect
     assert "drop_pending_updates=False" in inspect.getsource(TelegramChannel._run_polling_lifecycle)
+
+
+def _write_receipt(tmp_path, message_id, status, finished_at=None):
+    import hashlib
+
+    from ghost_agent.utils.storage import atomic_json
+    from ghost_agent.openjarvis_bridge.runtime import state_root
+    identifier = hashlib.sha256(f"1234:{message_id}".encode()).hexdigest()
+    path = state_root(tmp_path) / "telegram-receipts" / f"{identifier}.json"
+    atomic_json(path, {"message_id": message_id, "received_at": 1.0,
+                       "status": status, "finished_at": finished_at})
+    return path
+
+
+def test_reconcile_marks_stuck_sending_receipt_uncertain_once(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    pair(tmp_path, "1234", "1234")
+    _write_receipt(tmp_path, "5", "sending")
+    reconciled = reconcile_receipts(tmp_path)
+    assert len(reconciled) == 1
+    receipt = json.loads(
+        (tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json").__next__().read_text())
+    assert receipt["status"] == "uncertain"
+    assert receipt["reconciled_at"] > 0
+    from ghost_agent.runtime import AttentionManager
+    assert len(AttentionManager(tmp_path).pending()) == 1
+    # A second reconcile must not duplicate the owner notification.
+    reconcile_receipts(tmp_path)
+    assert len(AttentionManager(tmp_path).pending()) == 1
+
+
+def test_reconcile_leaves_finished_receipts_alone(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    _write_receipt(tmp_path, "5", "delivered", finished_at=2.0)
+    _write_receipt(tmp_path, "6", "processing")  # no finished_at but reconciled too
+    reconciled = reconcile_receipts(tmp_path)
+    statuses = {r["message_id"]: r["status"] for r in reconciled}
+    assert statuses == {"6": "uncertain"}
+    delivered = next((tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json")).read_text()
+    assert "delivered" in delivered and "uncertain" not in json.loads(delivered)["status"]
+
+
+def test_redelivered_message_with_uncertain_receipt_is_not_reprocessed(tmp_path):
+    from ghost_agent.openjarvis_bridge.telegram import reconcile_receipts
+    pair(tmp_path, "1234", "1234")
+    channel = MagicMock()
+    channel.send.return_value = True
+    responder = MagicMock(return_value={"task_id": "task", "content": "hi"})
+    bridge = TelegramBridge(tmp_path, channel, "tiny", responder=responder)
+    # Crash mid-send simulation: receipt written, no finished_at.
+    _write_receipt(tmp_path, "5", "sending")
+    reconcile_receipts(tmp_path)
+    bridge.handle(message())
+    responder.assert_not_called()
+    channel.send.assert_not_called()
+    assert len(list((tmp_path / ".ghost/openjarvis/telegram-receipts").glob("*.json"))) == 1

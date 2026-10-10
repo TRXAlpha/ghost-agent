@@ -36,7 +36,7 @@ def add_parser(sub):
     search.add_argument("query")
     telegram = actions.add_parser("telegram", help="Pair/revoke/serve Telegram or check credentials")
     telegram.add_argument("action", choices=["pair", "revoke", "status", "serve",
-                                              "rotate-token-check", "live-check"])
+                                              "rotate-token-check", "live-check", "receipts"])
     telegram.add_argument("--user-id", default="")
     telegram.add_argument("--chat-id", default="")
     telegram.add_argument("--model", default="")
@@ -45,6 +45,7 @@ def add_parser(sub):
                           help="Queue explicit build/create/implement requests for Ghost's sandbox worker")
     telegram.add_argument("--run-worker", action="store_true",
                           help="Run Ghost's existing bounded worker alongside the Telegram transport")
+    telegram.add_argument("--status", default="", help="[receipts] filter receipts by status")
     return parser
 
 
@@ -59,7 +60,7 @@ def dispatch(args):
         return
     require_upstream()
     if args.oj_action == "telegram":
-        from .telegram import (live_check, pair, pairing, revoke, serve,
+        from .telegram import (live_check, list_receipts, pair, pairing, revoke, serve,
                                token_health, check_token_rotation,
                                record_token_fingerprint)
         from ..integrations.telegram import token_value
@@ -80,6 +81,8 @@ def dispatch(args):
             if not args.chat_id:
                 raise IntegrationError("live-check requires --chat-id (the paired owner chat).")
             result = live_check(root, args.chat_id)
+        elif args.action == "receipts":
+            result = list_receipts(root, status=args.status)
         else:
             if not args.model:
                 raise IntegrationError("Telegram serve requires --model.")
