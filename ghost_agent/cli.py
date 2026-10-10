@@ -19,6 +19,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -1738,6 +1739,8 @@ def main() -> None:
     repair_parser.add_argument("--goal-id", default="", help="Goal ID required for request-promotion")
     repair_parser.add_argument("--command", default="python -m pytest -q",
                                help="Evaluator command run inside the candidate to verify it")
+    repair_parser.add_argument("--isolation", choices=["auto", "container", "host"], default="auto",
+                               help="Where the evaluator runs: container when available, host fallback, or host only")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
     device_parser.add_argument("action", choices=["list", "register"])
     device_parser.add_argument("device_id", nargs="?")
@@ -3136,7 +3139,7 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             # candidate bytes. A user-supplied pass/fail flag is not accepted as
             # evidence (S08): a manual note cannot impersonate independent checks.
             def _evaluate(candidate: Path) -> dict:
-                return _run_bounded_evaluator(candidate, args.command)
+                return _run_isolated_evaluator(candidate, args.command, args.isolation)
 
             proposal = manager.verify_from_evaluator(args.value, _evaluate)
             print(json.dumps(proposal.__dict__, indent=2))
@@ -3148,6 +3151,46 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             print(json.dumps({"transaction_id": transaction, "approval_id": approval, "files": files}, indent=2))
     except (OSError, ValueError, PermissionError) as exc:
         print(f"Self-repair refused: {exc}")
+
+
+def _run_isolated_evaluator(candidate: Path, command: str, isolation: str) -> dict:
+    """Run the evaluator in container isolation when chosen/available (R07).
+
+    isolation="container" demands the container runner and refuses without it;
+    "auto" uses it when available and falls back to the bounded host evaluator;
+    "host" always uses the bounded host evaluator. The returned dict records
+    which runner actually ran via "runner" (and "isolation_unavailable" on the
+    auto fallback) so stored evidence is honest about how it was produced.
+    """
+    from ghost_agent.openjarvis_bridge import isolated_execution
+
+    if isolation == "host":
+        result = _run_bounded_evaluator(candidate, command)
+        result["runner"] = "host"
+        return result
+    timeout = float(os.environ.get("GHOST_EVALUATOR_TIMEOUT", "60"))
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = []
+    if not parts:
+        return {"returncode": 1, "output": "empty evaluator command", "runner": "host"}
+    outcome = isolated_execution.run_in_isolation(candidate, parts, timeout=timeout)
+    if outcome.get("available"):
+        return {
+            "returncode": int(outcome.get("returncode", 1)),
+            "output": str(outcome.get("output", ""))[-4000:],
+            "runner": "container",
+        }
+    error_type = str(outcome.get("error_type", "unknown"))
+    error = str(outcome.get("error", ""))
+    if isolation == "container":
+        raise ValueError(
+            f"container isolation unavailable ({error_type}: {error})")
+    result = _run_bounded_evaluator(candidate, command)
+    result["runner"] = "host"
+    result["isolation_unavailable"] = error_type
+    return result
 
 
 def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
