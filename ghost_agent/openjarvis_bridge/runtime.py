@@ -126,8 +126,13 @@ def _request(messages, options, response_format, engine):
     temp = opts.pop("temperature", 0.7)
     if type(temp) not in (int, float) or not math.isfinite(temp) or not 0 <= temp <= 2:
         raise IntegrationError("temperature must be between 0 and 2.")
-    if engine != "ollama" and opts:
-        raise IntegrationError("num_ctx/num_gpu are Ollama-only options.")
+    if engine != "ollama":
+        # num_ctx/num_gpu are local Ollama resource hints (context window and GPU
+        # layers). OpenAI-compatible servers manage these themselves, so the hint
+        # is dropped rather than failing every coding turn (the orchestrator sends
+        # num_ctx unconditionally). It never changes request semantics.
+        opts.pop("num_ctx", None)
+        opts.pop("num_gpu", None)
     for key, value in opts.items():
         if type(value) is not int or not 0 <= value <= 131072:
             raise IntegrationError(f"Invalid {key} option.")
