@@ -32,8 +32,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .promotion import PromotionManager, PromotionService
+from .promotion import PromotionManager, PromotionService, load_update_policy
 from .utils.storage import atomic_json, exclusive_lock
+
+# S08/R13: self-repair promotion of owner-controlled kernel code must go
+# through the owner's explicit update process, never the automated path.
+PROTECTED_PATH_MESSAGE = "protected path requires the owner-controlled update process: {path}"
 
 
 class SelfRepairError(ValueError):
@@ -477,5 +481,9 @@ class SelfRepairManager:
         proposal = self.get(proposal_id)
         if not proposal or proposal.status != "verified" or not proposal.verified_snapshot:
             raise PermissionError("Only verified self-repair proposals can request promotion")
+        policy = load_update_policy(self.root)
+        for name in proposal.verified_snapshot:
+            if name.replace("\\", "/") in policy["protected_paths"]:
+                raise SelfRepairError(PROTECTED_PATH_MESSAGE.format(path=name))
         return PromotionService(self.root).request(
             goal_id, Path(proposal.sandbox), expected_snapshot=proposal.verified_snapshot)
