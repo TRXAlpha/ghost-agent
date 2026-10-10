@@ -1818,7 +1818,7 @@ def main() -> None:
                                help="Where the evaluator runs: container when available, host fallback, or host only")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
     device_parser.add_argument("action", choices=["list", "register", "pair", "revoke",
-                                                  "status", "simulate"])
+                                                  "status", "simulate", "ingest"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
@@ -1833,6 +1833,9 @@ def main() -> None:
                                help="Command duration in seconds")
     device_parser.add_argument("--disconnect", action="store_true",
                                help="Disconnect the simulator after the command")
+    # TL4: telemetry ingest — validated data, never instructions.
+    device_parser.add_argument("--file", default=None,
+                               help="JSON file of telemetry samples (ingest)")
     # TF1/TF4: `ghost huawei` — synthetic/manual data only until Huawei
     # credentials are configured (S02). One CLI action per existing public
     # HuaweiRoute method; no network calls.
@@ -3723,6 +3726,29 @@ def _cmd_device(args: argparse.Namespace) -> None:
     """Manage declared devices; registration does not grant control permissions."""
     registry = DeviceRegistry(Path.cwd())
     try:
+        if args.action == "ingest":
+            # TL4: telemetry is data, never instructions. Rejected string
+            # content is never echoed — counts and reason categories only.
+            from .telemetry import TelemetryError, ingest_samples
+            if not args.device_id or not args.file:
+                print("ingest requires a device_id and --file")
+                return
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            try:
+                raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"Cannot read samples file: {type(exc).__name__}")
+                return
+            try:
+                result = ingest_samples(raw, device=device, registry=registry)
+            except TelemetryError as exc:
+                print(f"Telemetry refused: {exc}")
+                return
+            print(json.dumps(result, indent=2))
+            return
         if args.action == "list":
             print(json.dumps([device.__dict__ for device in registry.list()], indent=2))
             return
