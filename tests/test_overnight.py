@@ -223,6 +223,56 @@ class TestDigest:
         assert path is None  # no log entries
 
 
+class TestDigestOutcomesAndCoverage:
+    def _runner(self, tmp_path):
+        return OvernightRunner(tmp_path, "gemma4:26b",
+                               proactive_tick=fake_tick(),
+                               worker_fn=lambda: None)
+
+    def _write_log(self, r, entries):
+        r.log_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for ts in entries:
+            lines.append(json.dumps({
+                "ts": ts, "cycle": len(lines) + 1, "user_active": False,
+                "quiet_hours": True, "emergency_stop": False,
+                "proactive": "ok", "proactive_reason": "",
+                "worker": "", "worker_status": "", "errors": [],
+            }))
+        r.log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_outcomes_section_lists_completed_job(self, tmp_path):
+        from ghost_agent.autonomy import OutcomeJob, OutcomeStore
+        store = OutcomeStore(tmp_path)
+        job = OutcomeJob(job_id="j1", goal="Build widget",
+                         status="completed", result="tests_passed",
+                         created_at=1.0, updated_at=1.0)
+        store.save(job)
+        r = self._runner(tmp_path)
+        text = r._render_digest(datetime(2026, 9, 28, 7, 30), [])
+        assert "## Outcomes" in text
+        assert "Build widget" in text
+
+    def test_coverage_reports_gap_longer_than_3x_interval(self, tmp_path):
+        r = self._runner(tmp_path)
+        r.interval = 60.0  # gaps > 180s are reported
+        self._write_log(r, ["2026-09-28T02:00:00", "2026-09-28T03:00:00",
+                            "2026-09-28T03:02:00"])
+        text = r._render_digest(datetime(2026, 9, 28, 7, 30),
+                                r._entries_since(datetime(2026, 9, 28, 1, 0)))
+        assert "## Coverage" in text
+        assert "no cycles from 02:00 to 03:00" in text
+        assert "(PC asleep/offline or Ghost not running)" in text
+        assert "First cycle: 02:00" in text
+        assert "Last cycle: 03:02" in text
+        assert "no cycles from 03:00 to 03:02" not in text
+
+    def test_zero_cycles_says_ghost_did_not_run(self, tmp_path):
+        r = self._runner(tmp_path)
+        text = r._render_digest(datetime(2026, 9, 28, 7, 30), [])
+        assert "Ghost did not run during this window." in text
+
+
 class TestRunUntilIdle:
     def test_runs_one_cycle(self, tmp_path):
         r = OvernightRunner(tmp_path, "gemma4:26b",
