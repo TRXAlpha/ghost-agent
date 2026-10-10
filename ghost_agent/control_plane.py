@@ -168,6 +168,7 @@ class GhostSDK:
             "command_budgets": self.command_budgets(),
             "check_in": self.check_in_status(),
             "jobs": [job.__dict__ for job in self.scheduler.list()],
+            "scheduler_jobs": [job.__dict__ for job in self.scheduler.list()],
             "devices": [device.__dict__ for device in self.devices.list()],
             "recent_provenance": [record.__dict__ for record in self.provenance.all()[-20:]],
             "promotions": self.promotions.list(),
