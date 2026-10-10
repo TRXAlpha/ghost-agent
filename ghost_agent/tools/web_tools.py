@@ -95,6 +95,18 @@ def source_credibility(url: str) -> Dict[str, Any]:
     def belongs_to(domains: tuple[str, ...]) -> bool:
         return any(host == domain or host.endswith("." + domain) for domain in domains)
 
+    # Vendor-official documentation is primary evidence for API/library claims.
+    if (
+        belongs_to((
+            "docs.python.org", "doc.rust-lang.org", "developer.mozilla.org",
+            "core.telegram.org", "developer.huawei.com", "learn.microsoft.com",
+            "docs.github.com", "ollama.com",
+        ))
+        or host.startswith("docs.")
+        or host.startswith("developer.")
+    ):
+        return {"score": 0.95, "tier": "official_docs", "domain": host}
+
     if belongs_to(("wikipedia.org", "medium.com", "substack.com", "youtube.com")):
         return {"score": 0.15, "tier": "tertiary_or_social", "domain": host}
 
