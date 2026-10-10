@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 import requests
 import threading
@@ -111,7 +113,12 @@ def test_invalid_download_budget_refused(limit):
         web_tools.fetch_source_text("https://example.edu/paper", max_bytes=limit)
 
 
-def test_real_http_fetch_respects_byte_limit():
+def test_real_http_fetch_respects_byte_limit(monkeypatch):
+    # The real 127.0.0.1 server is the point of this fixture: exercise the
+    # streamed byte cap against a live socket. The fail-closed private-network
+    # block (TH3) correctly refuses loopback, so this test explicitly scopes
+    # the owner override to itself rather than weakening the block.
+    monkeypatch.setenv("GHOST_ALLOW_PRIVATE_FETCH", "1")
     body = b"<html><body>" + b"Observed carbon cycling with uncertainty. " * 30 + b"</body></html>"
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
