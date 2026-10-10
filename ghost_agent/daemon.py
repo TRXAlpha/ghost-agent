@@ -53,19 +53,30 @@ class GhostDaemon:
                  trace_fn: Optional[Callable[[], dict]] = None,
                  improver_fn: Optional[Callable[[], dict]] = None,
                  improve_sync_fn: Optional[Callable[[], list]] = None,
-                 sleep_fn: Callable[[float], None] = time.sleep) -> None:
+                 sleep_fn: Callable[[float], None] = time.sleep,
+                 quiet_hours: Optional[tuple[int, int]] = None,
+                 digest_window: Optional[tuple[int, int]] = None) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-blank string")
         if not isinstance(trace_every, int) or trace_every < 1:
             raise ValueError("trace_every must be an integer >= 1")
         if not isinstance(interval, (int, float)) or interval <= 0:
             raise ValueError("interval must be a positive number of seconds")
+        for name, value in (("quiet_hours", quiet_hours), ("digest_window", digest_window)):
+            if value is not None and (len(value) != 2 or not all(
+                    type(h) is int and 0 <= h <= 23 for h in value)):
+                raise ValueError(f"{name} must be a pair of ints in 0-23")
         self.root = Path(root).resolve()
         self.model = model
         self.interval = float(interval)
         self.trace_every = int(trace_every)
+        runner_kwargs: dict = {}
+        if quiet_hours is not None:
+            runner_kwargs["quiet_hours"] = tuple(quiet_hours)
+        if digest_window is not None:
+            runner_kwargs["digest_window"] = tuple(digest_window)
         self.runner = runner if runner is not None else OvernightRunner(
-            self.root, model, interval=interval, idle_after=idle_after)
+            self.root, model, interval=interval, idle_after=idle_after, **runner_kwargs)
         self.trace_fn = trace_fn if trace_fn is not None else _default_trace_fn(self.root)
         self.improver_fn = improver_fn if improver_fn is not None else _default_improver_fn(
             self.root, model)

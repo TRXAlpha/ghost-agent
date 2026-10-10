@@ -1886,6 +1886,12 @@ def main() -> None:
                                help="OS idle threshold below which the owner counts as active")
     overnight_run.add_argument("--max-cycles", type=int, default=None,
                                help="Stop after N cycles (default: until emergency stop)")
+    overnight_run.add_argument("--quiet-hours", nargs=2, type=int, default=None,
+                               metavar=("START", "END"),
+                               help="Hours 0-23 during which overnight activity is quiet")
+    overnight_run.add_argument("--digest-window", nargs=2, type=int, default=None,
+                               metavar=("START", "END"),
+                               help="Hours 0-23 in which digests are produced")
     overnight_idle = overnight_sub.add_parser("until-idle-ends", help="One cycle when the owner goes idle")
     overnight_idle.add_argument("--idle-after-seconds", type=float, default=900)
     trace_parser = sub.add_parser("trace-learning", help="Mine outcome traces for recurring failure signatures (OJ15/S08)")
@@ -1908,6 +1914,12 @@ def main() -> None:
     daemon_run.add_argument("--trace-every", type=int, default=10,
                             help="Run trace-learning every N cycles (default 10)")
     daemon_run.add_argument("--model", default=None, help="Model for proactive ticks and capability assessment")
+    daemon_run.add_argument("--quiet-hours", nargs=2, type=int, default=None,
+                            metavar=("START", "END"),
+                            help="Hours 0-23 during which daemon activity is quiet")
+    daemon_run.add_argument("--digest-window", nargs=2, type=int, default=None,
+                            metavar=("START", "END"),
+                            help="Hours 0-23 in which digests are produced")
     daemon_sub.add_parser("status", help="Show daemon health / last cycle summary")
     daemon_sub.add_parser("stop", help="Engage emergency stop to stop the daemon")
 
@@ -3606,17 +3618,29 @@ def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
 
 def _cmd_overnight(args: argparse.Namespace) -> None:
     """Run the unattended overnight loop (OJ11/S06) over existing subsystems."""
-    from .overnight import OvernightRunner
+    from .overnight import DEFAULT_DIGEST_WINDOW, DEFAULT_QUIET_HOURS, OvernightRunner
     root = Path.cwd()
+    quiet_hours = getattr(args, "quiet_hours", None)
+    digest_window = getattr(args, "digest_window", None)
+    if quiet_hours is not None and not all(0 <= h <= 23 for h in quiet_hours):
+        print("hours must be 0-23")
+        return
+    if digest_window is not None and not all(0 <= h <= 23 for h in digest_window):
+        print("hours must be 0-23")
+        return
+    quiet_hours = tuple(quiet_hours) if quiet_hours else DEFAULT_QUIET_HOURS
+    digest_window = tuple(digest_window) if digest_window else DEFAULT_DIGEST_WINDOW
     if getattr(args, "overnight_action", None) == "until-idle-ends":
         runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
-                                 idle_after=args.idle_after_seconds)
+                                 idle_after=args.idle_after_seconds,
+                                 quiet_hours=quiet_hours, digest_window=digest_window)
         result = runner.run_until_idle()
         print(json.dumps(result.__dict__, indent=2, ensure_ascii=False, default=str))
         return
     runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
                              interval=getattr(args, "interval", 300.0),
-                             idle_after=getattr(args, "idle_after_seconds", 900.0))
+                             idle_after=getattr(args, "idle_after_seconds", 900.0),
+                             quiet_hours=quiet_hours, digest_window=digest_window)
     cycles = runner.run(max_cycles=getattr(args, "max_cycles", None))
     print(json.dumps({"cycles": cycles, "log": str(runner.log_path)}, indent=2))
 
@@ -3929,8 +3953,18 @@ def _cmd_daemon(args: argparse.Namespace) -> None:
         print("A model is required: pass --model or configure one.")
         return
     from .daemon import GhostDaemon
+    if getattr(args, "quiet_hours", None) is not None and not all(
+            0 <= h <= 23 for h in args.quiet_hours):
+        print("hours must be 0-23")
+        return
+    if getattr(args, "digest_window", None) is not None and not all(
+            0 <= h <= 23 for h in args.digest_window):
+        print("hours must be 0-23")
+        return
     daemon = GhostDaemon(Path.cwd(), model, interval=args.interval,
-                         idle_after=args.idle_after_seconds, trace_every=args.trace_every)
+                         idle_after=args.idle_after_seconds, trace_every=args.trace_every,
+                         quiet_hours=tuple(args.quiet_hours) if args.quiet_hours else None,
+                         digest_window=tuple(args.digest_window) if args.digest_window else None)
     cycles = daemon.run(max_cycles=args.max_cycles)
     print(f"AI-OS daemon stopped after {cycles} cycles.")
 
