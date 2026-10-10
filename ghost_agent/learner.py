@@ -389,11 +389,15 @@ class RustCompileOracle:
         source = Path(workdir) / "solution.rs"
         source.write_text(submission, encoding="utf-8")
         try:
+            # --out-dir + cwd keep the compiled binary out of the caller's
+            # directory; the whole temp dir is removed afterwards.
             probe = subprocess.run(
-                [self.rustc, "--edition", "2021", str(source)],
-                capture_output=True, text=True, timeout=self.timeout)
+                [self.rustc, "--edition", "2021", "--out-dir", workdir, str(source)],
+                capture_output=True, text=True, timeout=self.timeout, cwd=workdir)
         except FileNotFoundError:
             return False, f"rustc not available (searched '{self.rustc}')"
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
         if probe.returncode == 0:
             feedback = "compiles"
         else:
