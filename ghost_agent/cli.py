@@ -1764,6 +1764,9 @@ def main() -> None:
                                help="OS idle threshold below which the owner counts as active")
     overnight_run.add_argument("--max-cycles", type=int, default=None,
                                help="Stop after N cycles (default: until emergency stop)")
+    # TD5 (S06): durable daily cap on unattended proactive inference calls.
+    overnight_run.add_argument("--max-inference-calls", type=int, default=48,
+                               help="Daily cap on proactive inference calls (default 48)")
     overnight_idle = overnight_sub.add_parser("until-idle-ends", help="One cycle when the owner goes idle")
     overnight_idle.add_argument("--idle-after-seconds", type=float, default=900)
     trace_parser = sub.add_parser("trace-learning", help="Mine outcome traces for recurring failure signatures (OJ15/S08)")
@@ -1783,6 +1786,9 @@ def main() -> None:
                             help="OS idle threshold (default 900)")
     daemon_run.add_argument("--max-cycles", type=int, default=None,
                             help="Stop after N cycles (default: until emergency stop)")
+    # TD5 (S06): durable daily cap on unattended proactive inference calls.
+    daemon_run.add_argument("--max-inference-calls", type=int, default=48,
+                            help="Daily cap on proactive inference calls (default 48)")
     daemon_run.add_argument("--trace-every", type=int, default=10,
                             help="Run trace-learning every N cycles (default 10)")
     daemon_run.add_argument("--model", default=None, help="Model for proactive ticks and capability assessment")
@@ -3196,10 +3202,23 @@ def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
     return {"returncode": int(proc.returncode), "output": output[-4000:]}
 
 
+def _daily_inference_budget(root: Path, max_calls: int) -> object:
+    """TD5 (S06): build the durable daily inference budget for unattended loops."""
+    from datetime import date
+    from .openjarvis_bridge.spend import DurableInferenceBudget
+    return DurableInferenceBudget(
+        root,
+        max_calls=max_calls,
+        path=root / ".ghost" / "inference" / f"{date.today():%Y-%m-%d}.json")
+
+
 def _cmd_overnight(args: argparse.Namespace) -> None:
     """Run the unattended overnight loop (OJ11/S06) over existing subsystems."""
     from .overnight import OvernightRunner
     root = Path.cwd()
+    # TD5 (S06): durable daily cap on proactive inference calls.
+    max_calls = max(1, min(10000, int(getattr(args, "max_inference_calls", 48))))
+    inference_budget = _daily_inference_budget(root, max_calls)
     if getattr(args, "overnight_action", None) == "until-idle-ends":
         runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
                                  idle_after=args.idle_after_seconds)
@@ -3208,7 +3227,8 @@ def _cmd_overnight(args: argparse.Namespace) -> None:
         return
     runner = OvernightRunner(root, _resolve_model(getattr(args, "model", None)),
                              interval=getattr(args, "interval", 300.0),
-                             idle_after=getattr(args, "idle_after_seconds", 900.0))
+                             idle_after=getattr(args, "idle_after_seconds", 900.0),
+                             inference_budget=inference_budget)
     cycles = runner.run(max_cycles=getattr(args, "max_cycles", None))
     print(json.dumps({"cycles": cycles, "log": str(runner.log_path)}, indent=2))
 
@@ -3378,8 +3398,17 @@ def _cmd_daemon(args: argparse.Namespace) -> None:
         print("A model is required: pass --model or configure one.")
         return
     from .daemon import GhostDaemon
+    from .overnight import OvernightRunner
+    # TD5 (S06): durable daily cap on proactive inference calls.
+    max_calls = max(1, min(10000, int(getattr(args, "max_inference_calls", 48))))
+    inference_budget = _daily_inference_budget(Path.cwd(), max_calls)
+    runner = OvernightRunner(Path.cwd(), model,
+                             interval=args.interval,
+                             idle_after=args.idle_after_seconds,
+                             inference_budget=inference_budget)
     daemon = GhostDaemon(Path.cwd(), model, interval=args.interval,
-                         idle_after=args.idle_after_seconds, trace_every=args.trace_every)
+                         idle_after=args.idle_after_seconds, trace_every=args.trace_every,
+                         runner=runner)
     cycles = daemon.run(max_cycles=args.max_cycles)
     print(f"AI-OS daemon stopped after {cycles} cycles.")
 

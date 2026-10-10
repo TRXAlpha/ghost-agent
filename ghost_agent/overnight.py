@@ -92,7 +92,8 @@ class OvernightRunner:
                  quiet_hours: tuple[int, int] = DEFAULT_QUIET_HOURS,
                  digest_window: tuple[int, int] = DEFAULT_DIGEST_WINDOW,
                  proactive_tick: Optional[Callable[..., dict]] = None,
-                 worker_fn: Optional[Callable[[], object]] = None) -> None:
+                 worker_fn: Optional[Callable[[], object]] = None,
+                 inference_budget: Optional[object] = None) -> None:
         self.root = Path(root).resolve()
         self.model = model
         if not isinstance(interval, (int, float)) or interval <= 0:
@@ -105,6 +106,7 @@ class OvernightRunner:
         self.digest_dir = self.root / ".ghost" / "digest"
         self._proactive_tick = proactive_tick      # injectable for tests
         self._worker_injected = worker_fn          # injectable for tests
+        self.inference_budget = inference_budget   # TD5 (S06): daily inference cap
         self._cycles = 0
 
     # -- collaborators (lazy: import cost and test isolation) --------------
@@ -112,7 +114,8 @@ class OvernightRunner:
         if self._proactive_tick is not None:
             return self._proactive_tick
         from .proactive import ProactiveEngine
-        engine = ProactiveEngine(self.root, self.model)
+        engine = ProactiveEngine(self.root, self.model,
+                                 inference_budget=self.inference_budget)
         return engine.tick
 
     def _worker_next(self) -> Callable[[], Optional[object]]:
