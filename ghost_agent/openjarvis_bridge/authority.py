@@ -156,8 +156,6 @@ class GrantStore:
             raise ValueError("Grant principal must be a nonempty owner identity.")
         if capability not in KNOWN_SAFE_CAPABILITIES:
             raise ValueError(f"Capability {capability!r} is not provisionable by Ghost.")
-        if provenance not in {"owner", "migration"}:
-            raise ValueError(f"Unknown grant provenance {provenance!r}.")
         if provenance != "owner":
             raise ValueError("A new grant must have owner provenance.")
         side_effects = list(side_effects or [])
@@ -236,10 +234,15 @@ def _today(now: float) -> str:
 
 def _usage_count(grant_id: str, root: Path, now: float) -> int:
     path = _usage_path(root)
+    if not path.exists():
+        return 0  # a ledger that was never written has no prior usage
     try:
         ledger = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0  # a missing or unreadable ledger must not grant extra calls
+    except (json.JSONDecodeError, OSError) as exc:
+        # A corrupt or unreadable ledger must fail closed, not restart budget.
+        raise AuthorityStateError("Usage ledger is corrupt or unreadable; refusing to count.") from exc
+    if not isinstance(ledger, dict):
+        raise AuthorityStateError("Usage ledger is malformed; refusing to count.")
     entry = ledger.get(grant_id)
     if not isinstance(entry, dict) or entry.get("date") != _today(now):
         return 0
@@ -293,11 +296,18 @@ def authorize_call(root: Path, principal: str, capability: str, params: dict,
     max_per_day = grant.conditions.get("max_per_day")
     if isinstance(max_per_day, int) and not isinstance(max_per_day, bool):
         effective_now = time.time() if now is None else now
-        used = _usage_count(grant.grant_id, root, effective_now)
-        if used >= max_per_day:
-            return False, (f"Tool denied: grant reached its max_per_day limit "
-                           f"({used}/{max_per_day} today).")
-        _record_usage(grant.grant_id, root, effective_now)
+        # Check-and-increment is atomic under the ledger lock so concurrent
+        # authorize_call calls cannot lose an increment and exceed the limit.
+        usage_lock = _usage_path(root).with_suffix(".lock")
+        try:
+            with exclusive_lock(usage_lock):
+                used = _usage_count(grant.grant_id, root, effective_now)
+                if used >= max_per_day:
+                    return False, (f"Tool denied: grant reached its max_per_day limit "
+                                   f"({used}/{max_per_day} today).")
+                _record_usage(grant.grant_id, root, effective_now)
+        except AuthorityStateError as exc:
+            return False, f"{exc} Tool denied."
     return True, "authorized"
 
 
