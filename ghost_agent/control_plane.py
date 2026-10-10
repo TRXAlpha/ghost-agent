@@ -154,10 +154,12 @@ class GhostSDK:
     def snapshot(self) -> Dict[str, Any]:
         outcome_root = self.outcomes.root
         outcome_count = len([path for path in outcome_root.iterdir() if path.is_dir()]) if outcome_root.exists() else 0
+        deliverable = self.attention.deliverable(quiet_hours=self._quiet_hours())
         return {
             "goals": [goal.__dict__ for goal in self.goals.active()],
             "pending_approvals": [approval.__dict__ for approval in self.approvals.pending()],
-            "notifications": [note.__dict__ for note in self.attention.pending()],
+            "notifications": [note.__dict__ for note in deliverable],
+            "held_notifications": len(self.attention.pending()) - len(deliverable),
             "validated_memories": [memory.__dict__ for memory in self.memories.active("validated")],
             "recent_events": [event.__dict__ for event in self.events.recent(20)],
             "outcome_count": outcome_count,
@@ -455,6 +457,14 @@ class GhostSDK:
         
         # Default preferences
         return asdict(NotificationPreferences())
+
+    def _quiet_hours(self) -> tuple[int, int] | None:
+        """Quiet-hours tuple from notification preferences; deliver all if missing."""
+        prefs = self.notification_preferences()
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            return (start, end)
+        return None
 
     def notification_preferences_save(self, prefs: Dict[str, Any]) -> Dict[str, Any]:
         """Save notification preferences."""
