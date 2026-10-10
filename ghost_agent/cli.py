@@ -1600,6 +1600,9 @@ def main() -> None:
     kbase_sub.add_parser("status", help="Show knowledge base stats")
     kbase_query = kbase_sub.add_parser("query", help="Retrieve relevant reference chunks")
     kbase_query.add_argument("text", nargs="+", help="Query text")
+    kbase_delete = kbase_sub.add_parser("delete", help="Delete all chunks of a source")
+    kbase_delete.add_argument("source", help="Source path label (see: ghost kbase sources)")
+    kbase_sub.add_parser("sources", help="List indexed sources with versions and chunk counts")
 
     lora_parser = sub.add_parser("lora", help="Verified training-pair corpus (future fine-tune)")
     lora_sub = lora_parser.add_subparsers(dest="lora_action")
@@ -2580,6 +2583,18 @@ def _cmd_kbase(args: argparse.Namespace) -> None:
             print(f"[{chunk.source}]\n{chunk.content}\n")
         if not hits:
             print("No relevant reference chunks found.")
+    elif action == "delete":
+        removed = kb.delete_source(args.source)
+        if removed:
+            print(f"Deleted {removed} chunks from source '{args.source}'.")
+        else:
+            print(f"No chunks found for source '{args.source}'.")
+    elif action == "sources":
+        rows = kb.sources()
+        if not rows:
+            print("No sources indexed.")
+        for row in rows:
+            print(f"[v{row['version']}] {row['chunks']} chunks  {row['source']}")
     else:  # status or bare
         stats = kb.stats()
         print(f"knowledge base: {stats.document_count} documents, "
