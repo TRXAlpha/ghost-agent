@@ -338,6 +338,12 @@ class SelfRepairManager:
                 "output": str(result.get("output", ""))[:4000],
                 "staged": result.get("staged", True),
             }]
+            # Persist honest runner provenance from the evaluator result (R07):
+            # "runner" records container vs host; "isolation_unavailable" is set
+            # only when auto fell back to the host runner.
+            for key in ("runner", "isolation_unavailable"):
+                if key in result:
+                    evidence[0][key] = result[key]
             # fresh_run: the manager just witnessed `pre_digest`; stamp that
             # nonce/digest pair as the new ground truth.
             return self._record_verification_locked(
