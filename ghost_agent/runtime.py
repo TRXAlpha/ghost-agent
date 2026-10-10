@@ -133,6 +133,7 @@ class ScheduledJob:
     due_at: Optional[float] = None               # epoch seconds; recurring jobs claim only when due
     lease_expires_at: Optional[float] = None     # epoch seconds; running claim is stale once past this
     generation: int = 0                          # incremented on each claim; guards stale worker marks
+    paused_by: Optional[str] = None              # set to "emergency_stop" when ES paused the job
 
 
 class ResourceMonitor:
@@ -366,6 +367,38 @@ class Scheduler:
     def pause(self, job_id: str) -> ScheduledJob:
         return self.mark(job_id, "paused", expected={"queued"})
 
+    def hold_all(self, reason: str) -> list[dict[str, Any]]:
+        """Emergency stop: pause every queued job, marking who paused it.
+        Returns the held job records (dicts)."""
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            jobs = self._load()
+            held: list[dict[str, Any]] = []
+            for raw in jobs:
+                if raw.get("status") != "queued":
+                    continue
+                raw["paused_by"] = "emergency_stop"
+                raw["status"] = "paused"
+                held.append({k: v for k, v in raw.items() if k in ScheduledJob.__dataclass_fields__})
+            self._save(jobs)
+        for job in held:
+            self.events.emit(Event("job.paused_by_emergency_stop",
+                                   {"job_id": job["job_id"], "reason": reason}))
+        return held
+
+    def release_emergency_stop_holds(self) -> list[str]:
+        """Requeue only jobs paused by the emergency stop; other pauses stay."""
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            jobs = self._load()
+            job_ids = [raw["job_id"] for raw in jobs
+                       if raw.get("paused_by") == "emergency_stop" and raw.get("status") == "paused"]
+            self._save([
+                {**{k: v for k, v in raw.items() if k not in ("paused_by", "pause_reason")},
+                 "status": "queued"}
+                if raw.get("job_id") in set(job_ids)
+                else raw
+                for raw in jobs])
+        return job_ids
+
     def resume(self, job_id: str) -> ScheduledJob:
         return self.mark(job_id, "queued", expected={"paused"})
 
@@ -392,10 +425,43 @@ class EmergencyStop:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def engage(self, reason: str) -> None:
-        self.path.write_text(json.dumps({"active": True, "reason": reason, "at": time.time()}), encoding="utf-8")
+        self.path.write_text(json.dumps({"active": True, "reason": reason, "at": time.time(),
+                                         "observed_by": []}), encoding="utf-8")
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
+
+    def observe(self, component: str) -> Optional[float]:
+        """Record this component's first observation of the stop; returns latency_s."""
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            try:
+                state = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            if not isinstance(state, dict) or not state.get("active"):
+                return None
+            observed = state.setdefault("observed_by", [])
+            if component in observed:
+                return None
+            observed.append(component)
+            self.path.write_text(json.dumps(state), encoding="utf-8")
+            engaged_at = state.get("at")
+            if not isinstance(engaged_at, (int, float)):
+                return None
+            return round(time.time() - engaged_at, 3)
+
+    def engaged_at(self) -> Optional[float]:
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8")).get("at")
+            return value if isinstance(value, (int, float)) else None
+        except (OSError, ValueError):
+            return None
+
+    def observed(self) -> list[str]:
+        try:
+            return list(json.loads(self.path.read_text(encoding="utf-8")).get("observed_by", []))
+        except (OSError, ValueError):
+            return []
 
     def active(self) -> bool:
         try:

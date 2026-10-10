@@ -124,6 +124,22 @@ class OvernightRunner:
         return lambda: worker.run_next(
             lambda scheduled: _execute_queued_outcome(self.root, scheduled))
 
+    # -- emergency-stop observation ------------------------------------------
+    def _record_stop_observation(self, component: str) -> None:
+        """Record this component's first observation of an engaged emergency stop."""
+        from .runtime import EmergencyStop
+        from .security import SecurityMonitor
+        stop = EmergencyStop(self.root)
+        latency = stop.observe(component)
+        if latency is None:
+            return  # already observed, or no longer active
+        try:
+            SecurityMonitor(self.root).record_event(
+                "emergency_stop.observed",
+                {"component": component, "latency_s": str(latency)})
+        except OSError:
+            pass
+
     # -- idle detection -----------------------------------------------------
     def _user_active(self, idle_after: Optional[float] = None) -> bool:
         """True when the owner was active more recently than idle_after."""
@@ -234,6 +250,7 @@ class OvernightRunner:
         if EmergencyStop(self.root).active():
             entry.emergency_stop = True
             entry.proactive = "stopped"
+            self._record_stop_observation("overnight_runner")
             self._log(entry)
             return entry
 
