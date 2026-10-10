@@ -3401,7 +3401,8 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
             job.status = "paused"
             job.errors.append(f"paused: {exc}")
             store.save(job)
-            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"})
+            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"},
+                                         paused_by="policy")
             AttentionManager(project_root).notify(Notification(
                 "normal",
                 f"[TO3] Job {job.job_id} paused before starting: {exc}",
