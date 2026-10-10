@@ -8,12 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from ghost_agent.proactive import (
+    Opportunity,
     OpportunityStore,
     ProactiveEngine,
     ProactiveError,
     idle_seconds,
     parse_proposal,
 )
+from ghost_agent.proactive import Opportunity as ProactiveOpportunity
 from ghost_agent.autonomy import OutcomeStore
 from ghost_agent.runtime import Scheduler
 

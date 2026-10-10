@@ -35,6 +35,32 @@ QUEUED_JOB_ITERATIONS = 10
 QUEUED_JOB_COMMAND_SECONDS = 600
 QUEUED_JOB_COMMAND_CALLS = 32
 
+# TD3 (R09/S07): "less of this" memory. Word tokens shorter than these are
+# ignored for similarity, and these common words never count as signal.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "into", "onto",
+    "a", "an", "of", "to", "in", "on", "at", "by", "as", "is", "are", "was",
+    "be", "or", "and", "but", "not", "you", "your", "our", "it", "its",
+    "how", "why", "what", "when", "which", "can", "could", "should", "would",
+    "will", "may", "might", "must", "do", "does", "did", "about", "after",
+    "before", "between", "over", "under", "again", "then", "than", "so",
+    "such", "some", "any", "all", "each", "per", "via", "use", "using",
+})
+SIMILARITY_THRESHOLD = 0.6
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in "".join(ch if ch.isalnum() else " " for ch in text.lower()).split()
+            if len(token) >= 3 and token not in _STOPWORDS}
+
+
+def similar(a: str, b: str) -> float:
+    """Jaccard similarity of lowercase word-token sets (len>=3, stopwords removed)."""
+    left, right = _tokens(a), _tokens(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
 
 class ProactiveError(ValueError):
     """A proactive proposal was invalid or could not be safely admitted."""
@@ -63,6 +89,7 @@ class Opportunity:
     risks: list[str] = field(default_factory=list)  # model-supplied; <=3
     review_at: Optional[float] = None
     attempts: int = 0
+    less_like_this: bool = False
     cost_effort: str = "small"  # "small" | "medium" | "large"
     benefit: str = "medium"    # "low" | "medium" | "high"
     created_at: float = field(default_factory=time.time)
@@ -125,6 +152,28 @@ class OpportunityStore:
     def find_active(self, fingerprint: str) -> Optional[Opportunity]:
         return next((item for item in self._load()
                      if item.opportunity_id == fingerprint and item.status in {"proposed", "queued", "running"}), None)
+
+    def suppressed_by_similarity(self, goal: str, days: int = 30) -> Optional[Opportunity]:
+        """TD3 (R09/S07): most similar recent rejected/dismissed/"less like this" idea.
+
+        Returns the highest-similarity opportunity with status rejected or
+        dismissed, or less_like_this True, created within `days`, whose goal
+        similarity to `goal` is at least SIMILARITY_THRESHOLD.
+        """
+        if type(days) is not int or days < 0:
+            raise ProactiveError("days must be a non-negative integer")
+        cutoff = time.time() - days * 86400
+        best: Optional[Opportunity] = None
+        best_score = 0.0
+        for item in self._load():
+            if item.created_at < cutoff:
+                continue
+            if item.status not in {"rejected", "dismissed"} and not item.less_like_this:
+                continue
+            score = similar(goal, item.goal)
+            if score >= SIMILARITY_THRESHOLD and score > best_score:
+                best, best_score = item, score
+        return best
 
     def save(self, opportunity: Opportunity) -> Opportunity:
         if opportunity.status not in {"proposed", "needs_input", "queued", "running", "completed", "dismissed", "rejected"}:
@@ -519,6 +568,16 @@ class ProactiveEngine:
         if suppressed:
             return {"status": "suppressed", "opportunity": asdict(suppressed),
                     "note": "This idea was already decided; it will not reappear unless context changes."}
+        # TD3 (R09/S07): "less of this" memory — a reworded but similar idea to a
+        # recent rejection/dismissal is recorded as rejected and never queued.
+        similar_to = self.store.suppressed_by_similarity(proposal.goal)
+        if similar_to is not None:
+            score = similar(proposal.goal, similar_to.goal)
+            proposal.status = "rejected"
+            proposal.rejection_reason = f"similar to {similar_to.opportunity_id} ({score:.2f})"
+            self.store.save(proposal)
+            return {"status": "suppressed", "opportunity": asdict(proposal),
+                    "note": f"Similar to recently decided idea {similar_to.opportunity_id}; not queued."}
         self.store.save(proposal)
         job_id = ""
         if auto_queue and proposal.status == "proposed" and proposal.confidence >= 0.65 and proposal.kind != "focus":
@@ -629,6 +688,22 @@ class ProactiveEngine:
         return queue_sandbox_outcome(self.root, opportunity.goal, self.model,
                                      source="proactive", priority=25,
                                      opportunity_id=opportunity.opportunity_id)
+
+    def mark_less_like_this(self, opportunity_id: str) -> Opportunity:
+        """TD3 (R09/S07): owner "less of this" feedback.
+
+        Marks the idea so similar future proposals are suppressed, and dismisses
+        it if it is still proposed. Queued/running/completed items must go
+        through the normal job/feedback path instead.
+        """
+        opportunity = next((item for item in self.store.list(100) if item.opportunity_id == opportunity_id), None)
+        if opportunity is None:
+            raise ProactiveError("Opportunity not found")
+        opportunity.less_like_this = True
+        if opportunity.status == "proposed":
+            opportunity.status = "dismissed"
+        opportunity.updated_at = time.time()
+        return self.store.save(opportunity)
 
     def dismiss(self, opportunity_id: str) -> Opportunity:
         opportunity = next((item for item in self.store.list(100) if item.opportunity_id == opportunity_id), None)
