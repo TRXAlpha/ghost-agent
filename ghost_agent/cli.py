@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .audit import audit_all, audit_run
+from dataclasses import asdict
 from .autonomy import CapabilityRegistry, OutcomeStore
 from .kernel import (ActionProposal, CapabilityKernel, CapabilityManifest, GoalStore,
                      TransactionJournal)
@@ -1717,6 +1718,12 @@ def main() -> None:
     accomplish_parser.add_argument("--queue", action="store_true", help="Persist the outcome for ghost worker")
 
     sub.add_parser("doctor", help="Check Ghost runtime health")
+    migrate_parser = sub.add_parser("migrate", help="Check or apply .ghost data schema migrations")
+    migrate_group = migrate_parser.add_mutually_exclusive_group(required=True)
+    migrate_group.add_argument("--check", action="store_true", help="Report version problems only")
+    migrate_group.add_argument("--apply", action="store_true", help="Run pending migrations")
+    migrate_group.add_argument("--stamp", action="store_true", help="Record current versions for existing store files")
+    migrate_parser.add_argument("--dry-run", action="store_true", help="With --apply: report without writing")
     events_parser = sub.add_parser("events", help="Inspect the event log with cursors")
     events_parser.add_argument("action", choices=["tail", "failed"])
     events_parser.add_argument("--cursor", default="", help="tail: cursor name (a-z0-9_-)")
@@ -1780,6 +1787,15 @@ def main() -> None:
     list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
     ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
     ack_parser.add_argument("notification_id")
+    focus_parser = sub.add_parser("focus", help="Start, check, or stop a focus session")
+    focus_sub = focus_parser.add_subparsers(dest="subaction", required=True)
+    focus_start = focus_sub.add_parser("start", help="Start a focus session")
+    focus_start.add_argument("--purpose", required=True, help="What this focus session is for")
+    focus_start.add_argument("--minutes", type=int, required=True, help="Session length in minutes (1-600)")
+    focus_start.add_argument("--hold-notifications", action="store_true",
+                             help="Hold normal/silent notifications for the session")
+    focus_sub.add_parser("status", help="Show the active focus session")
+    focus_sub.add_parser("stop", help="Stop the active focus session immediately")
     why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
     why_parser.add_argument("item_id", help="Job id or opportunity id")
     why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
@@ -1925,6 +1941,15 @@ def main() -> None:
     attempt_cmd = learn_sub.add_parser("attempts", help="Show attempt history for a concept")
     attempt_cmd.add_argument("concept_id", help="Concept identifier")
     attempt_cmd.add_argument("--limit", type=int, default=20, help="Max attempts to show (default 20)")
+    gen_cmd = learn_sub.add_parser("exercises", help="Generate practice exercises for a concept (TG3)")
+    gen_cmd.add_argument("concept_id", help="Concept identifier")
+    gen_cmd.add_argument("--count", type=int, default=3, help="Number of exercises (default 3)")
+    gen_cmd.add_argument("--model", default=None, help="Model to generate with")
+    answer_cmd = learn_sub.add_parser("answer", help="Submit an answer to an exercise (TG3)")
+    answer_cmd.add_argument("exercise_id", help="Exercise identifier")
+    answer_cmd.add_argument("submission", help="The submitted answer")
+    hint_cmd = learn_sub.add_parser("hint", help="Show the next hint for an exercise (TG3)")
+    hint_cmd.add_argument("exercise_id", help="Exercise identifier")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -2013,6 +2038,7 @@ def main() -> None:
         "research": lambda: _cmd_research(args),
         "accomplish": lambda: _cmd_accomplish(args),
         "doctor": _cmd_doctor,
+        "migrate": lambda: _cmd_migrate(args),
         "events": lambda: _cmd_events(args),
         "jobs": lambda: _cmd_jobs(args),
         "emergency-stop": lambda: _cmd_emergency_stop(args),
@@ -2027,6 +2053,7 @@ def main() -> None:
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
         "notifications": lambda: _cmd_notifications(args),
+        "focus": lambda: _cmd_focus(args),
         "why": lambda: _cmd_why(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
@@ -2993,6 +3020,31 @@ def _cmd_doctor() -> None:
                 print(f"    models: {', '.join(models)}")
 
 
+def _cmd_migrate(args: argparse.Namespace) -> None:
+    """Check, apply, or stamp .ghost data schema versions."""
+    from . import migrations
+
+    root = Path.cwd()
+    if args.check:
+        problems = migrations.check(root)
+        if problems:
+            for problem in problems:
+                print(problem)
+        else:
+            print("schema: ok")
+        return
+    if args.apply:
+        reports = migrations.apply(root, dry_run=args.dry_run)
+        if reports:
+            for report in reports:
+                print(report)
+        else:
+            print("no pending migrations")
+        return
+    stamped = migrations.stamp(root)
+    print(f"schema.json records: {', '.join(stamped) if stamped else 'none'}")
+
+
 def _cmd_events(args: argparse.Namespace) -> None:
     """Tail the event log through a named cursor, or show the failed queue."""
     from .event_cursor import EventCursor
@@ -3335,19 +3387,42 @@ def _cmd_notifications(args: argparse.Namespace) -> None:
         start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
         if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
             quiet_hours = (start, end)
-        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours)}
+        from .focus import FocusStore
+        active_focus = FocusStore(Path.cwd()).active()
+        focus = active_focus is not None and "hold_notifications" in active_focus.interventions
+        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)}
         if not args.all:
-            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours)], indent=2))
+            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours, focus_active=focus)], indent=2))
             return
         payload = []
         for note in attention.pending():
             record = note.__dict__.copy()
             if note.notification_id not in deliverable_ids:
-                record["held"] = "quiet hours"
+                record["held"] = "focus" if focus and note.priority in ("normal", "silent") else "quiet hours"
             payload.append(record)
         print(json.dumps(payload, indent=2))
     except (ValueError, OSError) as exc:
         print(f"Notifications refused: {exc}")
+
+
+def _cmd_focus(args: argparse.Namespace) -> None:
+    from .focus import FocusStore
+    try:
+        store = FocusStore(Path.cwd())
+        if args.subaction == "start":
+            interventions = ["hold_notifications"] if args.hold_notifications else []
+            session = store.start(args.purpose, args.minutes, interventions)
+        elif args.subaction == "stop":
+            session = store.stop()
+        else:
+            session = store.active()
+    except (ValueError, OSError) as exc:
+        print(f"Focus refused: {exc}")
+        return
+    if session is None:
+        print("No active focus session")
+        return
+    print(json.dumps(asdict(session), indent=2))
 
 
 def _cmd_why(args: argparse.Namespace) -> None:
@@ -3434,21 +3509,24 @@ def _cmd_jobs(args: argparse.Namespace) -> None:
             return
         if not args.job_id:
             raise ValueError("A job ID is required")
-        if args.action == "resume":
-            job = scheduler.resume(args.job_id)
-        elif args.action == "retry":
+        from .control_plane import apply_job_action
+        if args.action in ("pause", "resume", "cancel"):
+            job_record = apply_job_action(Path.cwd(), args.job_id, args.action)
+            print(json.dumps(job_record, indent=2))
+            return
+        if args.action == "retry":
             job = scheduler.retry(args.job_id)
             goals = GoalStore(Path.cwd())
             goal = goals.get(job.goal_id)
             if goal and goal.status == "blocked":
                 goals.set_status(job.goal_id, "active")
-        elif args.action == "pause":
-            job = scheduler.mark(args.job_id, "paused", expected={"queued"})
         else:
             job = scheduler.mark(args.job_id, "cancelled", expected={"queued", "paused", "failed"})
         print(json.dumps(job.__dict__, indent=2))
     except (OSError, ValueError) as exc:
         print(f"Job operation refused: {exc}. Running processes cannot yet be cancelled by this command.")
+    except LookupError as exc:
+        print(f"Job operation refused: {exc}")
 
 
 def _cmd_self_repair(args: argparse.Namespace) -> None:
@@ -4007,8 +4085,54 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             print(f"  {outcome} [{a.concept_id}] at {when}{detail}")
         return
 
+    if action == "exercises":
+        from .study import ExerciseGenerator, StudyError
+        model = _resolve_model(getattr(args, "model", None))
+        if not model:
+            print("A model is required: pass --model or configure one.")
+            return
+        try:
+            generator = ExerciseGenerator(root, model)
+            exercises = generator.generate(args.concept_id, count=args.count)
+        except StudyError as exc:
+            print(f"Exercise generation refused: {exc}")
+            return
+        if not exercises:
+            print("No valid exercises generated.")
+            return
+        for exercise in exercises:
+            print(f"[{exercise.exercise_id}] ({exercise.answer_kind}) "
+                  f"sources={','.join(exercise.source_refs) or 'none'}")
+            print(f"  {exercise.prompt}")
+        return
+
+    if action == "answer":
+        from .study import ExerciseGenerator, StudyError
+        generator = ExerciseGenerator(root, "cli-check")
+        try:
+            correct, feedback = generator.check(args.exercise_id, args.submission)
+        except StudyError as exc:
+            print(f"Answer refused: {exc}")
+            return
+        print(("✓ correct" if correct else "✗ incorrect") + f" — {feedback}")
+        return
+
+    if action == "hint":
+        from .study import ExerciseGenerator, StudyError
+        generator = ExerciseGenerator(root, "cli-hint")
+        try:
+            exercise = generator.get_exercise(args.exercise_id)
+            if exercise is None:
+                raise StudyError(f"Unknown exercise {args.exercise_id}")
+            wrong = learner.attempts(exercise.concept_id, limit=200)
+            wrong = sum(1 for a in wrong if not a.correct)
+            print(generator.next_hint(args.exercise_id, wrong))
+        except StudyError as exc:
+            print(f"Hint refused: {exc}")
+        return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint")
 
 
 # ============================================================================

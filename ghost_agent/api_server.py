@@ -78,6 +78,17 @@ class ControlPlaneAPI:
                 str(data["entity_id"]), str(data["kind"]), data["state"], str(data["source"]),
                 float(confidence),
             )
+        if method == "POST" and path.startswith("/v1/jobs/"):
+            parts = path.rstrip("/").split("/")
+            if len(parts) == 5 and parts[3] and parts[4] in ("pause", "resume", "cancel"):
+                from .control_plane import apply_job_action
+                try:
+                    return HTTPStatus.OK, apply_job_action(self.sdk.root, parts[3], parts[4])
+                except LookupError:
+                    return HTTPStatus.NOT_FOUND, {"error": "job not found"}
+                except ValueError as exc:
+                    return HTTPStatus.CONFLICT, {"error": str(exc)}
+            return HTTPStatus.NOT_FOUND, {"error": "endpoint not found"}
         return HTTPStatus.NOT_FOUND, {"error": "endpoint not found"}
 
 
