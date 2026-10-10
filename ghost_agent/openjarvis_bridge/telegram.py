@@ -288,6 +288,36 @@ class TelegramBridge:
                 atomic_json(path, receipt)
 
 
+def _monitor_transport(root: Path, channel, stopped: threading.Event, *, sleep=time.sleep,
+                       initial_delay: float = 1.0, max_delay: float = 60.0,
+                       after_reconnect: Callable[[], None] | None = None) -> None:
+    """Watch the transport and reconnect with exponential backoff on failure.
+
+    Delays grow 1, 2, 4 ... capped at max_delay seconds and reset after a
+    healthy status. The emergency stop is checked on every retry and ends the
+    loop; upstream redeliveries stay safe because the receipt ledger dedups.
+    """
+    from openjarvis.channels._stubs import ChannelStatus
+    delay = initial_delay
+    while not stopped.is_set():
+        if not pairing(root)["enabled"]:
+            return
+        if channel.status() == ChannelStatus.ERROR:
+            if EmergencyStop(root).active():
+                raise IntegrationError("Emergency stop engaged during transport failure; not retrying.")
+            sleep(delay)
+            if stopped.is_set():
+                return
+            delay = min(delay * 2, max_delay)
+            channel.disconnect()
+            channel.connect()
+            if after_reconnect is not None and channel.status() != ChannelStatus.ERROR:
+                after_reconnect()
+            continue
+        delay = initial_delay
+        sleep(0.5)
+
+
 def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
           run_worker=False):
     require_upstream()
@@ -353,12 +383,7 @@ def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
             mode = "read-only"
         print(f"Telegram transport started (paired private chat, {mode}). Ctrl+C stops it.", flush=True)
         try:
-            while True:
-                if not pairing(root)["enabled"]:
-                    break
-                if channel.status() == ChannelStatus.ERROR:
-                    raise IntegrationError("Telegram transport failed; check credentials/network. No automatic duplicate poller started.")
-                time.sleep(0.5)
+            _monitor_transport(root, channel, bridge.stopped)
         finally:
             bridge.stopped.set()
             worker_stop.set()
