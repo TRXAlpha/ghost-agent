@@ -239,3 +239,60 @@ def test_opportunity_store_methods_defined_once():
     find_suppressed_count = src.count("    def find_suppressed(")
     assert find_any_count == 1, f"find_any defined {find_any_count} times (expected 1)"
     assert find_suppressed_count == 1, f"find_suppressed defined {find_suppressed_count} times (expected 1)"
+
+
+# --- TD1: structured opportunity records and evidence ---
+
+def test_old_opportunities_json_loads_with_unknown_and_missing_keys(tmp_path: Path):
+    store = OpportunityStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = [{"opportunity_id": "opp_legacy", "title": "Old", "goal": "Do a thing",
+               "rationale": "Because", "kind": "research", "confidence": 0.5,
+               "requires_user_input": False, "from_the_future": {"x": 1}}]
+    store.path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = store.list_all()
+    assert loaded[0].opportunity_id == "opp_legacy"
+    assert loaded[0].trigger == "tick"          # missing key -> default
+    assert loaded[0].evidence_items == []
+    store.save(loaded[0])                        # still saveable
+
+
+def test_parse_proposal_drops_invalid_alternatives_and_risks():
+    parsed = parse_proposal(proposal(
+        alternatives=["valid alternative", 42, "x" * 300, "", "third", "fourth"],
+        risks="not a list"))
+    assert parsed["alternatives"] == ["valid alternative", "third", "fourth"]  # invalid dropped, cap 3
+    assert parsed["risks"] == []  # non-list dropped entirely
+
+
+def test_parse_proposal_rejects_unknown_fields():
+    with pytest.raises(ProactiveError):
+        parse_proposal(proposal(goal_ids=["opp_x"], evidence=[{"source": "s", "excerpt": "e"}]))
+
+
+def test_tick_record_has_deterministic_evidence_goal_ids_trigger(tmp_path: Path, monkeypatch):
+    context_file = tmp_path / "notes.md"
+    context_file.write_text("Rust practice notes: build a small practice game.\n" * 10,
+                            encoding="utf-8")
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(),
+                             context_paths=["notes.md"])
+    result = engine.tick(auto_queue=False)
+    record = result["opportunity"]
+    assert record["trigger"] == "tick"
+    assert record["evidence_items"][0]["source"] == "notes.md"
+    assert len(record["evidence_items"][0]["excerpt"]) <= 300
+    assert record["review_at"] is not None
+    assert record["attempts"] == 0
+    # model-supplied alternatives/risks flow through; goal_ids stays empty here
+    assert record["goal_ids"] == []
+
+
+def test_tick_matches_active_goal_tokens_into_goal_ids_and_evidence(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    goals = GoalStore(tmp_path)
+    goal = goals.create("Rust practice game plan", kind="focus")
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    record = engine.tick(auto_queue=False)["opportunity"]
+    assert record["goal_ids"] == [goal.goal_id]
+    assert any(item["source"] == "active_goal" and item["excerpt"] == goal.goal_id
+               for item in record["evidence_items"])
