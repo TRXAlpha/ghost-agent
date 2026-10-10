@@ -1635,14 +1635,37 @@ def main() -> None:
     capability_retire.add_argument("--reason", default="", help="Retirement reason")
 
     memory_parser = sub.add_parser("memory",
-        help="Manage validated memories (retract/purge)")
-    memory_parser.add_argument(
-        "action", choices=["retract", "purge"],
-        help="retract: mark retracted (soft delete); purge: hard-delete with cascade")
-    memory_parser.add_argument("memory_id", help="Memory ID to retract or purge")
-    memory_parser.add_argument(
-        "--reason", default="user requested",
-        help="Reason for retraction or purge (defaults to 'user requested')")
+        help="Manage validated memories (retract/purge/list/edit/export/retention)")
+    memory_sub = memory_parser.add_subparsers(dest="memory_subcommand")
+    for action in ("retract", "purge"):
+        action_parser = memory_sub.add_parser(action,
+            help=("mark retracted (soft delete)" if action == "retract"
+                  else "hard-delete with cascade"))
+        action_parser.add_argument("memory_id", help="Memory ID to retract or purge")
+        action_parser.add_argument(
+            "--reason", default="user requested",
+            help="Reason for retraction or purge (defaults to 'user requested')")
+    memory_list = memory_sub.add_parser("list", help="List active memories")
+    memory_list.add_argument("--kind", default=None, help="Filter by memory kind")
+    memory_list.add_argument("--json", action="store_true", help="Output JSON")
+    memory_list.add_argument("--show-sensitive", action="store_true",
+        help="Include health and secret sensitivity records")
+    memory_edit = memory_sub.add_parser("edit", help="Edit an active memory")
+    memory_edit.add_argument("memory_id", help="Memory ID to edit")
+    memory_edit.add_argument("--content", default=None, help="New content (keeps revision history)")
+    memory_edit.add_argument("--subject", default=None, help="New subject")
+    memory_edit.add_argument("--sensitivity", default=None,
+        choices=["normal", "personal", "health", "secret"], help="New sensitivity")
+    memory_edit.add_argument("--verified", action="store_true",
+        help="Confirm the memory as verified now")
+    memory_export = memory_sub.add_parser("export", help="Export memories to a file")
+    memory_export.add_argument("--out", required=True, help="Output path (refuses to overwrite)")
+    memory_retention = memory_sub.add_parser("retention", help="Manage memory retention")
+    retention_sub = memory_retention.add_subparsers(dest="retention_action")
+    retention_set = retention_sub.add_parser("set", help="Set retention for a kind")
+    retention_set.add_argument("--kind", required=True, help="Memory kind")
+    retention_set.add_argument("--days", required=True, type=int, help="Retention days")
+    retention_sub.add_parser("apply", help="Purge memories past their retention")
 
     search_parser = sub.add_parser("search", help="Search codebase via RAG")
     search_parser.add_argument("query", help="Search query")
@@ -3250,17 +3273,58 @@ def _cmd_digest(args: argparse.Namespace) -> None:
 
 
 def _cmd_memory(args: argparse.Namespace) -> None:
-    """Retract (soft-delete) or purge (hard-delete with cascade) validated memories."""
+    """Retract, purge, list, edit, export memories; manage retention."""
     from .context_manager import ValidatedMemoryStore
+    from dataclasses import asdict
     store = ValidatedMemoryStore(Path.cwd())
     try:
-        if args.action == "retract":
+        action = getattr(args, "memory_subcommand", getattr(args, "action", None))
+        if action == "retract":
             record = store.retract(args.memory_id, args.reason)
             print(json.dumps({"action": "retracted", "memory_id": record.memory_id,
                               "validation": record.validation}, indent=2))
-        elif args.action == "purge":
+        elif action == "purge":
             record = store.purge(args.memory_id, args.reason)
             print(json.dumps({"action": "purged", "memory_id": record.memory_id}, indent=2))
+        elif action == "list":
+            records = store.active()
+            if args.kind is not None:
+                if args.kind not in store.KINDS:
+                    raise ValueError(f"Unknown memory kind: {args.kind}")
+                records = [record for record in records if record.kind == args.kind]
+            if not args.show_sensitive:
+                records = [record for record in records
+                           if record.sensitivity not in ("health", "secret")]
+            payload = [asdict(record) for record in records] if args.json else [
+                {"memory_id": record.memory_id, "kind": record.kind,
+                 "sensitivity": record.sensitivity, "subject": record.subject,
+                 "validation": record.validation, "content": record.content}
+                for record in records]
+            print(json.dumps(payload, indent=2))
+        elif action == "edit":
+            record = store.edit(args.memory_id, content=args.content,
+                                subject=args.subject, sensitivity=args.sensitivity,
+                                confirm_verified=args.verified)
+            print(json.dumps({"action": "edited", "memory_id": record.memory_id,
+                              "revisions": len(record.revisions),
+                              "last_verified_at": record.last_verified_at}, indent=2))
+        elif action == "export":
+            out = Path(args.out)
+            if out.exists():
+                raise ValueError(f"Refusing to overwrite existing file: {out}")
+            records = [asdict(record) for record in store.active()
+                       if record.sensitivity != "secret"]
+            out.write_text(json.dumps(records, indent=2), encoding="utf-8")
+            print(json.dumps({"exported": len(records), "path": str(out)}, indent=2))
+        elif action == "retention":
+            if args.retention_action == "set":
+                store.set_retention(args.kind, args.days)
+                print(json.dumps({"kind": args.kind, "days": args.days}, indent=2))
+            elif args.retention_action == "apply":
+                purged = store.apply_retention()
+                print(json.dumps({"action": "retention_applied", "purged": purged}, indent=2))
+            else:
+                print("retention requires 'set' or 'apply'")
     except ValueError as exc:
         print(f"Memory operation refused: {exc}")
 
