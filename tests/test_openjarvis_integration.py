@@ -91,8 +91,12 @@ def test_connection_failure_has_no_provider_fallback(monkeypatch):
     monkeypatch.setenv("GHOST_OPENJARVIS_ENGINE", "ollama")
     monkeypatch.setenv("GHOST_OPENJARVIS_URL", f"http://127.0.0.1:{port}")
     from openjarvis.engine._base import EngineConnectionError
-    with pytest.raises(EngineConnectionError):
+    from ghost_agent.openjarvis_bridge.runtime import UpstreamTransportError
+    # Unreachable endpoint: a transient transport error (retryable by models.chat),
+    # wrapping the upstream error. No other provider is tried.
+    with pytest.raises(UpstreamTransportError) as info:
         chat("tiny", [{"role": "user", "content": "hi"}], timeout=0.2)
+    assert isinstance(info.value.__cause__, EngineConnectionError)
 
 
 def test_json_mode_is_not_lost_when_stream_requested(endpoint):
