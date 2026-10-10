@@ -18,6 +18,8 @@ from datetime import date
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
+import requests
+
 from .context import CodeIndex
 from .command_budget import CommandBudget
 from .test_discovery import discover_test_files
@@ -33,6 +35,10 @@ from .schema import ActionResponse, parse_action_response
 from .tools import cmd_tools, fs_tools, web_tools
 from .utils.logging import JsonlLogger
 from .utils.storage import atomic_json
+
+# TH1: after this many consecutive model failures (timeout/connection), the job
+# ends honestly as model_unavailable instead of burning every iteration in REPAIR.
+MAX_CONSECUTIVE_MODEL_FAILURES = 3
 
 
 class TUICallback(Protocol):
@@ -524,6 +530,7 @@ class Orchestrator:
         state.setdefault("turns", {"PLAN": 0, "IMPLEMENT": 0, "REPAIR": 0})
         state.setdefault("parse_errors", 0)
         state.setdefault("results_history", [])
+        state.setdefault("model_failures", 0)
         while True:
             if state["phase"] != "DONE" and EmergencyStop(self.repo_root).active():
                 state["phase"] = "DONE"
@@ -540,6 +547,16 @@ class Orchestrator:
                 if state["phase"] == "DONE":
                     self._write_state(state_path, state, last_feedback)
             # VERIFY makes no model call; always verify the final attempt before stopping.
+            # TH1: three consecutive model failures end the job honestly.
+            if state["phase"] not in ("DONE", "VERIFY") and \
+                    state.get("model_failures", 0) >= MAX_CONSECUTIVE_MODEL_FAILURES:
+                state["phase"] = "DONE"
+                state["last_result"] = "model_unavailable"
+                self._write_state(state_path, state)
+                self._write_memory(task, workspace, state, strategy)
+                self._record_knowledge(task, state, strategy)
+                self._tui_complete(state["last_result"])
+                break
             if state["phase"] not in ("DONE", "VERIFY") and state["iteration"] >= iteration_limit:
                 state["phase"] = "DONE"
                 state["limit_reason"] = state.get("last_result") or "unknown"
@@ -570,6 +587,9 @@ class Orchestrator:
                 state["turns"]["PLAN"] = state["turns"].get("PLAN", 0) + 1
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
+                    state["model_failures"] = state.get("model_failures", 0) + 1
+                else:
+                    state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -621,6 +641,9 @@ class Orchestrator:
                 state["turns"]["IMPLEMENT"] = state["turns"].get("IMPLEMENT", 0) + 1
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
+                    state["model_failures"] = state.get("model_failures", 0) + 1
+                else:
+                    state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -742,6 +765,9 @@ class Orchestrator:
                 state["turns"]["REPAIR"] = state["turns"].get("REPAIR", 0) + 1
                 if parse_error:
                     state["parse_errors"] = state.get("parse_errors", 0) + 1
+                    state["model_failures"] = state.get("model_failures", 0) + 1
+                else:
+                    state["model_failures"] = 0
                 self._tui_llm(action_response.thought, parse_error is None)
                 results, touched = self._execute_actions(
                     action_response, workspace, actions_log
@@ -1087,6 +1113,15 @@ class Orchestrator:
                          "num_ctx": num_ctx},
                 base_url=self.base_url,
                 timeout=self.timeout,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, OSError) as exc:
+            # A slow/unreachable model must cost one bounded turn (REPAIR next),
+            # not fail the whole job. Raised after chat's own retries.
+            detail = f"{type(exc).__name__}: {str(exc)[:200]}"
+            llm_log.log({"model_error": detail})
+            return (
+                ActionResponse(thought="model_unavailable", actions=[]),
+                f"model call failed: {detail}",
             )
         except Exception as exc:
             # ConnectionError, Timeout, HTTPError, etc.
