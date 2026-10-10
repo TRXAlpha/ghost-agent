@@ -1938,6 +1938,15 @@ def main() -> None:
     attempt_cmd = learn_sub.add_parser("attempts", help="Show attempt history for a concept")
     attempt_cmd.add_argument("concept_id", help="Concept identifier")
     attempt_cmd.add_argument("--limit", type=int, default=20, help="Max attempts to show (default 20)")
+    gen_cmd = learn_sub.add_parser("exercises", help="Generate practice exercises for a concept (TG3)")
+    gen_cmd.add_argument("concept_id", help="Concept identifier")
+    gen_cmd.add_argument("--count", type=int, default=3, help="Number of exercises (default 3)")
+    gen_cmd.add_argument("--model", default=None, help="Model to generate with")
+    answer_cmd = learn_sub.add_parser("answer", help="Submit an answer to an exercise (TG3)")
+    answer_cmd.add_argument("exercise_id", help="Exercise identifier")
+    answer_cmd.add_argument("submission", help="The submitted answer")
+    hint_cmd = learn_sub.add_parser("hint", help="Show the next hint for an exercise (TG3)")
+    hint_cmd.add_argument("exercise_id", help="Exercise identifier")
 
     # OJ14-S1: SelfImprover CLI
     improve_parser = sub.add_parser("self-improve", help="Propose, evaluate, and roll back structural improvements (OJ14/S08)")
@@ -4041,8 +4050,54 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             print(f"  {outcome} [{a.concept_id}] at {when}{detail}")
         return
 
+    if action == "exercises":
+        from .study import ExerciseGenerator, StudyError
+        model = _resolve_model(getattr(args, "model", None))
+        if not model:
+            print("A model is required: pass --model or configure one.")
+            return
+        try:
+            generator = ExerciseGenerator(root, model)
+            exercises = generator.generate(args.concept_id, count=args.count)
+        except StudyError as exc:
+            print(f"Exercise generation refused: {exc}")
+            return
+        if not exercises:
+            print("No valid exercises generated.")
+            return
+        for exercise in exercises:
+            print(f"[{exercise.exercise_id}] ({exercise.answer_kind}) "
+                  f"sources={','.join(exercise.source_refs) or 'none'}")
+            print(f"  {exercise.prompt}")
+        return
+
+    if action == "answer":
+        from .study import ExerciseGenerator, StudyError
+        generator = ExerciseGenerator(root, "cli-check")
+        try:
+            correct, feedback = generator.check(args.exercise_id, args.submission)
+        except StudyError as exc:
+            print(f"Answer refused: {exc}")
+            return
+        print(("✓ correct" if correct else "✗ incorrect") + f" — {feedback}")
+        return
+
+    if action == "hint":
+        from .study import ExerciseGenerator, StudyError
+        generator = ExerciseGenerator(root, "cli-hint")
+        try:
+            exercise = generator.get_exercise(args.exercise_id)
+            if exercise is None:
+                raise StudyError(f"Unknown exercise {args.exercise_id}")
+            wrong = learner.attempts(exercise.concept_id, limit=200)
+            wrong = sum(1 for a in wrong if not a.correct)
+            print(generator.next_hint(args.exercise_id, wrong))
+        except StudyError as exc:
+            print(f"Hint refused: {exc}")
+        return
+
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint")
 
 
 # ============================================================================
