@@ -4167,7 +4167,7 @@ def _cmd_learn(args: argparse.Namespace) -> None:
             return
 
     print(f"Unknown learn action: {action}")
-    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint")
+    print("Available: status, concepts, add-concept, record, review, path, next, progress, lessons, attempts, exercises, answer, hint, challenge, formats")
 
 
 # ============================================================================
