@@ -3431,21 +3431,24 @@ def _cmd_jobs(args: argparse.Namespace) -> None:
             return
         if not args.job_id:
             raise ValueError("A job ID is required")
-        if args.action == "resume":
-            job = scheduler.resume(args.job_id)
-        elif args.action == "retry":
+        from .control_plane import apply_job_action
+        if args.action in ("pause", "resume", "cancel"):
+            job_record = apply_job_action(Path.cwd(), args.job_id, args.action)
+            print(json.dumps(job_record, indent=2))
+            return
+        if args.action == "retry":
             job = scheduler.retry(args.job_id)
             goals = GoalStore(Path.cwd())
             goal = goals.get(job.goal_id)
             if goal and goal.status == "blocked":
                 goals.set_status(job.goal_id, "active")
-        elif args.action == "pause":
-            job = scheduler.mark(args.job_id, "paused", expected={"queued"})
         else:
             job = scheduler.mark(args.job_id, "cancelled", expected={"queued", "paused", "failed"})
         print(json.dumps(job.__dict__, indent=2))
     except (OSError, ValueError) as exc:
         print(f"Job operation refused: {exc}. Running processes cannot yet be cancelled by this command.")
+    except LookupError as exc:
+        print(f"Job operation refused: {exc}")
 
 
 def _cmd_self_repair(args: argparse.Namespace) -> None:
