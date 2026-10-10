@@ -37,6 +37,13 @@ def _default_improver_fn(root: Path, model: str) -> Callable[[], dict]:
     return improve
 
 
+def _default_improve_sync_fn(root: Path) -> Callable[[], list]:
+    def sync() -> list:
+        from .self_improver import SelfImprover
+        return [c.candidate_id for c in SelfImprover(root).sync()]
+    return sync
+
+
 class GhostDaemon:
     """Always-on composition of the existing loops; owns no scheduling of its own."""
 
@@ -45,6 +52,7 @@ class GhostDaemon:
                  runner: Optional[OvernightRunner] = None,
                  trace_fn: Optional[Callable[[], dict]] = None,
                  improver_fn: Optional[Callable[[], dict]] = None,
+                 improve_sync_fn: Optional[Callable[[], list]] = None,
                  sleep_fn: Callable[[float], None] = time.sleep) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-blank string")
@@ -61,6 +69,7 @@ class GhostDaemon:
         self.trace_fn = trace_fn if trace_fn is not None else _default_trace_fn(self.root)
         self.improver_fn = improver_fn if improver_fn is not None else _default_improver_fn(
             self.root, model)
+        self.improve_sync_fn = improve_sync_fn if improve_sync_fn is not None else _default_improve_sync_fn(self.root)
         self.sleep_fn = sleep_fn
         self.status_path = self.root / ".ghost" / "daemon_status.json"
         self._cycles = 0
@@ -92,6 +101,14 @@ class GhostDaemon:
                 record["capability"] = {"status": "error", "error": str(exc)[:200]}
         else:
             record["capability"] = "deferred"
+
+        if owner_away:
+            try:
+                record["improve_sync"] = self.improve_sync_fn()
+            except Exception as exc:
+                record["improve_sync"] = {"status": "error", "error": str(exc)[:200]}
+        else:
+            record["improve_sync"] = "deferred"
 
         atomic_json(self.status_path, record)
         return record
