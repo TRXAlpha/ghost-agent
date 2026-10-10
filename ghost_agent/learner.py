@@ -309,11 +309,27 @@ class RustCompileOracle:
 
     def __init__(self, rustc: str = "rustc", timeout: int = 60,
                  plan_root: Optional[Path] = None) -> None:
-        self.rustc = rustc
+        self.rustc = self._resolve_rustc(rustc)
         self.timeout = timeout
         self.plan_root = Path(plan_root) if plan_root is not None else None
         self._toolchain: Optional[str] = None
         self._toolchain_checked = False
+
+    @staticmethod
+    def _resolve_rustc(rustc: str) -> str:
+        """Find rustc on PATH, else in rustup's default ~/.cargo/bin.
+
+        rustup adds ~/.cargo/bin to PATH only for new login sessions, so
+        background processes often miss an installed toolchain. Only the plain
+        default name is resolved; an explicit path is used as given.
+        """
+        if rustc != "rustc" or shutil.which(rustc):
+            return rustc
+        for name in ("rustc.exe", "rustc"):
+            candidate = Path.home() / ".cargo" / "bin" / name
+            if candidate.is_file():
+                return str(candidate)
+        return rustc
 
     def toolchain(self) -> Optional[str]:
         """Return stripped ``rustc --version`` output, or None. Cached."""
