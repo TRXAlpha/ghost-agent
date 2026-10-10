@@ -88,8 +88,15 @@ def test_purge_all_and_event_privacy(route, capsys):
     _cmd_huawei(_ns(huawei_action="purge", purge_all=True))
     assert json.loads(capsys.readouterr().out) == {"removed": 1}
     assert route.observations() == []
-    # The purge event must not contain observation values.
+    # The purge event must exist and must not contain observation values.
     events_path = route.root / ".ghost" / "events.jsonl"
-    if events_path.exists():
-        text = events_path.read_text(encoding="utf-8")
-        assert "42" not in text.split("huawei.purge")[-1] if "huawei.purge" in text else True
+    assert events_path.exists()
+    payload = None
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        if event.get("kind") == "huawei.purge":
+            payload = event
+    assert payload is not None, "huawei.purge event must be recorded"
+    body = {k: v for k, v in payload.items() if k not in ("kind", "created_at", "source")}
+    assert set(body["payload"]) <= {"removed", "reason"}
+    assert "42" not in json.dumps(body["payload"])
