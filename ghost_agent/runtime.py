@@ -329,12 +329,13 @@ class Scheduler:
             return self._mark_locked(job.job_id, "running", owner=owner) if job else None
 
     def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None,
-             generation: Optional[int] = None) -> ScheduledJob:
+             generation: Optional[int] = None, paused_by: Optional[str] = None) -> ScheduledJob:
         with exclusive_lock(self.path.with_suffix(".lock")):
-            return self._mark_locked(job_id, status, expected, generation=generation)
+            return self._mark_locked(job_id, status, expected, generation=generation, paused_by=paused_by)
 
     def _mark_locked(self, job_id: str, status: str, expected: Optional[set[str]] = None,
-                     owner: Optional[str] = None, generation: Optional[int] = None) -> ScheduledJob:
+                     owner: Optional[str] = None, generation: Optional[int] = None,
+                     paused_by: Optional[str] = None) -> ScheduledJob:
         if status not in {"queued", "running", "paused", "completed", "failed", "cancelled"}:
             raise ValueError(f"Unknown job status: {status}")
         jobs = self._load()
@@ -364,6 +365,13 @@ class Scheduler:
                 raw["status"] = status
                 if status != "running":
                     raw["lease_expires_at"] = None
+                # An explained pause (yield, policy, emergency stop) carries its
+                # reason; an unexplained one is a crashed worker needing review.
+                if status == "paused":
+                    if paused_by is not None:
+                        raw["paused_by"] = paused_by
+                elif "paused_by" in raw:
+                    raw["paused_by"] = None
                 recurrence_event: Optional[Event] = None
                 if status in {"completed", "failed"} and raw.get("recurrence"):
                     # OJ07: a recurring job settles terminal AND re-queues in the
