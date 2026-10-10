@@ -284,3 +284,129 @@ def test_continuously_dripping_client_cannot_reset_read_deadline(tmp_path, phase
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+# -- TM1: owner-control endpoints --
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+
+def test_policy_get_and_set_roundtrip(local_server):
+    status, body = request(local_server, method="GET", path="/v1/policy",
+                           headers={"Authorization": "Bearer test-token"})
+    assert status == 200
+    assert json.loads(body)["build"] is True
+    status, body = request(local_server, path="/v1/policy",
+                           body=b'{"mode": "build", "enabled": false}',
+                           headers={"Authorization": "Bearer test-token"})
+    assert status == 200
+    assert json.loads(body)["build"] is False
+
+
+def test_policy_change_without_token_is_403(tmp_path):
+    api = ControlPlaneAPI(tmp_path, token="")
+    status, body = api.dispatch("POST", "/v1/policy", {"mode": "build", "enabled": False})
+    assert status == 403
+    assert body == {"error": "set GHOST_API_TOKEN to change policy or disengage emergency stop over the API"}
+
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+
+def test_policy_change_with_wrong_token_is_401(local_server):
+    assert request(local_server, path="/v1/policy",
+                   body=b'{"mode": "build", "enabled": false}',
+                   headers={"Authorization": "Bearer wrong"})[0] == 401
+
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+
+def test_policy_validation_and_store_errors(local_server):
+    auth = {"Authorization": "Bearer test-token"}
+    assert request(local_server, path="/v1/policy", body=b'{"enabled": true}', headers=auth)[0] == 400
+    assert request(local_server, path="/v1/policy",
+                   body=b'{"mode": "build", "enabled": "yes"}', headers=auth)[0] == 400
+    assert request(local_server, path="/v1/policy",
+                   body=b'{"mode": "nope", "enabled": true}', headers=auth)[0] == 409
+
+
+def test_notifications_overview_and_ack(tmp_path, local_server):
+    from ghost_agent.runtime import AttentionManager, Notification
+    AttentionManager(tmp_path).notify(Notification(priority="urgent", message="m", notification_id="n1"))
+    status, body = request(local_server, method="GET", path="/v1/notifications")
+    assert status == 200
+    overview = json.loads(body)
+    assert [note["notification_id"] for note in overview["deliverable"]] == ["n1"]
+    assert overview["held"] == []
+    status, body = request(local_server, path="/v1/notifications/n1/ack", body=b"{}")
+    assert status == 200
+    assert json.loads(body)["status"] == "acknowledged"
+    assert request(local_server, path="/v1/notifications/missing/ack", body=b"{}")[0] == 404
+
+
+def test_focus_start_get_and_stop(tmp_path, local_server):
+    assert request(local_server, method="GET", path="/v1/focus")[1] == b"null"
+    status, body = request(local_server, path="/v1/focus/start",
+                           body=b'{"purpose": "deep work", "minutes": 30, "hold_notifications": true}')
+    assert status == 201
+    assert json.loads(body)["purpose"] == "deep work"
+    assert request(local_server, path="/v1/focus/start",
+                   body=b'{"purpose": "again", "minutes": 10}')[0] == 409
+    assert request(local_server, path="/v1/focus/start", body=b'{"purpose": "x"}')[0] == 400
+    status, body = request(local_server, path="/v1/focus/stop", body=b"{}")
+    assert status == 200
+    assert json.loads(body)["stopped_at"] is not None
+    assert request(local_server, method="GET", path="/v1/focus")[1] == b"null"
+
+
+def test_focus_start_validates_minutes(tmp_path, local_server):
+    assert request(local_server, path="/v1/focus/start",
+                   body=b'{"purpose": "work", "minutes": 601}')[0] == 409
+
+
+def test_why_returns_detail_or_404(tmp_path, local_server):
+    assert request(local_server, method="GET", path="/v1/why/nope")[0] == 404
+
+
+def test_emergency_stop_engage_works_without_token(tmp_path, local_server):
+    status, body = request(local_server, path="/v1/emergency-stop/engage",
+                           body=b'{"reason": "stop everything"}')
+    assert status == 200
+    assert json.loads(body) == {"active": True, "reason": "stop everything"}
+    from ghost_agent.runtime import EmergencyStop
+    assert EmergencyStop(tmp_path).active() is True
+    assert request(local_server, path="/v1/emergency-stop/engage", body=b"{}")[0] == 400
+
+
+def test_emergency_stop_disengage_without_token_is_403(tmp_path):
+    api = ControlPlaneAPI(tmp_path, token="")
+    status, body = api.dispatch("POST", "/v1/emergency-stop/disengage", {})
+    assert status == 403
+    assert body == {"error": "set GHOST_API_TOKEN to change policy or disengage emergency stop over the API"}
+
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+
+def test_emergency_stop_disengage_with_wrong_token_is_401(local_server):
+    assert request(local_server, path="/v1/emergency-stop/disengage", body=b"{}",
+                   headers={"Authorization": "Bearer wrong"})[0] == 401
+
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+
+def test_emergency_stop_disengage_with_token_clears(local_server):
+    assert request(local_server, path="/v1/emergency-stop/engage",
+                   body=b'{"reason": "pause"}',
+                   headers={"Authorization": "Bearer test-token"})[0] == 200
+    status, body = request(local_server, path="/v1/emergency-stop/disengage", body=b"{}",
+                           headers={"Authorization": "Bearer test-token"})
+    assert status == 200
+    assert json.loads(body) == {"active": False}
+
+
+@pytest.mark.parametrize("local_server", ["test-token"], indirect=True)
+def test_api_policy_change_matches_cli_state(tmp_path, local_server):
+    from ghost_agent.policy import PolicyStore
+    assert request(local_server, path="/v1/policy",
+                   body=b'{"mode": "build", "enabled": false}',
+                   headers={"Authorization": "Bearer test-token"})[0] == 200
+    # The API wrote through the same store the CLI uses.
+    assert PolicyStore(tmp_path).load()["build"] is False
