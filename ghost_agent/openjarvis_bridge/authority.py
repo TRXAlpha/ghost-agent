@@ -37,6 +37,21 @@ class AuthorityStateError(RuntimeError):
     """Persisted authority state is corrupt or unsafe; never trust it."""
 
 
+ALLOWED_SIDE_EFFECTS: frozenset[str] = frozenset({
+    "read", "write_sandbox", "write_live", "send_message", "network",
+    "device_control", "spend",
+})
+ALLOWED_CONDITION_KEYS: dict[str, type] = {
+    "quiet_hours_only": bool,
+    "requires_owner_present": bool,
+    "max_per_day": int,
+}
+ALLOWED_LIMIT_KEYS: dict[str, type] = {
+    "max_calls": int,
+    "max_seconds": int,
+}
+
+
 @dataclass
 class Grant:
     grant_id: str
@@ -48,6 +63,10 @@ class Grant:
     expires_at: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    side_effects: list[str] = field(default_factory=list)
+    conditions: dict = field(default_factory=dict)
+    limits: dict = field(default_factory=dict)
+    provenance: str = "owner"  # owner | migration
 
 
 def _scope_for(root: Path) -> str:
@@ -82,6 +101,10 @@ class GrantStore:
                         "expires_at": item.get("expires_at"),
                         "created_at": float(item["created_at"]),
                         "updated_at": float(item["updated_at"]),
+                        "side_effects": item.get("side_effects", []),
+                        "conditions": item.get("conditions", {}),
+                        "limits": item.get("limits", {}),
+                        "provenance": item.get("provenance", "owner"),
                     })
                 for item in items]
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
@@ -96,6 +119,19 @@ class GrantStore:
                 raise AuthorityStateError("Grant state references a capability that must never run.")
             if grant.scope != _scope_for(self.root):
                 raise AuthorityStateError("Grant state is scoped to another project.")
+            if not isinstance(grant.side_effects, list) or any(
+                    s not in ALLOWED_SIDE_EFFECTS for s in grant.side_effects):
+                raise AuthorityStateError("Grant state has an unknown side effect.")
+            if not isinstance(grant.conditions, dict) or any(
+                    ALLOWED_CONDITION_KEYS.get(k) is not type(v)
+                    for k, v in grant.conditions.items()):
+                raise AuthorityStateError("Grant state has an invalid condition.")
+            if not isinstance(grant.limits, dict) or any(
+                    ALLOWED_LIMIT_KEYS.get(k) is not type(v)
+                    for k, v in grant.limits.items()):
+                raise AuthorityStateError("Grant state has an invalid limit.")
+            if grant.provenance not in {"owner", "migration"}:
+                raise AuthorityStateError("Grant state has an unknown provenance.")
             seen.add(grant.grant_id)
         return [asdict(g) for g in grants]
 
@@ -104,16 +140,35 @@ class GrantStore:
 
     # -- operations -------------------------------------------------------
     def ensure(self, principal: str, capability: str, scope: str, reason: str,
-               ttl: Optional[float] = None) -> Grant:
+               ttl: Optional[float] = None, *, side_effects: Optional[list[str]] = None,
+               conditions: Optional[dict] = None, limits: Optional[dict] = None,
+               provenance: str = "owner") -> Grant:
         """Idempotently obtain an active grant for (principal, capability, scope).
 
         Raises if the capability is not in the fixed safe allowlist, so no
         code path can mint authority for a consequential upstream tool.
+        New grants must have owner provenance; ``migration`` exists only so
+        pre-existing records keep loading. ``conditions`` (other than
+        ``max_per_day``, enforced in ``authorize_call``) and ``limits`` are
+        recorded but not enforced.
         """
         if not isinstance(principal, str) or not principal.strip():
             raise ValueError("Grant principal must be a nonempty owner identity.")
         if capability not in KNOWN_SAFE_CAPABILITIES:
             raise ValueError(f"Capability {capability!r} is not provisionable by Ghost.")
+        if provenance != "owner":
+            raise ValueError("A new grant must have owner provenance.")
+        side_effects = list(side_effects or [])
+        if any(s not in ALLOWED_SIDE_EFFECTS for s in side_effects):
+            raise ValueError("Grant side_effects contains an unknown value.")
+        conditions = dict(conditions or {})
+        if any(k not in ALLOWED_CONDITION_KEYS or not isinstance(v, ALLOWED_CONDITION_KEYS[k])
+               for k, v in conditions.items()):
+            raise ValueError("Grant conditions contain an unknown key or wrong type.")
+        limits = dict(limits or {})
+        if any(k not in ALLOWED_LIMIT_KEYS or not isinstance(v, ALLOWED_LIMIT_KEYS[k])
+               for k, v in limits.items()):
+            raise ValueError("Grant limits contain an unknown key or wrong type.")
         scope = scope or _scope_for(self.root)
         if _scope_for(self.root) != scope:
             raise ValueError("Grant scope must match the active project root.")
@@ -129,7 +184,9 @@ class GrantStore:
             expiry = None if ttl is None else time.time() + ttl
             digest = hashlib.sha1(f"{principal}|{capability}|{scope}|{time.time_ns()}".encode()).hexdigest()[:12]
             grant = Grant(f"grant_{digest}", principal, capability, scope, reason,
-                          expires_at=expiry)
+                          expires_at=expiry, side_effects=side_effects,
+                          conditions=conditions, limits=limits,
+                          provenance=provenance)
             items.append(asdict(grant))
             self._save(items)
             return grant
@@ -167,6 +224,51 @@ class GrantStore:
             raise ValueError("Grant not found.")
 
 
+def _usage_path(root: Path) -> Path:
+    return Path(root).resolve() / ".ghost" / "openjarvis" / "grant_usage.json"
+
+
+def _today(now: float) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(now))
+
+
+def _usage_count(grant_id: str, root: Path, now: float) -> int:
+    path = _usage_path(root)
+    if not path.exists():
+        return 0  # a ledger that was never written has no prior usage
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        # A corrupt or unreadable ledger must fail closed, not restart budget.
+        raise AuthorityStateError("Usage ledger is corrupt or unreadable; refusing to count.") from exc
+    if not isinstance(ledger, dict):
+        raise AuthorityStateError("Usage ledger is malformed; refusing to count.")
+    entry = ledger.get(grant_id)
+    if not isinstance(entry, dict) or entry.get("date") != _today(now):
+        return 0
+    count = entry.get("count", 0)
+    return count if isinstance(count, int) and count >= 0 else 0
+
+
+def _record_usage(grant_id: str, root: Path, now: float) -> None:
+    path = _usage_path(root)
+    ledger: dict[str, Any] = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            ledger = loaded
+    except (json.JSONDecodeError, OSError):
+        pass
+    today = _today(now)
+    entry = ledger.get(grant_id)
+    if isinstance(entry, dict) and entry.get("date") == today:
+        entry["count"] = int(entry.get("count", 0)) + 1
+    else:
+        entry = {"date": today, "count": 1}
+    ledger[grant_id] = entry
+    atomic_json(path, ledger)
+
+
 def authorize_call(root: Path, principal: str, capability: str, params: dict,
                    now: Optional[float] = None) -> Tuple[bool, str]:
     """Deterministic authority for one upstream tool dispatch. Fail closed."""
@@ -191,6 +293,21 @@ def authorize_call(root: Path, principal: str, capability: str, params: dict,
         return False, "Tool denied: capability has no defined parameter shape."
     if set(params) != set(expected):
         return False, "Tool denied: unexpected parameters for this capability."
+    max_per_day = grant.conditions.get("max_per_day")
+    if isinstance(max_per_day, int) and not isinstance(max_per_day, bool):
+        effective_now = time.time() if now is None else now
+        # Check-and-increment is atomic under the ledger lock so concurrent
+        # authorize_call calls cannot lose an increment and exceed the limit.
+        usage_lock = _usage_path(root).with_suffix(".lock")
+        try:
+            with exclusive_lock(usage_lock):
+                used = _usage_count(grant.grant_id, root, effective_now)
+                if used >= max_per_day:
+                    return False, (f"Tool denied: grant reached its max_per_day limit "
+                                   f"({used}/{max_per_day} today).")
+                _record_usage(grant.grant_id, root, effective_now)
+        except AuthorityStateError as exc:
+            return False, f"{exc} Tool denied."
     return True, "authorized"
 
 
