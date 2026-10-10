@@ -6,13 +6,25 @@ import json
 import re
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_serializer
 
 
 class WriteFileAction(BaseModel):
     tool: Literal["write_file"]
     path: str
-    content: str
+    # content is filled in from the trailing raw file block when content_ref
+    # is used (see parse_action_response); empty until then.
+    content: str = ""
+    content_ref: str | None = None
+
+    @model_serializer
+    def _dump(self) -> dict:
+        # Omit content_ref when unused so the plain content form dumps exactly
+        # as before this field existed (protocol benchmark compares dumps).
+        data: dict = {"tool": self.tool, "path": self.path, "content": self.content}
+        if self.content_ref is not None:
+            data["content_ref"] = self.content_ref
+        return data
 
 
 class ReadFileAction(BaseModel):
@@ -126,6 +138,42 @@ def _parse_candidate(candidate: str) -> ActionResponse:
     return ActionResponse.model_validate(data)
 
 
+_FILE_BLOCK_RE = re.compile(
+    r"^<<<([A-Z][A-Z0-9_]{0,15})\n(.*?)\n\1>>>$", re.DOTALL | re.MULTILINE
+)
+
+
+def _extract_file_blocks(text: str) -> tuple[str, dict[str, str]]:
+    """Split out raw file blocks (<<<F1 ... F1>>>) so their bodies never go
+    through JSON escaping. Returns the remaining text and ref -> body map."""
+    blocks: dict[str, str] = {}
+
+    def _capture(match: re.Match[str]) -> str:
+        blocks[match.group(1)] = match.group(2)
+        return ""
+
+    return _FILE_BLOCK_RE.sub(_capture, text), blocks
+
+
+def _resolve_content_refs(
+    response: ActionResponse, blocks: dict[str, str]
+) -> None:
+    for action in response.actions:
+        if not isinstance(action, WriteFileAction):
+            continue
+        if action.content_ref is not None and action.content:
+            raise ValueError(
+                "write_file action cannot have both content and content_ref"
+            )
+        if action.content_ref is None:
+            continue
+        if action.content_ref not in blocks:
+            raise ValueError(
+                f"content_ref {action.content_ref} has no matching block"
+            )
+        action.content = blocks[action.content_ref]
+
+
 def parse_action_response(response_text: str) -> ActionResponse:
     """Parse JSON despite harmless prose/fences, but reject malformed tool calls."""
     if not response_text or not response_text.strip():
@@ -143,7 +191,10 @@ def parse_action_response(response_text: str) -> ActionResponse:
             continue
         seen.add(candidate)
         try:
-            return _parse_candidate(candidate)
+            remaining, blocks = _extract_file_blocks(candidate)
+            response = _parse_candidate(remaining)
+            _resolve_content_refs(response, blocks)
+            return response
         except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
             errors.append(str(exc))
     raise ValueError("Could not parse a valid action response: " + "; ".join(errors[:2]))
