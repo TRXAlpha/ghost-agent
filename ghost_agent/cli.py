@@ -1709,7 +1709,10 @@ def main() -> None:
     promote_parser.add_argument("value", nargs="?", default="", help="Sandbox path, transaction id, or promotion id")
     promote_parser.add_argument("--goal-id", default="", help="Goal ID required for request")
     promote_parser.add_argument("--approval-id", default="", help="Approved request required for commit")
-    sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser = sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser.add_argument("--view", default="snapshot",
+                                      choices=["snapshot", "goals", "opportunities", "resources",
+                                               "integrations", "notifications"])
     api_parser = sub.add_parser("api", help="Serve the local loopback control-plane API")
     api_parser.add_argument("--host", default="127.0.0.1")
     api_parser.add_argument("--port", type=int, default=8765)
@@ -1886,7 +1889,7 @@ def main() -> None:
         "approval": lambda: _cmd_approval(args),
         "policy": lambda: _cmd_policy(args),
         "promote": lambda: _cmd_promote(args),
-        "control-plane": _cmd_control_plane,
+        "control-plane": lambda: _cmd_control_plane(args),
         "api": lambda: _cmd_api(args),
         "integration": lambda: _cmd_integration(args),
         "worker": lambda: _cmd_worker(args),
@@ -2893,9 +2896,19 @@ def _cmd_promote(args: argparse.Namespace) -> None:
         print(f"Promotion refused: {exc}")
 
 
-def _cmd_control_plane() -> None:
+def _cmd_control_plane(args: argparse.Namespace | None = None) -> None:
     """Expose a structured local snapshot for future UI/API transports."""
-    print(GhostSDK(Path.cwd()).snapshot_json())
+    sdk = GhostSDK(Path.cwd())
+    views = {
+        "snapshot": lambda: json.loads(sdk.snapshot_json()),
+        "goals": sdk.goal_tree,
+        "opportunities": sdk.opportunity_pipeline,
+        "resources": sdk.resource_usage,
+        "integrations": sdk.integration_health,
+        "notifications": sdk.notification_preferences,
+    }
+    result = views[getattr(args, "view", "snapshot")]()
+    print(json.dumps(result, indent=2, default=str))
 
 
 def _cmd_api(args: argparse.Namespace) -> None:

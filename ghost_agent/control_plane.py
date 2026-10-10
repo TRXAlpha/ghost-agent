@@ -10,6 +10,7 @@ This module provides the unified control plane with:
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -409,6 +410,7 @@ class GhostSDK:
 
     def integration_health(self) -> Dict[str, Any]:
         """Get integration health dashboard data."""
+        now = time.time()
         health_status = Doctor(self.root).check()
         
         integrations = []

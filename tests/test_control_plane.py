@@ -29,3 +29,18 @@ def test_cli_control_plane_prints_json_snapshot(tmp_path, monkeypatch, capsys) -
     _cmd_control_plane()
     snapshot = _json.loads(capsys.readouterr().out)
     assert "goals" in snapshot and "outcome_count" in snapshot
+
+
+def test_cli_control_plane_views_print_valid_json(tmp_path, monkeypatch, capsys) -> None:
+    import json as _json
+    import argparse as _argparse
+    from ghost_agent.cli import _cmd_control_plane
+
+    monkeypatch.chdir(tmp_path)
+    for view in ("snapshot", "goals", "opportunities", "resources",
+                 "integrations", "notifications"):
+        capsys.readouterr()
+        args = _argparse.Namespace(view=view)
+        _cmd_control_plane(args)
+        parsed = _json.loads(capsys.readouterr().out)
+        assert isinstance(parsed, (dict, list))
