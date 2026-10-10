@@ -6,7 +6,7 @@ import warnings
 import pytest
 
 from ghost_agent.initiative import (DEFAULT_WEIGHTS, QUEUE_THRESHOLD,
-                                    load_weights, score)
+                                    kind_success_rate, load_weights, score)
 from ghost_agent.proactive import Opportunity
 
 
@@ -157,3 +157,85 @@ def test_reasons_contain_every_factor(tmp_path):
         assert any(reason.startswith(factor) for reason in reasons)
     assert reasons[-1] == "heuristic ranking; tuned only by recorded outcomes"
     assert QUEUE_THRESHOLD == 0.55
+
+
+# --- TN2: kind_success_rate over recorded outcomes ----------------------------
+
+_rec_n = 0
+
+
+def make_recorded_opp(kind="research", status="completed", result="",
+                      less=False, **overrides):
+    global _rec_n
+    # unique id: store.save upserts by opportunity_id
+    overrides.setdefault("opportunity_id", f"opp_rec_{_rec_n:04d}")
+    _rec_n += 1
+    return make_opp(kind=kind, status=status, result=result,
+                    less_like_this=less, **overrides)
+
+
+def test_kind_success_rate_none_with_fewer_than_three_decided(tmp_path):
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    for result in ("tests_passed", "tests_failed"):
+        store.save(make_recorded_opp(result=result))
+    assert kind_success_rate(store, "research") is None
+
+
+def test_kind_success_rate_mixes_results(tmp_path):
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    store.save(make_recorded_opp(result="tests_passed"))
+    store.save(make_recorded_opp(result="tests_passed"))
+    store.save(make_recorded_opp(result="tests_failed"))
+    store.save(make_recorded_opp(result="error"))
+    # 2 successes out of 4 decided items
+    assert kind_success_rate(store, "research") == pytest.approx(0.5)
+
+
+def test_kind_success_rate_counts_less_like_this_as_failure(tmp_path):
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    store.save(make_recorded_opp(result="tests_passed"))
+    store.save(make_recorded_opp(status="rejected", less=True))
+    store.save(make_recorded_opp(status="dismissed", less=True))
+    assert kind_success_rate(store, "research") == pytest.approx(1 / 3)
+
+
+def test_kind_success_rate_ignores_undecided_records(tmp_path):
+    from ghost_agent.proactive import OpportunityStore
+    store = OpportunityStore(tmp_path)
+    # decided: 3 failures -> rate 0.0
+    for _ in range(3):
+        store.save(make_recorded_opp(result="tests_failed"))
+    # undecided noise must not change the count
+    store.save(make_recorded_opp(result="", status="queued"))
+    store.save(make_recorded_opp(result="", status="proposed"))
+    store.save(make_recorded_opp(kind="focus", result="tests_passed"))
+    assert kind_success_rate(store, "research") == 0.0
+
+
+def test_tick_passes_kind_success_to_score(tmp_path, monkeypatch):
+    import ghost_agent.initiative as initiative
+    from ghost_agent.proactive import OpportunityStore, ProactiveEngine
+    from tests.test_proactive import proposal
+    store = OpportunityStore(tmp_path)
+    for _ in range(3):
+        store.save(make_recorded_opp(kind="research", result="tests_failed"))
+    seen: dict = {}
+
+    real_score = initiative.score
+
+    def spy_score(opp, **kwargs):
+        seen["kind_success"] = kwargs.get("kind_success")
+        return real_score(opp, **kwargs)
+
+    monkeypatch.setattr(initiative, "score", spy_score)
+    engine = ProactiveEngine(tmp_path, "tiny",
+                             chat_fn=lambda *a, **k: proposal(
+                                 kind="research", confidence=0.9))
+    result = engine.tick()
+    assert seen["kind_success"] == pytest.approx(0.0)
+    record = result["opportunity"]
+    assert any("kind_success=0.00" in reason
+               for reason in record["score_reasons"])

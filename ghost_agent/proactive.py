@@ -622,7 +622,12 @@ class ProactiveEngine:
         from .initiative import QUEUE_THRESHOLD, score as score_opportunity
         weights = self._score_weights()
         threshold = float(weights.pop("threshold", QUEUE_THRESHOLD))
-        opportunity_score, score_reasons = score_opportunity(proposal, weights=weights)
+        # TN2: tune the score by this kind's recorded outcome rate (None when
+        # there is not enough evidence, which score treats as untuned).
+        from .initiative import kind_success_rate
+        kind_success = kind_success_rate(self.store, proposal.kind)
+        opportunity_score, score_reasons = score_opportunity(
+            proposal, kind_success=kind_success, weights=weights)
         proposal.score = opportunity_score
         proposal.score_reasons = list(score_reasons)
         queued = False
