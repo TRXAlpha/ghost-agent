@@ -451,19 +451,24 @@ class AttentionManager:
                 return item
         raise ValueError("Notification not found")
 
-    def deliverable(self, quiet_hours: tuple[int, int] | None = None, now_hour: int | None = None) -> list[Notification]:
-        """Return notifications fit for delivery; urgent items bypass quiet hours."""
+    def deliverable(self, quiet_hours: tuple[int, int] | None = None, now_hour: int | None = None,
+                    focus_active: bool = False) -> list[Notification]:
+        """Return notifications fit for delivery; urgent items bypass quiet hours and focus holds."""
         pending = self.pending()
-        if quiet_hours is None:
+        if quiet_hours is None and not focus_active:
             items = [item for item in pending if item.priority != "silent"]
         else:
             hour = time.localtime().tm_hour if now_hour is None else now_hour
-            if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
-                    or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
-                raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
-            start, end = quiet_hours
-            quiet = start <= hour < end if start <= end else hour >= start or hour < end
-            items = [item for item in pending if item.priority != "silent" and (not quiet or item.priority == "urgent")]
+            if quiet_hours is not None:
+                if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
+                        or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
+                    raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
+                start, end = quiet_hours
+                quiet = start <= hour < end if start <= end else hour >= start or hour < end
+            else:
+                quiet = False
+            held = quiet or focus_active
+            items = [item for item in pending if item.priority != "silent" and (not held or item.priority == "urgent")]
         return self._batch(items)
 
     @classmethod
