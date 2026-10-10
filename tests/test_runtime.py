@@ -100,6 +100,35 @@ def test_attention_manager_persists_prioritized_notifications(tmp_path: Path) ->
     assert attention.acknowledge(note.notification_id).status == "acknowledged"
 
 
+def test_attention_manager_batches_burst_of_normal_notifications(tmp_path: Path) -> None:
+    attention = AttentionManager(tmp_path)
+    ids = [attention.notify(Notification("normal", f"update {i}", source="cron")).notification_id
+           for i in range(5)]
+
+    deliverable = attention.deliverable()
+
+    assert len(deliverable) == 1
+    assert deliverable[0].message == "5 updates from cron; latest: update 4"
+    assert deliverable[0].notification_id == ids[-1]
+    # Originals stay pending and individually ackable.
+    assert [note.notification_id for note in attention.pending()] == ids
+    assert attention.acknowledge(ids[0]).status == "acknowledged"
+
+
+def test_attention_manager_leaves_small_bursts_and_important_items_unbatched(tmp_path: Path) -> None:
+    attention = AttentionManager(tmp_path)
+    ids = [attention.notify(Notification("normal", f"update {i}", source="cron")).notification_id
+           for i in range(3)]
+    important = attention.notify(Notification("important", "needs attention", source="cron"))
+    other = attention.notify(Notification("normal", "solo", source="other"))
+
+    deliverable = attention.deliverable()
+
+    # Three items are not more than the threshold of 3, so nothing is batched away.
+    assert {note.notification_id for note in deliverable} == set(ids) | {
+        important.notification_id, other.notification_id}
+
+
 def test_doctor_reports_malformed_extension_manifest_as_degraded(tmp_path: Path) -> None:
     manifest = tmp_path / ".ghost" / "extensions" / "bad" / "manifest.json"
     manifest.parent.mkdir(parents=True)
