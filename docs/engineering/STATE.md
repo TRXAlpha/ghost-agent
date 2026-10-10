@@ -2,8 +2,32 @@
 
 ## Repository
 - Branch: master
-- HEAD: 681b769 — Add ghost learn path: generate prerequisite-ordered learning paths via LearningEngine
-- Working tree: DIRTY — AGENTS.md (owner, intentional) and ghost_agent/cli.py (owner's uncommitted learn commands; broken until T01)
+- HEAD: see `git log -1` (campaign 2026-10b closed at 6517b33 + this STATE update)
+- Working tree: clean. The owner's AGENTS.md edit was committed in 58c3920 (campaign 1); the owner's
+  former uncommitted cli.py edit is in master via T01 (patch kept at ../owner-cli-uncommitted-2026-10-06.patch).
+
+## Campaign 2026-10b result (2026-10-10)
+
+Phase A: 8 Hermes auditors mapped R01–R14 / S01–S08 against the code with path:line evidence
+(`docs/engineering/campaign-2026-10b/audit/A1–A8.md`); A9 independently re-reviewed T17–T19 (all PASS).
+Phase B: 16 tracks (TA–TP), each a Hermes goal-mode orchestrator (GLM-5.3-Flash) with worker and
+independent reviewer subagents on its own `c2/<track>` branch; meta-orchestrator integrated in 5 rounds.
+Decision sheets: `campaign-2026-10b/tracks/`; per-task records: `campaign-2026-10b/progress/`.
+
+- Suite: 1037 → **1406 passed** (main venv) + 106 passed / 5 skipped (OpenJarvis venv; Docker cases).
+- Live benchmark (`ghost bench`, GLM-5.3-Flash via OpenJarvis openai-compat): accepted_rate **0.875**,
+  ghost_pass_rate **0.50** (best run 20261010_184845_09375). Local gemma4:e4b on a 4 GB GPU: no completed run.
+- Live-found bugs fixed by the meta-orchestrator (each with regression tests): bridge refused num_ctx for
+  compatible engines (9b3ec07); transient upstream 5xx not retried (9dd7ca2); raw newlines in JSON
+  (93f9ff9); read-only turns stateless (d7f69fe); vague tests-missing prompt (b31486f); a yield pause
+  stalled the queue (f3e321c); rustc not found outside PATH (30fdddc); control-plane crash (22fbad0).
+- Qualification: `campaign-2026-10b/QUALIFICATION.md` (reviewed; 5 agent errors corrected).
+  L3 evidence: benchmark hidden acceptance; live rustc oracle. No live Telegram/Huawei/DeskSentinel.
+- Owner-only next steps: Telegram token decision + live check; Huawei credentials; DeskSentinel firmware;
+  first live self-repair promotion; real use over time (L4).
+- Process lessons: provider caps GLM-5.3-Flash output at ~4k tokens incl. reasoning (use low/medium
+  reasoning, ≤3 tasks per delegate call); orchestrator bookkeeping must be re-verified (T07 repair was
+  dropped in campaign 1); the detached kanban dispatcher loop died once silently (now liveness-monitored).
 
 ## Campaign 2026-10 result
 

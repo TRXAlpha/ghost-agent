@@ -6,6 +6,17 @@ Audience: the owner, implementing agents, and reviewers, including inexpensive c
 
 This document preserves the owner's intended product. OpenJarvis is the selected upstream foundation; Ghost supplies personal behavior, domain extensions, and verified controls around it. This revision supersedes the earlier build-from-scratch work assignments. Requirements below define the composed product, not a mandate to reimplement each subsystem inside Ghost. A first working integration now exists; qualification is limited to the evidence recorded below, not the entire target product.
 
+## Implementation checkpoint — 10 October 2026
+
+Two remediation campaigns closed the largest gaps between this specification and the code. See
+[the qualification report](docs/engineering/campaign-2026-10b/QUALIFICATION.md) for per-bullet evidence
+levels on S01–S08 and section 8, and [README](README.md) for what works today. Summary: every scenario
+now has contract/integration-level implementation of its local behavior; live (L3) evidence exists for
+coding-artifact acceptance (`ghost bench`: 7/8 hidden acceptance with GLM-5.3-Flash, Ghost's own gate
+4/8) and the Rust oracle. Telegram, Huawei and DeskSentinel remain without live qualification (owner
+credentials/hardware), and no personal-usefulness (L4) evidence exists yet. Ghost should still be
+described as progressing toward this specification.
+
 ## Implementation checkpoint — 10 September 2026
 
 Read [the integration ledger](outputs/openjarvis-integration/2026-09-10.md) and [operating instructions](docs/openjarvis.md) before assigning more work. The pin, isolated Python 3.13 environment, native Rust build and installer already exist. Ghost coding/research uses upstream engines through `ghost-jarvis`; upstream read-only conversations, sessions, explicit document retrieval, owner-paired Telegram transport, Telegram sandbox build queue, and the first proactive loop are wired and locally tested. **785 tests pass with upstream installed; 749 pass and 2 modules skip in the preserved legacy environment.**
