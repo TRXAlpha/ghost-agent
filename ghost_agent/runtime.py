@@ -8,11 +8,15 @@ import shutil
 import subprocess
 import time
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from .utils.storage import atomic_json, exclusive_lock
+
+
+EVENT_SENSITIVITIES = ("normal", "personal", "health", "secret")
 
 
 @dataclass
@@ -21,6 +25,12 @@ class Event:
     payload: Dict[str, Any]
     source: str = "ghost"
     created_at: float = field(default_factory=time.time)
+    event_id: str = field(default_factory=lambda: uuid4().hex)
+    ingested_at: Optional[float] = None
+    correlation_id: str = ""
+    causation_id: str = ""
+    sensitivity: str = "normal"
+    schema_version: int = 2
 
 
 class EventBus:
@@ -29,6 +39,10 @@ class EventBus:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, event: Event) -> Event:
+        if event.sensitivity not in EVENT_SENSITIVITIES:
+            raise ValueError("unknown event sensitivity")
+        if event.ingested_at is None:
+            event.ingested_at = time.time()
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(asdict(event)) + "\n")
         return event
@@ -36,10 +50,15 @@ class EventBus:
     def recent(self, limit: int = 50, kind: Optional[str] = None) -> list[Event]:
         if not self.path.exists():
             return []
+        known = {f.name for f in fields(Event)}
         events: list[Event] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             try:
-                event = Event(**json.loads(line))
+                raw = json.loads(line)
+                data = {key: value for key, value in raw.items() if key in known}
+                if "schema_version" not in data:
+                    data["schema_version"] = 1
+                event = Event(**data)
                 if not kind or event.kind == kind:
                     events.append(event)
             except (json.JSONDecodeError, TypeError):
@@ -112,6 +131,8 @@ class ScheduledJob:
     # Recurrence (OJ07): absent = one-shot job, byte-for-byte legacy behavior.
     recurrence: Optional[Dict[str, Any]] = None  # {"kind": "interval", "interval_seconds": N}
     due_at: Optional[float] = None               # epoch seconds; recurring jobs claim only when due
+    lease_expires_at: Optional[float] = None     # epoch seconds; running claim is stale once past this
+    generation: int = 0                          # incremented on each claim; guards stale worker marks
 
 
 class ResourceMonitor:
@@ -162,6 +183,11 @@ class Scheduler:
                 if ((job.owner is not None and not isinstance(job.owner, str))
                         or not isinstance(job.attempts, int) or job.attempts < 0 or not isinstance(job.budget, dict)):
                     raise ValueError("Invalid ownership or budget state")
+                if not isinstance(job.generation, int) or isinstance(job.generation, bool) or job.generation < 0:
+                    raise ValueError("Invalid generation record")
+                if job.lease_expires_at is not None and (not isinstance(job.lease_expires_at, (int, float))
+                                                        or isinstance(job.lease_expires_at, bool)):
+                    raise ValueError("Invalid lease_expires_at record")
                 if job.recurrence is not None:
                     if (not isinstance(job.recurrence, dict)
                             or job.recurrence.get("kind") != "interval"
@@ -193,7 +219,7 @@ class Scheduler:
                 raise ValueError("Scheduled job already exists")
             jobs.append(asdict(job))
             self._save(jobs)
-        self.events.emit(Event("job.queued", {"job_id": job.job_id, "goal_id": job.goal_id}))
+        self.events.emit(Event("job.queued", {"job_id": job.job_id, "goal_id": job.goal_id}, correlation_id=job.job_id))
         return job
 
     def next(self, available: Optional[Dict[str, float]] = None) -> Optional[ScheduledJob]:
@@ -240,12 +266,13 @@ class Scheduler:
                     job = None
             return self._mark_locked(job.job_id, "running", owner=owner) if job else None
 
-    def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None) -> ScheduledJob:
+    def mark(self, job_id: str, status: str, *, expected: Optional[set[str]] = None,
+             generation: Optional[int] = None) -> ScheduledJob:
         with exclusive_lock(self.path.with_suffix(".lock")):
-            return self._mark_locked(job_id, status, expected)
+            return self._mark_locked(job_id, status, expected, generation=generation)
 
     def _mark_locked(self, job_id: str, status: str, expected: Optional[set[str]] = None,
-                     owner: Optional[str] = None) -> ScheduledJob:
+                     owner: Optional[str] = None, generation: Optional[int] = None) -> ScheduledJob:
         if status not in {"queued", "running", "paused", "completed", "failed", "cancelled"}:
             raise ValueError(f"Unknown job status: {status}")
         jobs = self._load()
@@ -254,23 +281,34 @@ class Scheduler:
                 previous = raw["status"]
                 if expected is not None and previous not in expected:
                     raise ValueError("Job state changed or does not permit this operation")
+                if generation is not None and raw.get("generation", 0) != generation:
+                    raise ValueError("stale generation")
                 if status != previous and status not in self.TRANSITIONS[previous]:
                     raise ValueError(f"Invalid job transition: {previous} -> {status}")
                 if status == "running" and previous == "queued":
                     raw["owner"] = owner
                     raw["attempts"] = raw.get("attempts", 0) + 1
                     raw["claimed_at"] = time.time()
+                    raw["generation"] = raw.get("generation", 0) + 1
+                    lease_seconds = raw.get("budget", {}).get("lease_seconds", 21600)
+                    if (not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool)
+                            or not 60 <= lease_seconds <= 604800):
+                        lease_seconds = 21600
+                    raw["lease_expires_at"] = time.time() + lease_seconds
                 elif status == "queued":
                     raw["owner"] = None
                     raw["claimed_at"] = None
+                    raw["lease_expires_at"] = None
                 raw["status"] = status
+                if status != "running":
+                    raw["lease_expires_at"] = None
                 recurrence_event: Optional[Event] = None
                 if status in {"completed", "failed"} and raw.get("recurrence"):
                     # OJ07: a recurring job settles terminal AND re-queues in the
                     # SAME locked save — no window for a duplicate claim.
                     next_due, missed = self._next_due(raw["recurrence"], raw.get("due_at"), time.time())
                     if missed > 0:
-                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed})
+                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed}, correlation_id=job_id)
                     raw["due_at"] = next_due
                     raw["status"] = "queued"
                     raw["owner"] = None
@@ -278,12 +316,13 @@ class Scheduler:
                     raw["attempts"] = 0
                 self._save(jobs)
                 job = ScheduledJob(**raw)
-                self.events.emit(Event(f"job.{status}", {"job_id": job_id, "goal_id": job.goal_id}))
+                self.events.emit(Event(f"job.{status}", {"job_id": job_id, "goal_id": job.goal_id}, correlation_id=job_id))
                 if recurrence_event is not None:
                     self.events.emit(recurrence_event)
                 if raw.get("recurrence") and status in {"completed", "failed"}:
                     self.events.emit(Event("job.recurrence.requeued",
-                                           {"job_id": job_id, "goal_id": job.goal_id, "due_at": raw["due_at"]}))
+                                           {"job_id": job_id, "goal_id": job.goal_id, "due_at": raw["due_at"]},
+                                           correlation_id=job_id))
                 return job
         raise ValueError("Scheduled job not found")
 
@@ -320,7 +359,7 @@ class Scheduler:
                     removed = ScheduledJob(**raw)
                     del jobs[index]
                     self._save(jobs)
-                    self.events.emit(Event("job.removed", {"job_id": job_id, "goal_id": removed.goal_id}))
+                    self.events.emit(Event("job.removed", {"job_id": job_id, "goal_id": removed.goal_id}, correlation_id=job_id))
                     return removed
             raise ValueError("Scheduled job not found")
 
@@ -382,6 +421,7 @@ class Notification:
 class AttentionManager:
     """Persist notifications with acknowledgement and quiet-hour delivery policy."""
     PRIORITIES = {"silent", "normal", "important", "urgent"}
+    BATCH_THRESHOLD = 3
 
     def __init__(self, project_root: Path) -> None:
         self.path = Path(project_root) / ".ghost" / "notifications.json"
@@ -454,14 +494,35 @@ class AttentionManager:
         """Return notifications fit for delivery; urgent items bypass quiet hours."""
         pending = self.pending()
         if quiet_hours is None:
-            return [item for item in pending if item.priority != "silent"]
-        hour = time.localtime().tm_hour if now_hour is None else now_hour
-        if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
-                or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
-            raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
-        start, end = quiet_hours
-        quiet = start <= hour < end if start <= end else hour >= start or hour < end
-        return [item for item in pending if item.priority != "silent" and (not quiet or item.priority == "urgent")]
+            items = [item for item in pending if item.priority != "silent"]
+        else:
+            hour = time.localtime().tm_hour if now_hour is None else now_hour
+            if (not isinstance(quiet_hours, (tuple, list)) or len(quiet_hours) != 2
+                    or any(type(value) is not int or not 0 <= value <= 23 for value in (*quiet_hours, hour))):
+                raise ValueError("Quiet hours and current hour must be integers from 0 to 23")
+            start, end = quiet_hours
+            quiet = start <= hour < end if start <= end else hour >= start or hour < end
+            items = [item for item in pending if item.priority != "silent" and (not quiet or item.priority == "urgent")]
+        return self._batch(items)
+
+    @classmethod
+    def _batch(cls, items: list[Notification]) -> list[Notification]:
+        """Collapse bursts of normal notifications from one source into one summary."""
+        result: list[Notification] = []
+        for source in {item.source for item in items if item.priority == "normal"}:
+            burst = [item for item in items if item.priority == "normal" and item.source == source]
+            if len(burst) > cls.BATCH_THRESHOLD:
+                newest = max(burst, key=lambda note: note.created_at)
+                # Synthetic copy only: the originals stay pending and individually ackable.
+                result.append(Notification(
+                    "normal",
+                    f"{len(burst)} updates from {source}; latest: {newest.message}",
+                    notification_id=newest.notification_id,
+                    source=source, status="pending", created_at=newest.created_at))
+            else:
+                result.extend(burst)
+        result.extend(item for item in items if item.priority != "normal")
+        return result
 
 
 class Doctor:

@@ -115,7 +115,7 @@ def test_hook_exception_recorded_not_raised(tmp_path):
     assert next_record["cycle"] == 2
 
 
-def test_run_stops_at_max_cycles_with_counting_runner(tmp_path):
+def test_run_stops_at_max_cycles_with_counting_runner(tmp_path, permissive_policy):
     runner = FakeRunner(make_results(3, user_active=False))
     daemon = GhostDaemon(tmp_path, "m", runner=runner,
                          trace_fn=lambda: {}, improver_fn=lambda: {},
@@ -125,7 +125,7 @@ def test_run_stops_at_max_cycles_with_counting_runner(tmp_path):
     assert runner.calls == 3
 
 
-def test_run_stops_on_emergency_stop(tmp_path):
+def test_run_stops_on_emergency_stop(tmp_path, permissive_policy):
     EmergencyStop(tmp_path).engage("test")
     daemon, calls = make_daemon(tmp_path, make_results(5, user_active=False))
     n = daemon.run()

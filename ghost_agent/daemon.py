@@ -98,6 +98,8 @@ class GhostDaemon:
 
     # -- main loop ---------------------------------------------------------
     def run(self, *, max_cycles: Optional[int] = None) -> int:
+        from .policy import PolicyError, PolicyStore
+        PolicyStore(self.root).require("idle_work", "unattended background work")
         stop = EmergencyStop(self.root)
         while not stop.active():
             if max_cycles is not None and self._cycles >= max_cycles:

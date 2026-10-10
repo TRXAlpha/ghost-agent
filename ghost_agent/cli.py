@@ -19,6 +19,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -1600,6 +1601,9 @@ def main() -> None:
     kbase_sub.add_parser("status", help="Show knowledge base stats")
     kbase_query = kbase_sub.add_parser("query", help="Retrieve relevant reference chunks")
     kbase_query.add_argument("text", nargs="+", help="Query text")
+    kbase_delete = kbase_sub.add_parser("delete", help="Delete all chunks of a source")
+    kbase_delete.add_argument("source", help="Source path label (see: ghost kbase sources)")
+    kbase_sub.add_parser("sources", help="List indexed sources with versions and chunk counts")
 
     lora_parser = sub.add_parser("lora", help="Verified training-pair corpus (future fine-tune)")
     lora_sub = lora_parser.add_subparsers(dest="lora_action")
@@ -1633,16 +1637,47 @@ def main() -> None:
     capability_retire = capability_sub.add_parser("retire", help="Retire an active capability")
     capability_retire.add_argument("record_id", help="Acquisition record id")
     capability_retire.add_argument("--reason", default="", help="Retirement reason")
+    capability_degrade = capability_sub.add_parser("degrade", help="Mark an active capability degraded")
+    capability_degrade.add_argument("record_id", help="Acquisition record id")
+    capability_degrade.add_argument("--reason", default="", help="Why the capability is degraded")
+    capability_recover = capability_sub.add_parser("recover", help="Return a degraded capability to active")
+    capability_recover.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live = capability_sub.add_parser("verify-live", help="Record live operational verification")
+    capability_verify_live.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live.add_argument("--evidence", default="", help="Live verification evidence")
 
     memory_parser = sub.add_parser("memory",
-        help="Manage validated memories (retract/purge)")
-    memory_parser.add_argument(
-        "action", choices=["retract", "purge"],
-        help="retract: mark retracted (soft delete); purge: hard-delete with cascade")
-    memory_parser.add_argument("memory_id", help="Memory ID to retract or purge")
-    memory_parser.add_argument(
-        "--reason", default="user requested",
-        help="Reason for retraction or purge (defaults to 'user requested')")
+        help="Manage validated memories (retract/purge/list/edit/export/retention)")
+    memory_sub = memory_parser.add_subparsers(dest="memory_subcommand")
+    for action in ("retract", "purge"):
+        action_parser = memory_sub.add_parser(action,
+            help=("mark retracted (soft delete)" if action == "retract"
+                  else "hard-delete with cascade"))
+        action_parser.add_argument("memory_id", help="Memory ID to retract or purge")
+        action_parser.add_argument(
+            "--reason", default="user requested",
+            help="Reason for retraction or purge (defaults to 'user requested')")
+    memory_list = memory_sub.add_parser("list", help="List active memories")
+    memory_list.add_argument("--kind", default=None, help="Filter by memory kind")
+    memory_list.add_argument("--json", action="store_true", help="Output JSON")
+    memory_list.add_argument("--show-sensitive", action="store_true",
+        help="Include health and secret sensitivity records")
+    memory_edit = memory_sub.add_parser("edit", help="Edit an active memory")
+    memory_edit.add_argument("memory_id", help="Memory ID to edit")
+    memory_edit.add_argument("--content", default=None, help="New content (keeps revision history)")
+    memory_edit.add_argument("--subject", default=None, help="New subject")
+    memory_edit.add_argument("--sensitivity", default=None,
+        choices=["normal", "personal", "health", "secret"], help="New sensitivity")
+    memory_edit.add_argument("--verified", action="store_true",
+        help="Confirm the memory as verified now")
+    memory_export = memory_sub.add_parser("export", help="Export memories to a file")
+    memory_export.add_argument("--out", required=True, help="Output path (refuses to overwrite)")
+    memory_retention = memory_sub.add_parser("retention", help="Manage memory retention")
+    retention_sub = memory_retention.add_subparsers(dest="retention_action")
+    retention_set = retention_sub.add_parser("set", help="Set retention for a kind")
+    retention_set.add_argument("--kind", required=True, help="Memory kind")
+    retention_set.add_argument("--days", required=True, type=int, help="Retention days")
+    retention_sub.add_parser("apply", help="Purge memories past their retention")
 
     search_parser = sub.add_parser("search", help="Search codebase via RAG")
     search_parser.add_argument("query", help="Search query")
@@ -1679,6 +1714,11 @@ def main() -> None:
     accomplish_parser.add_argument("--queue", action="store_true", help="Persist the outcome for ghost worker")
 
     sub.add_parser("doctor", help="Check Ghost runtime health")
+    events_parser = sub.add_parser("events", help="Inspect the event log with cursors")
+    events_parser.add_argument("action", choices=["tail", "failed"])
+    events_parser.add_argument("--cursor", default="", help="tail: cursor name (a-z0-9_-)")
+    events_parser.add_argument("--max", type=int, default=100, help="tail: max events")
+    events_parser.add_argument("--no-commit", action="store_true", help="tail: do not advance the cursor")
     jobs_parser = sub.add_parser("jobs", help="Inspect jobs and control queued/paused work")
     jobs_parser.add_argument("action", choices=["list", "add", "remove", "pause", "resume", "retry", "cancel"])
     jobs_parser.add_argument("job_id", nargs="?", default="")
@@ -1700,12 +1740,23 @@ def main() -> None:
     approval_parser.add_argument("action", choices=["list", "approve", "reject"])
     approval_parser.add_argument("approval_id", nargs="?")
     approval_parser.add_argument("--note", default="")
+    policy_parser = sub.add_parser("policy", help="Show or set standing autonomy policy modes")
+    policy_parser.add_argument("action", choices=["show", "set"])
+    policy_parser.add_argument("mode", nargs="?")
+    policy_parser.add_argument("state", nargs="?", choices=["on", "off"])
+    export_parser = sub.add_parser("export", help="Export a versioned, secret-free copy of personal state")
+    export_parser.add_argument("--out", required=True)
+    export_parser.add_argument("--only", default="",
+                               help="Comma-separated sections to include (default: all)")
     promote_parser = sub.add_parser("promote", help="Preview, approve, commit, or undo sandbox promotion")
     promote_parser.add_argument("action", choices=["request", "commit", "rollback", "list"])
     promote_parser.add_argument("value", nargs="?", default="", help="Sandbox path, transaction id, or promotion id")
     promote_parser.add_argument("--goal-id", default="", help="Goal ID required for request")
     promote_parser.add_argument("--approval-id", default="", help="Approved request required for commit")
-    sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser = sub.add_parser("control-plane", help="Print local control-plane state as JSON")
+    control_plane_parser.add_argument("--view", default="snapshot",
+                                      choices=["snapshot", "goals", "opportunities", "resources",
+                                               "integrations", "notifications"])
     api_parser = sub.add_parser("api", help="Serve the local loopback control-plane API")
     api_parser.add_argument("--host", default="127.0.0.1")
     api_parser.add_argument("--port", type=int, default=8765)
@@ -1720,8 +1771,17 @@ def main() -> None:
     checkin_parser.add_argument("--interval-seconds", type=int, default=86400)
     checkin_parser.add_argument("--message", default="Check in: review active goals and pending approvals.")
     checkin_parser.add_argument("--quiet-hours", type=int, nargs=2, default=[22, 8], metavar=("START", "END"))
+    notifications_parser = sub.add_parser("notifications", help="List or acknowledge pending notifications")
+    notifications_sub = notifications_parser.add_subparsers(dest="subaction", required=True)
+    list_parser = notifications_sub.add_parser("list", help="Show deliverable notifications")
+    list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
+    ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
+    ack_parser.add_argument("notification_id")
+    why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
+    why_parser.add_argument("item_id", help="Job id or opportunity id")
+    why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
-    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss"])
+    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
     proactive_parser.add_argument("--interval-seconds", type=float, default=900)
     proactive_parser.add_argument("--idle-after-seconds", type=float, default=900)
@@ -1738,12 +1798,58 @@ def main() -> None:
     repair_parser.add_argument("--goal-id", default="", help="Goal ID required for request-promotion")
     repair_parser.add_argument("--command", default="python -m pytest -q",
                                help="Evaluator command run inside the candidate to verify it")
+    repair_parser.add_argument("--isolation", choices=["auto", "container", "host"], default="auto",
+                               help="Where the evaluator runs: container when available, host fallback, or host only")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
-    device_parser.add_argument("action", choices=["list", "register"])
+    device_parser.add_argument("action", choices=["list", "register", "pair", "revoke",
+                                                  "status", "simulate"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
     device_parser.add_argument("--capability", action="append", default=[])
+    device_parser.add_argument("--transport", default=None,
+                               help="unknown|usb_serial|ble|wifi|cloud_api|simulated")
+    device_parser.add_argument("--firmware", default=None, help="Firmware version string")
+    # TF3: simulated pan/tilt command through the safety gate (no real hardware).
+    device_parser.add_argument("--pan", type=float, default=None)
+    device_parser.add_argument("--tilt", type=float, default=None)
+    device_parser.add_argument("--duration", type=float, default=1.0,
+                               help="Command duration in seconds")
+    device_parser.add_argument("--disconnect", action="store_true",
+                               help="Disconnect the simulator after the command")
+    # TF1/TF4: `ghost huawei` — synthetic/manual data only until Huawei
+    # credentials are configured (S02). One CLI action per existing public
+    # HuaweiRoute method; no network calls.
+    huawei_parser = sub.add_parser(
+        "huawei",
+        help=("Huawei health route (synthetic/manual data only until Huawei "
+              "credentials are configured)"))
+    huawei_sub = huawei_parser.add_subparsers(dest="huawei_action")
+    huawei_sub.add_parser("route", help="Show the provider route record")
+    huawei_sub.add_parser("status", help="Show integration state (honest, not configured until it is)")
+    huawei_register = huawei_sub.add_parser("register-route",
+                                            help="Register the provider route record")
+    huawei_register.add_argument("--name", required=True)
+    huawei_register.add_argument("--source", action="append", required=True)
+    huawei_register.add_argument("--prerequisite", action="append", default=[])
+    huawei_register.add_argument("--limitation", action="append", default=[])
+    huawei_set_state = huawei_sub.add_parser("set-state", help="Set the integration state")
+    huawei_set_state.add_argument("state", choices=["discovered", "configured", "active",
+                                                    "revoked", "unavailable"])
+    huawei_ingest = huawei_sub.add_parser("ingest",
+                                          help="Ingest synthetic observations from a JSON file")
+    huawei_ingest.add_argument("file", help="JSON file of observation rows")
+    huawei_correct = huawei_sub.add_parser("correct",
+                                           help="Record an owner context correction")
+    huawei_correct.add_argument("note", help="e.g. illness, travel, unworn watch, rest day")
+    huawei_correct.add_argument("--effect", default="")
+    huawei_trend = huawei_sub.add_parser("trend", help="Trend summary (measured only)")
+    huawei_trend.add_argument("--metric", default="activity")
+    huawei_trend.add_argument("--window-seconds", type=float, default=7 * 86400)
+    huawei_retention = huawei_sub.add_parser("retention", help="Show or set retention days")
+    huawei_retention.add_argument("--days", type=int, default=None)
+    huawei_purge = huawei_sub.add_parser("purge", help="Purge stored observations")
+    huawei_purge.add_argument("--all", action="store_true", dest="purge_all")
     mcp_parser = sub.add_parser("mcp", help="Scaffold a reviewable local MCP add-on")
     mcp_parser.add_argument("name")
     mcp_parser.add_argument("--goal", required=True)
@@ -1904,19 +2010,25 @@ def main() -> None:
         "research": lambda: _cmd_research(args),
         "accomplish": lambda: _cmd_accomplish(args),
         "doctor": _cmd_doctor,
+        "events": lambda: _cmd_events(args),
         "jobs": lambda: _cmd_jobs(args),
         "emergency-stop": lambda: _cmd_emergency_stop(args),
         "extension": lambda: _cmd_extension(args),
         "approval": lambda: _cmd_approval(args),
+        "policy": lambda: _cmd_policy(args),
+        "export": lambda: _cmd_export(args),
         "promote": lambda: _cmd_promote(args),
-        "control-plane": _cmd_control_plane,
+        "control-plane": lambda: _cmd_control_plane(args),
         "api": lambda: _cmd_api(args),
         "integration": lambda: _cmd_integration(args),
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
+        "notifications": lambda: _cmd_notifications(args),
+        "why": lambda: _cmd_why(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
+        "huawei": lambda: _cmd_huawei(args),
         "mcp": lambda: _cmd_mcp(args),
         "parallel": lambda: _cmd_parallel(args),
         "gaps": lambda: _cmd_gaps(args),
@@ -1967,10 +2079,15 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
             engine.watch(interval=args.interval_seconds, idle_after=args.idle_after_seconds,
                          auto_queue=args.auto_queue, run_worker=worker_fn)
             return
-        else:
+        elif args.action == "dismiss":
             if not args.opportunity_id:
                 raise ProactiveError("dismiss requires an opportunity ID")
             result = {"status": "dismissed", "opportunity": engine.dismiss(args.opportunity_id).__dict__}
+        elif args.action == "less":
+            if not args.opportunity_id:
+                raise ProactiveError("less requires an opportunity ID")
+            result = {"status": "less_like_this",
+                      "opportunity": engine.mark_less_like_this(args.opportunity_id).__dict__}
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except ProactiveError as exc:
         print(f"Proactive action refused: {exc}")
@@ -2587,6 +2704,18 @@ def _cmd_kbase(args: argparse.Namespace) -> None:
             print(f"[{chunk.source}]\n{chunk.content}\n")
         if not hits:
             print("No relevant reference chunks found.")
+    elif action == "delete":
+        removed = kb.delete_source(args.source)
+        if removed:
+            print(f"Deleted {removed} chunks from source '{args.source}'.")
+        else:
+            print(f"No chunks found for source '{args.source}'.")
+    elif action == "sources":
+        rows = kb.sources()
+        if not rows:
+            print("No sources indexed.")
+        for row in rows:
+            print(f"[v{row['version']}] {row['chunks']} chunks  {row['source']}")
     else:  # status or bare
         stats = kb.stats()
         print(f"knowledge base: {stats.document_count} documents, "
@@ -2650,6 +2779,17 @@ def _cmd_capability(args: argparse.Namespace) -> None:
             if args.health == "degraded":
                 EventBus(Path.cwd()).emit(Event("capability.degraded",
                                                 {"record_id": args.record_id, "health": args.health}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "degrade":
+            record = store.advance(args.record_id, "degraded")
+            EventBus(Path.cwd()).emit(Event("capability.degraded",
+                                            {"record_id": args.record_id, "reason": args.reason or ""}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "recover":
+            record = store.advance(args.record_id, "active")
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "verify-live":
+            record = store.mark_operationally_verified(args.record_id, args.evidence or "")
             print(json.dumps(record.__dict__, indent=2))
         elif action == "retire":
             record = store.get(args.record_id)
@@ -2801,6 +2941,8 @@ def _cmd_doctor() -> None:
     """Report local runtime health without changing state."""
     doctor = Doctor(Path.cwd())
     checks = doctor.check()
+    tampered = ExtensionManager(Path.cwd()).verify_integrity()
+    checks["extensions"] = f"{len(tampered)} tampered" if tampered else "ok"
     service_names = {"ollama", "docker"}
     storage = {k: v for k, v in checks.items() if k not in service_names}
     services = {k: v for k, v in checks.items() if k in service_names}
@@ -2814,6 +2956,24 @@ def _cmd_doctor() -> None:
             models = doctor.available_models()
             if models:
                 print(f"    models: {', '.join(models)}")
+
+
+def _cmd_events(args: argparse.Namespace) -> None:
+    """Tail the event log through a named cursor, or show the failed queue."""
+    from .event_cursor import EventCursor
+
+    root = Path.cwd()
+    if args.action == "failed":
+        failed = root / ".ghost" / "events" / "failed.jsonl"
+        if failed.exists():
+            print(failed.read_text(encoding="utf-8"), end="")
+        return
+    cursor = EventCursor(root, args.cursor)
+    pairs = cursor.read_new(max_events=args.max)
+    for end_offset, event in pairs:
+        print(json.dumps(event.__dict__))
+    if pairs and not args.no_commit:
+        cursor.commit(pairs[-1][0])
 
 
 def _cmd_emergency_stop(args: argparse.Namespace) -> None:
@@ -2832,6 +2992,7 @@ def _cmd_emergency_stop(args: argparse.Namespace) -> None:
 def _cmd_extension(args: argparse.Namespace) -> None:
     """Create only reviewable extension scaffolds; enabling is a later approval step."""
     manager = ExtensionManager(Path.cwd())
+    manager.verify_integrity()
     if args.action == "propose":
         manifest = manager.propose(args.name, args.goal)
     elif args.action == "scaffold":
@@ -2871,6 +3032,42 @@ def _cmd_approval(args: argparse.Namespace) -> None:
     print(json.dumps(request.__dict__, indent=2))
 
 
+def _cmd_policy(args: argparse.Namespace) -> None:
+    """Show or set standing autonomy policy modes (owner authority)."""
+    from .policy import PolicyError, PolicyStore
+    store = PolicyStore(Path.cwd())
+    try:
+        if args.action == "show":
+            print(json.dumps(store.load(), indent=2))
+            return
+        if not args.mode or not args.state:
+            print("usage: ghost policy set <mode> on|off")
+            return
+        print(json.dumps(store.set(args.mode, args.state == "on"), indent=2))
+    except PolicyError as exc:
+        print(str(exc))
+
+
+def _cmd_export(args: argparse.Namespace) -> None:
+    """Write a versioned, secret-free export of personal state."""
+    from .control_plane import GhostSDK
+    from .utils.storage import atomic_write
+    sdk = GhostSDK(Path.cwd())
+    only = {name.strip() for name in args.only.split(",") if name.strip()}
+    try:
+        payload = sdk.export(only or None)
+    except ValueError as exc:
+        print(f"export refused: {exc}")
+        return
+    out = Path(args.out)
+    if out.exists():
+        print(f"export refused: {out} already exists")
+        return
+    atomic_write(out, json.dumps(payload, indent=2, default=str).encode("utf-8"))
+    print(json.dumps({"written": str(out), "version": payload["version"],
+                      "sections": sorted(payload["sections"])}, indent=2))
+
+
 def _cmd_promote(args: argparse.Namespace) -> None:
     """Expose the explicit preview -> approval -> commit -> undo promotion flow."""
     service = PromotionService(Path.cwd())
@@ -2902,9 +3099,19 @@ def _cmd_promote(args: argparse.Namespace) -> None:
         print(f"Promotion refused: {exc}")
 
 
-def _cmd_control_plane() -> None:
+def _cmd_control_plane(args: argparse.Namespace | None = None) -> None:
     """Expose a structured local snapshot for future UI/API transports."""
-    print(GhostSDK(Path.cwd()).snapshot_json())
+    sdk = GhostSDK(Path.cwd())
+    views = {
+        "snapshot": lambda: json.loads(sdk.snapshot_json()),
+        "goals": sdk.goal_tree,
+        "opportunities": sdk.opportunity_pipeline,
+        "resources": sdk.resource_usage,
+        "integrations": sdk.integration_health,
+        "notifications": sdk.notification_preferences,
+    }
+    result = views[getattr(args, "view", "snapshot")]()
+    print(json.dumps(result, indent=2, default=str))
 
 
 def _cmd_api(args: argparse.Namespace) -> None:
@@ -3080,6 +3287,64 @@ def _cmd_worker(args: argparse.Namespace) -> None:
         time.sleep(max(0.25, args.poll_seconds))
 
 
+def _cmd_notifications(args: argparse.Namespace) -> None:
+    sdk = GhostSDK(Path.cwd())
+    attention = AttentionManager(Path.cwd())
+    try:
+        if args.subaction == "ack":
+            note = attention.acknowledge(args.notification_id)
+            print(json.dumps(note.__dict__, indent=2))
+            return
+        prefs = sdk.notification_preferences()
+        quiet_hours: tuple[int, int] | None = None
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            quiet_hours = (start, end)
+        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours)}
+        if not args.all:
+            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours)], indent=2))
+            return
+        payload = []
+        for note in attention.pending():
+            record = note.__dict__.copy()
+            if note.notification_id not in deliverable_ids:
+                record["held"] = "quiet hours"
+            payload.append(record)
+        print(json.dumps(payload, indent=2))
+    except (ValueError, OSError) as exc:
+        print(f"Notifications refused: {exc}")
+
+
+def _cmd_why(args: argparse.Namespace) -> None:
+    from .control_plane import GhostSDK
+    try:
+        detail = GhostSDK(Path.cwd()).explain(args.item_id)
+    except (ValueError, OSError) as exc:
+        print(f"Explain refused: {exc}")
+        return
+    if detail is None:
+        print(f"No job or opportunity with id {args.item_id}")
+        return
+    if not args.json:
+        job = detail.get("job")
+        opportunity = detail.get("opportunity")
+        goal = detail.get("goal")
+        if job:
+            print(f"Job {job['job_id']}: {job['goal']}")
+            print(f"  status: {job['status']}  result: {job['result'] or 'none'}")
+            if goal:
+                print(f"  goal: {goal['goal_id']} ({goal['status']}) {goal['title']}")
+        elif opportunity:
+            print(f"Opportunity {opportunity['opportunity_id']}: {opportunity['title']}")
+            print(f"  status: {opportunity['status']}  confidence: {opportunity['confidence']}")
+            print(f"  rationale: {opportunity['rationale']}")
+        if detail.get("intent"):
+            print(f"  intent: {detail['intent']['intent_id']} ({detail['intent']['status']})")
+        if detail.get("events"):
+            print(f"  recent events mentioning this id: {len(detail['events'])}")
+    print(json.dumps(detail, indent=2))
+
+
 def _cmd_check_in(args: argparse.Namespace) -> None:
     manager = LocalCheckIns(Path.cwd())
     try:
@@ -3166,7 +3431,7 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             # candidate bytes. A user-supplied pass/fail flag is not accepted as
             # evidence (S08): a manual note cannot impersonate independent checks.
             def _evaluate(candidate: Path) -> dict:
-                return _run_bounded_evaluator(candidate, args.command)
+                return _run_isolated_evaluator(candidate, args.command, args.isolation)
 
             proposal = manager.verify_from_evaluator(args.value, _evaluate)
             print(json.dumps(proposal.__dict__, indent=2))
@@ -3178,6 +3443,46 @@ def _cmd_self_repair(args: argparse.Namespace) -> None:
             print(json.dumps({"transaction_id": transaction, "approval_id": approval, "files": files}, indent=2))
     except (OSError, ValueError, PermissionError) as exc:
         print(f"Self-repair refused: {exc}")
+
+
+def _run_isolated_evaluator(candidate: Path, command: str, isolation: str) -> dict:
+    """Run the evaluator in container isolation when chosen/available (R07).
+
+    isolation="container" demands the container runner and refuses without it;
+    "auto" uses it when available and falls back to the bounded host evaluator;
+    "host" always uses the bounded host evaluator. The returned dict records
+    which runner actually ran via "runner" (and "isolation_unavailable" on the
+    auto fallback) so stored evidence is honest about how it was produced.
+    """
+    from ghost_agent.openjarvis_bridge import isolated_execution
+
+    if isolation == "host":
+        result = _run_bounded_evaluator(candidate, command)
+        result["runner"] = "host"
+        return result
+    timeout = float(os.environ.get("GHOST_EVALUATOR_TIMEOUT", "60"))
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = []
+    if not parts:
+        return {"returncode": 1, "output": "empty evaluator command", "runner": "host"}
+    outcome = isolated_execution.run_in_isolation(candidate, parts, timeout=timeout)
+    if outcome.get("available"):
+        return {
+            "returncode": int(outcome.get("returncode", 1)),
+            "output": str(outcome.get("output", ""))[-4000:],
+            "runner": "container",
+        }
+    error_type = str(outcome.get("error_type", "unknown"))
+    error = str(outcome.get("error", ""))
+    if isolation == "container":
+        raise ValueError(
+            f"container isolation unavailable ({error_type}: {error})")
+    result = _run_bounded_evaluator(candidate, command)
+    result["runner"] = "host"
+    result["isolation_unavailable"] = error_type
+    return result
 
 
 def _run_bounded_evaluator(candidate: Path, command: str) -> dict:
@@ -3280,17 +3585,58 @@ def _cmd_digest(args: argparse.Namespace) -> None:
 
 
 def _cmd_memory(args: argparse.Namespace) -> None:
-    """Retract (soft-delete) or purge (hard-delete with cascade) validated memories."""
+    """Retract, purge, list, edit, export memories; manage retention."""
     from .context_manager import ValidatedMemoryStore
+    from dataclasses import asdict
     store = ValidatedMemoryStore(Path.cwd())
     try:
-        if args.action == "retract":
+        action = getattr(args, "memory_subcommand", getattr(args, "action", None))
+        if action == "retract":
             record = store.retract(args.memory_id, args.reason)
             print(json.dumps({"action": "retracted", "memory_id": record.memory_id,
                               "validation": record.validation}, indent=2))
-        elif args.action == "purge":
+        elif action == "purge":
             record = store.purge(args.memory_id, args.reason)
             print(json.dumps({"action": "purged", "memory_id": record.memory_id}, indent=2))
+        elif action == "list":
+            records = store.active()
+            if args.kind is not None:
+                if args.kind not in store.KINDS:
+                    raise ValueError(f"Unknown memory kind: {args.kind}")
+                records = [record for record in records if record.kind == args.kind]
+            if not args.show_sensitive:
+                records = [record for record in records
+                           if record.sensitivity not in ("health", "secret")]
+            payload = [asdict(record) for record in records] if args.json else [
+                {"memory_id": record.memory_id, "kind": record.kind,
+                 "sensitivity": record.sensitivity, "subject": record.subject,
+                 "validation": record.validation, "content": record.content}
+                for record in records]
+            print(json.dumps(payload, indent=2))
+        elif action == "edit":
+            record = store.edit(args.memory_id, content=args.content,
+                                subject=args.subject, sensitivity=args.sensitivity,
+                                confirm_verified=args.verified)
+            print(json.dumps({"action": "edited", "memory_id": record.memory_id,
+                              "revisions": len(record.revisions),
+                              "last_verified_at": record.last_verified_at}, indent=2))
+        elif action == "export":
+            out = Path(args.out)
+            if out.exists():
+                raise ValueError(f"Refusing to overwrite existing file: {out}")
+            records = [asdict(record) for record in store.active()
+                       if record.sensitivity != "secret"]
+            out.write_text(json.dumps(records, indent=2), encoding="utf-8")
+            print(json.dumps({"exported": len(records), "path": str(out)}, indent=2))
+        elif action == "retention":
+            if args.retention_action == "set":
+                store.set_retention(args.kind, args.days)
+                print(json.dumps({"kind": args.kind, "days": args.days}, indent=2))
+            elif args.retention_action == "apply":
+                purged = store.apply_retention()
+                print(json.dumps({"action": "retention_applied", "purged": purged}, indent=2))
+            else:
+                print("retention requires 'set' or 'apply'")
     except ValueError as exc:
         print(f"Memory operation refused: {exc}")
 
@@ -3302,13 +3648,115 @@ def _cmd_device(args: argparse.Namespace) -> None:
         if args.action == "list":
             print(json.dumps([device.__dict__ for device in registry.list()], indent=2))
             return
-        if not args.device_id or not args.name or not args.capability:
-            print("register requires device_id, --name, and at least one --capability")
+        if args.action == "register":
+            if not args.device_id or not args.name or not args.capability:
+                print("register requires device_id, --name, and at least one --capability")
+                return
+            device = registry.register(args.device_id, args.name, args.kind, args.capability)
+            transport = getattr(args, "transport", None)
+            firmware = getattr(args, "firmware", None)
+            if transport or firmware:
+                fields: dict = {}
+                if transport:
+                    fields["transport"] = transport
+                if firmware is not None:
+                    fields["firmware_version"] = firmware
+                device = registry.update(device.device_id, **fields)
+            print(json.dumps(device.__dict__, indent=2))
             return
-        device = registry.register(args.device_id, args.name, args.kind, args.capability)
-        print(json.dumps(device.__dict__, indent=2))
+        if not args.device_id:
+            print(f"{args.action} requires a device_id")
+            return
+        if args.action == "pair":
+            device = registry.update(args.device_id, pairing_state="paired")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "revoke":
+            device = registry.update(args.device_id, pairing_state="revoked")
+            print(json.dumps(device.__dict__, indent=2))
+        elif args.action == "status":
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            print(json.dumps({
+                "device": device.__dict__,
+                "freshness": registry.freshness(args.device_id),
+                "declared_capabilities": device.capabilities,
+                "verified_capabilities": device.verified_capabilities,
+            }, indent=2))
+        elif args.action == "simulate":
+            from .device_control import (CommandRefused, DeviceCommandGate,
+                                         PanTiltCommand, SimulatedPanTilt,
+                                         limits_from_constraints)
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            if args.pan is None or args.tilt is None:
+                print("simulate requires --pan and --tilt")
+                return
+            limits = limits_from_constraints(device.constraints)
+            sim = SimulatedPanTilt(limits)
+            sim.connected = True
+            gate = DeviceCommandGate(Path.cwd(), registry, args.device_id, limits)
+            try:
+                result = gate.send(sim, PanTiltCommand(args.pan, args.tilt), args.duration)
+                if args.disconnect:
+                    sim.disconnect()
+                print(json.dumps(result, indent=2))
+            except CommandRefused as exc:
+                print(f"Command refused: {exc}")
     except ValueError as exc:
-        print(f"Device registration refused: {exc}")
+        print(f"Device operation refused: {exc}")
+
+
+def _cmd_huawei(args: argparse.Namespace) -> None:
+    """TF1/TF4: synthetic-only Huawei route CLI; no network calls, privacy-guarded."""
+    from .huawei_route import HuaweiRoute, HuaweiRouteError
+    route = HuaweiRoute(Path.cwd())
+    action = getattr(args, "huawei_action", None)
+    try:
+        if action == "route":
+            record = route.route()
+            print(json.dumps(record.__dict__ if record else None, indent=2))
+        elif action == "status":
+            record = route.route()
+            print(json.dumps({
+                "provider": "huawei",
+                "state": record.state if record else "not_configured",
+                "note": ("synthetic/manual data only until Huawei credentials are "
+                         "configured"),
+            }, indent=2))
+        elif action == "register-route":
+            record = route.register_route(args.name, args.source, time.time(),
+                                          args.prerequisite, args.limitation)
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "set-state":
+            print(json.dumps(route.set_state(args.state).__dict__, indent=2))
+        elif action == "ingest":
+            raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            obs = route.ingest(raw)
+            # Privacy guard: counts and metrics only, never observation values.
+            print(json.dumps({"ingested": len(obs),
+                              "metrics": sorted({o.metric for o in obs})}, indent=2))
+        elif action == "correct":
+            correction = route.correct_context(args.note, args.effect)
+            print(json.dumps(correction.__dict__, indent=2))
+        elif action == "trend":
+            print(json.dumps(route.trend_summary(time.time(), args.window_seconds,
+                                                 args.metric), indent=2))
+        elif action == "retention":
+            if args.days is not None:
+                route.set_retention_days(args.days)
+            print(json.dumps({"retention_days": route.retention_days()}, indent=2))
+        elif action == "purge":
+            removed = route.purge_all() if args.purge_all else route.purge_expired()
+            print(json.dumps({"removed": removed}, indent=2))
+        else:
+            print("huawei requires a sub-command (route, status, register-route, "
+                  "set-state, ingest, correct, trend, retention, purge)")
+    except (HuaweiRouteError, ValueError) as exc:
+        print(f"Huawei route refused: {exc}")
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:

@@ -10,6 +10,10 @@ from typing import Any, Optional
 from .runtime import Event, EventBus, Observation, WorldModel
 
 
+TRANSPORTS = {"unknown", "usb_serial", "ble", "wifi", "cloud_api", "simulated"}
+PAIRING_STATES = {"unpaired", "paired", "revoked"}
+
+
 @dataclass
 class Device:
     device_id: str
@@ -20,6 +24,10 @@ class Device:
     status: str = "registered"
     owner: str = "user"
     last_seen: float = field(default_factory=time.time)
+    transport: str = "unknown"
+    firmware_version: str = ""
+    pairing_state: str = "unpaired"
+    verified_capabilities: list[str] = field(default_factory=list)
 
 
 class DeviceRegistry:
@@ -59,6 +67,45 @@ class DeviceRegistry:
 
     def list(self) -> list[Device]:
         return [Device(**item) for item in self._load()]
+
+    def get(self, device_id: str) -> Optional[Device]:
+        for device in self.list():
+            if device.device_id == device_id:
+                return device
+        return None
+
+    def update(self, device_id: str, **fields: Any) -> Device:
+        """Validate and update R11 fields on an existing device record."""
+        allowed = {"transport", "firmware_version", "pairing_state", "last_seen",
+                   "verified_capabilities", "status", "constraints"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"Unknown device fields: {sorted(unknown)}")
+        if "transport" in fields and fields["transport"] not in TRANSPORTS:
+            raise ValueError("Invalid transport")
+        if "pairing_state" in fields and fields["pairing_state"] not in PAIRING_STATES:
+            raise ValueError("Invalid pairing state")
+        if "last_seen" in fields and fields["last_seen"] is not None \
+                and not isinstance(fields["last_seen"], (int, float)):
+            raise ValueError("last_seen must be a number")
+        if "verified_capabilities" in fields:
+            caps = fields["verified_capabilities"]
+            if not isinstance(caps, list) or not all(isinstance(c, str) for c in caps):
+                raise ValueError("verified_capabilities must be a list of strings")
+            fields["verified_capabilities"] = sorted(set(caps))
+        data = self._load()
+        for item in data:
+            if item.get("device_id") == device_id:
+                item.update(fields)
+                self._save(data)
+                return Device(**item)
+        raise ValueError(f"Unknown device: {device_id}")
+
+    def freshness(self, device_id: str, max_age_s: float = 3600) -> str:
+        device = self.get(device_id)
+        if device is None or device.last_seen is None:
+            return "unknown"
+        return "fresh" if time.time() - device.last_seen <= max_age_s else "stale"
 
     def eligible(self, capability: str, constraints: Optional[dict[str, Any]] = None) -> list[Device]:
         required = constraints or {}

@@ -42,6 +42,8 @@ class AcquisitionRecord:
     candidate: str = ""             # sandbox/manifest path bound at activation
     health: str = ""                # health-check result for active/degraded
     retired_reason: str = ""
+    operationally_verified: bool = False  # R08: live evidence, not just activation
+    verification_evidence: str = "" # recorded by mark_operationally_verified
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -150,6 +152,21 @@ class CapabilityAcquisition:
         if not isinstance(health, str) or not health.strip():
             raise AcquisitionError("Health result must be nonempty text")
         return self._transition(record_id, None, {"health": health.strip()})
+
+    def mark_operationally_verified(self, record_id: str, evidence: str) -> AcquisitionRecord:
+        """Record live operational evidence; only an active capability verifies."""
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise AcquisitionError("Operational verification requires nonempty evidence")
+        record = self.get(record_id)
+        if record is None:
+            raise AcquisitionError("Acquisition record not found")
+        if record.status != "active":
+            raise AcquisitionError(
+                f"Only active capabilities can be operationally verified (status: {record.status})")
+        return self._transition(record_id, None, {
+            "operationally_verified": True,
+            "verification_evidence": evidence.strip(),
+        })
 
     def bind_candidate(self, record_id: str, candidate: str) -> AcquisitionRecord:
         candidate = candidate.strip()

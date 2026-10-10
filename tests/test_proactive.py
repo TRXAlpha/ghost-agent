@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from ghost_agent.proactive import (
+    Opportunity,
     OpportunityStore,
     ProactiveEngine,
     ProactiveError,
     idle_seconds,
     parse_proposal,
+    similar,
 )
 from ghost_agent.autonomy import OutcomeStore
 from ghost_agent.runtime import Scheduler
@@ -118,7 +121,7 @@ def test_explicit_context_file_reaches_planner_and_is_scoped(tmp_path: Path):
         ProactiveEngine(tmp_path, "tiny", chat_fn=planner, context_paths=["../outside.md"]).context()
 
 
-def test_watch_runs_existing_worker_callback_after_queue(tmp_path: Path, monkeypatch):
+def test_watch_runs_existing_worker_callback_after_queue(tmp_path: Path, monkeypatch, permissive_policy):
     engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *args, **kwargs: proposal(), idle_fn=lambda: 1000)
     results = []
     def stop_after_sleep(_interval):
@@ -239,3 +242,205 @@ def test_opportunity_store_methods_defined_once():
     find_suppressed_count = src.count("    def find_suppressed(")
     assert find_any_count == 1, f"find_any defined {find_any_count} times (expected 1)"
     assert find_suppressed_count == 1, f"find_suppressed defined {find_suppressed_count} times (expected 1)"
+
+
+# --- TD1: structured opportunity records and evidence ---
+
+def test_old_opportunities_json_loads_with_unknown_and_missing_keys(tmp_path: Path):
+    store = OpportunityStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = [{"opportunity_id": "opp_legacy", "title": "Old", "goal": "Do a thing",
+               "rationale": "Because", "kind": "research", "confidence": 0.5,
+               "requires_user_input": False, "from_the_future": {"x": 1}}]
+    store.path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = store.list_all()
+    assert loaded[0].opportunity_id == "opp_legacy"
+    assert loaded[0].trigger == "tick"          # missing key -> default
+    assert loaded[0].evidence_items == []
+    store.save(loaded[0])                        # still saveable
+
+
+def test_parse_proposal_drops_invalid_alternatives_and_risks():
+    parsed = parse_proposal(proposal(
+        alternatives=["valid alternative", 42, "x" * 300, "", "third", "fourth"],
+        risks="not a list"))
+    assert parsed["alternatives"] == ["valid alternative", "third", "fourth"]  # invalid dropped, cap 3
+    assert parsed["risks"] == []  # non-list dropped entirely
+
+
+def test_parse_proposal_rejects_unknown_fields():
+    with pytest.raises(ProactiveError):
+        parse_proposal(proposal(goal_ids=["opp_x"], evidence=[{"source": "s", "excerpt": "e"}]))
+
+
+def test_tick_record_has_deterministic_evidence_goal_ids_trigger(tmp_path: Path, monkeypatch):
+    context_file = tmp_path / "notes.md"
+    context_file.write_text("Rust practice notes: build a small practice game.\n" * 10,
+                            encoding="utf-8")
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(),
+                             context_paths=["notes.md"])
+    result = engine.tick(auto_queue=False)
+    record = result["opportunity"]
+    assert record["trigger"] == "tick"
+    assert record["evidence_items"][0]["source"] == "notes.md"
+    assert len(record["evidence_items"][0]["excerpt"]) <= 300
+    assert record["review_at"] is not None
+    assert record["attempts"] == 0
+    # model-supplied alternatives/risks flow through; goal_ids stays empty here
+    assert record["goal_ids"] == []
+
+
+def test_tick_matches_active_goal_tokens_into_goal_ids_and_evidence(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    goals = GoalStore(tmp_path)
+    goal = goals.create("Rust practice game plan", kind="focus")
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    record = engine.tick(auto_queue=False)["opportunity"]
+    assert record["goal_ids"] == [goal.goal_id]
+    assert any(item["source"] == "active_goal" and item["excerpt"] == goal.goal_id
+               for item in record["evidence_items"])
+
+
+# --- TD2: stale-goal and deadline triggers ---
+
+def test_stale_goal_appears_in_context_and_sets_stale_trigger(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    store = GoalStore(tmp_path)
+    expired = store.create("Old report draft", kind="focus",
+                           deadline_at=time.time() - 60)
+    fresh = store.create("Fresh plan", kind="focus", deadline_at=time.time() + 3600)
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    record = engine.tick(auto_queue=False)["opportunity"]
+    assert record["trigger"] == "stale_goal"
+    # mark_stale persisted the lifecycle change during tick's context() call
+    assert store.get(expired.goal_id).status == "stale"
+    assert store.get(fresh.goal_id).status == "active"
+    context = engine.context()
+    assert context.get("stale_goals", []) == []
+    assert [entry["goal_id"] for entry in context["upcoming_deadlines"]] == [fresh.goal_id]
+
+
+def test_mark_stale_throttled_to_once_per_six_hours(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    store = GoalStore(tmp_path)
+    first = store.create("Old report draft", kind="focus", deadline_at=1.0)
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    engine.context()  # first run: marks stale, writes state
+    state_path = tmp_path / ".ghost" / "proactive_state.json"
+    assert "mark_stale_at" in json.loads(state_path.read_text(encoding="utf-8"))
+    # a goal that expires after the throttled run is NOT flipped while throttled
+    late = store.create("Later report draft", kind="focus", deadline_at=2.0)
+    engine.context()
+    assert store.get(late.goal_id).status == "active"
+    # after the 6 h window the throttle expires and late goal is marked
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["mark_stale_at"] -= 6 * 3600 + 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    engine.context()
+    assert store.get(late.goal_id).status == "stale"
+
+
+def test_no_goals_yields_empty_stale_and_deadline_lists(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    context = engine.context()
+    assert context.get("stale_goals", []) == []
+    assert context.get("upcoming_deadlines", []) == []
+    # key presence drives TD1's trigger, so absent when empty
+    assert "stale_goals" not in context
+    assert "upcoming_deadlines" not in context
+
+
+# --- TD3: similar(), reworded rejection memory, less of this ---
+
+def test_similar_jaccard_cases():
+    from ghost_agent.proactive import similar
+    # tokenization: punctuation/case are normalized to word tokens
+    assert similar("Hello, World!", "hello world") == 1.0
+    # tokens shorter than 3 characters are ignored
+    assert similar("a an the", "zz qq") == 0.0
+    # tokens of length >= 3 are counted
+    assert similar("rust compiler", "rust compiler") == 1.0
+    # stopwords are removed before comparison
+    assert similar("the cat and the dog", "cat dog") == 1.0
+    # disjoint vocabularies -> 0.0
+    assert similar("rust compiler backend", "garden watering schedule") == 0.0
+    # identical -> 1.0
+    assert similar("turn my Rust lessons into a practice game",
+                   "turn my Rust lessons into a practice game") == 1.0
+    # empty inputs -> 0.0
+    assert similar("", "anything here") == 0.0
+    assert similar("anything", "") == 0.0
+    assert similar("", "") == 0.0
+
+
+def _rejected_opportunity(tmp_path: Path, goal: str):
+    """Queue a proposal then fail it so it becomes a rejected memory."""
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(goal=goal))
+    result = engine.tick(auto_queue=False)
+    oid = result["opportunity"]["opportunity_id"]
+    op = engine.store.find_any(oid)
+    op.status = "queued"
+    engine.store.save(op)
+    engine.record_feedback(oid, "tests_failed", evidence="did not work")
+    assert engine.store.find_any(oid).status == "rejected"
+    return engine, oid
+
+
+def test_reworded_similar_rejected_idea_is_suppressed_and_not_queued(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, oid = _rejected_opportunity(tmp_path, original)
+    # same meaning, different wording: must still cross the 0.6 threshold
+    reworded = "Turn my Rust lessons into a small practice game to learn faster."
+    assert similar(original, reworded) >= 0.6
+    engine.chat = lambda *a, **k: proposal(goal=reworded)
+    result = engine.tick()
+    assert result["status"] == "suppressed"
+    record = result["opportunity"]
+    assert record["status"] == "rejected"
+    assert record["rejection_reason"].startswith(f"similar to {oid} (")
+    assert not Scheduler(tmp_path).list()
+
+
+def test_unrelated_idea_is_not_suppressed_by_rejection_memory(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, _ = _rejected_opportunity(tmp_path, original)
+    unrelated = "Investigate whether a Huawei Health Kit connector is feasible."
+    assert similar(original, unrelated) < 0.6
+    engine.chat = lambda *a, **k: proposal(goal=unrelated, kind="integration")
+    result = engine.tick()
+    # an unrelated idea is queued as normal, no suppression
+    assert result["status"] == "queued"
+
+
+def test_old_rejections_do_not_suppress_similar_new_ideas(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, oid = _rejected_opportunity(tmp_path, original)
+    # age the rejection past the 30-day memory window
+    old = engine.store.find_any(oid)
+    old.created_at = time.time() - 31 * 86400
+    engine.store.save(old)
+    engine.chat = lambda *a, **k: proposal(
+        goal="Turn my Rust lessons into a small practice game to learn faster.")
+    result = engine.tick(auto_queue=False)
+    assert result["status"] == "proposed"
+    assert result["opportunity"]["status"] == "proposed"
+
+
+def test_mark_less_like_this_marks_and_dismisses_proposed_only(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    # still proposed: marked and dismissed
+    proposed = engine.tick(auto_queue=False)["opportunity"]["opportunity_id"]
+    marked = engine.mark_less_like_this(proposed)
+    assert marked.less_like_this is True
+    assert marked.status == "dismissed"
+    assert engine.store.find_any(proposed).less_like_this is True
+    # queued: marked but NOT dismissed
+    second = ProactiveEngine(tmp_path, "tiny",
+                             chat_fn=lambda *a, **k: proposal(goal="Build a tiny calculator app."))
+    queued_id = second.tick()["opportunity"]["opportunity_id"]
+    marked_queued = second.mark_less_like_this(queued_id)
+    assert marked_queued.less_like_this is True
+    assert marked_queued.status == "queued"
+    # missing id raises
+    with pytest.raises(ProactiveError, match="not found"):
+        second.mark_less_like_this("does_not_exist")

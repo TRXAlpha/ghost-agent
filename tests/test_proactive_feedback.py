@@ -250,7 +250,7 @@ def test_record_feedback_still_rejects_invalid_states(tmp_path):
 
 # ---- F1: reconcile is reachable from PRODUCTION wiring (watch loop), not a direct call ----
 
-def test_reconcile_runs_from_production_watch_loop(tmp_path, monkeypatch):
+def test_reconcile_runs_from_production_watch_loop(tmp_path, monkeypatch, permissive_policy):
     """F1 regression: restart reconciliation is driven by watch() itself.
 
     The opportunity's job reached a terminal state while the loop was 'away';
@@ -285,7 +285,7 @@ def test_reconcile_runs_from_production_watch_loop(tmp_path, monkeypatch):
     assert calls["tick"] == 1  # reconciliation happened before the only tick
 
 
-def test_reconcile_error_does_not_break_watch_loop(tmp_path, monkeypatch):
+def test_reconcile_error_does_not_break_watch_loop(tmp_path, monkeypatch, permissive_policy):
     """F1 regression: a reconcile failure is logged and swallowed, never halting the loop."""
     import ghost_agent.proactive as proactive_mod
     from ghost_agent.runtime import EventBus

@@ -10,6 +10,11 @@ The ESP32 firmware does not exist yet. This adapter defines the
 expected interface and provides mock responses for development/testing.
 When real hardware and firmware exist, implement the actual serial/BLE
 communication in the methods below.
+
+SAFETY (TF3): any physical device command must go through
+ghost_agent.device_control.DeviceCommandGate first (axis limits, pairing,
+emergency stop, rate limits). Do not add a direct hardware path here that
+bypasses the gate.
 """
 from __future__ import annotations
 from dataclasses import dataclass

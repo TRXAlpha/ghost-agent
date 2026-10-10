@@ -10,6 +10,7 @@ This module provides the unified control plane with:
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,7 @@ from .approvals import ApprovalStore
 from .command_budget import CommandBudget
 from .checkins import LocalCheckIns
 from .autonomy import OutcomeStore
+from .autonomy import CapabilityRegistry
 from .context_manager import ValidatedMemoryStore
 from .devices import DeviceRegistry
 from .provenance import ProvenanceLedger
@@ -154,10 +156,12 @@ class GhostSDK:
     def snapshot(self) -> Dict[str, Any]:
         outcome_root = self.outcomes.root
         outcome_count = len([path for path in outcome_root.iterdir() if path.is_dir()]) if outcome_root.exists() else 0
+        deliverable = self.attention.deliverable(quiet_hours=self._quiet_hours())
         return {
             "goals": [goal.__dict__ for goal in self.goals.active()],
             "pending_approvals": [approval.__dict__ for approval in self.approvals.pending()],
-            "notifications": [note.__dict__ for note in self.attention.pending()],
+            "notifications": [note.__dict__ for note in deliverable],
+            "held_notifications": len(self.attention.pending()) - len(deliverable),
             "validated_memories": [memory.__dict__ for memory in self.memories.active("validated")],
             "recent_events": [event.__dict__ for event in self.events.recent(20)],
             "outcome_count": outcome_count,
@@ -195,6 +199,49 @@ class GhostSDK:
                     "schedule": schedule.__dict__ if schedule else None}
         except (OSError, ValueError):
             return {"status": "invalid", "schedule": None}
+
+    def explain(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """Explain why a job or opportunity exists (functional 'why')."""
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise ValueError("Explain requires an item id")
+        item_id = item_id.strip()
+        try:
+            job = self.outcomes.load(item_id)
+        except (OSError, ValueError):
+            job = None
+        opportunity = None
+        # An opportunity id may be given directly, or linked from the job.
+        linked_id = ""
+        if job is not None:
+            linked_id = job.acceptance_contract.get("opportunity_id", "")
+        for candidate in OpportunityStore(self.root).list_all():
+            if candidate.opportunity_id == item_id or (linked_id and not opportunity
+                                                       and candidate.opportunity_id == linked_id):
+                opportunity = candidate
+                if opportunity.opportunity_id == item_id:
+                    break
+        if job is None and opportunity is not None and opportunity.job_id:
+            try:
+                job = self.outcomes.load(opportunity.job_id)
+            except (OSError, ValueError):
+                job = None
+        if job is None and opportunity is None:
+            return None
+        goal = self.goals.get(job.goal_id) if job is not None and job.goal_id else None
+        intent = next((record for record in self.intents._load()
+                       if goal is not None and record.get("goal_id") == goal.goal_id), None)
+        # Last 20 events whose payload mentions the id.
+        needle = opportunity.opportunity_id if (job is None and opportunity is not None) else (job.job_id if job is not None else item_id)
+        events = [event.__dict__ for event in self.events.recent(500)
+                  if needle in json.dumps(event.payload)]
+        return {
+            "item_id": item_id,
+            "job": job.__dict__ if job is not None else None,
+            "opportunity": opportunity.__dict__ if opportunity is not None else None,
+            "goal": goal.__dict__ if goal is not None else None,
+            "intent": intent,
+            "events": events[-20:],
+        }
 
 # ── Goal Management ─────────────────────────────────────────────────────────────
 
@@ -409,6 +456,7 @@ class GhostSDK:
 
     def integration_health(self) -> Dict[str, Any]:
         """Get integration health dashboard data."""
+        now = time.time()
         health_status = Doctor(self.root).check()
         
         integrations = []
@@ -456,6 +504,14 @@ class GhostSDK:
         # Default preferences
         return asdict(NotificationPreferences())
 
+    def _quiet_hours(self) -> tuple[int, int] | None:
+        """Quiet-hours tuple from notification preferences; deliver all if missing."""
+        prefs = self.notification_preferences()
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            return (start, end)
+        return None
+
     def notification_preferences_save(self, prefs: Dict[str, Any]) -> Dict[str, Any]:
         """Save notification preferences."""
         prefs_path = self.root / ".ghost" / "notification_prefs.json"
@@ -470,6 +526,56 @@ class GhostSDK:
             "channel": channel,
             "status": "sent" if self.notification_preferences().get("channels", {}).get(channel, False) else "disabled",
             "timestamp": time.time(),
+        }
+
+# ── Versioned export (R14) ─────────────────────────────────────────────────────
+
+    def export(self, include: Optional[set] = None) -> Dict[str, Any]:
+        """Versioned, secret-free export of personal state for backup/portability.
+
+        Sections are read through each store's existing list/load method.
+        Secrets and credential references are redacted recursively.
+        """
+        from datetime import datetime, timezone
+
+        from .kernel import GoalStore
+        from .context_manager import ValidatedMemoryStore
+        from .devices import DeviceRegistry
+        from .proactive import OpportunityStore
+        from .policy import PolicyStore
+        from .security import redact_secrets
+
+        def _jobs() -> list:
+            return [job.__dict__ if hasattr(job, "__dict__") else job
+                    for job in self.scheduler.list()]
+
+        all_sections: Dict[str, Any] = {
+            "goals": [goal.__dict__ if hasattr(goal, "__dict__") else goal
+                      for goal in GoalStore(self.root)._load()],
+            "approvals": self.approvals._load(),
+            "notifications": [note.__dict__ if hasattr(note, "__dict__") else note
+                              for note in self.attention.pending(include_acknowledged=True)],
+            "validated_memories": [record.__dict__ if hasattr(record, "__dict__") else record
+                                   for record in self.memories.active()],
+            "devices": [device.__dict__ if hasattr(device, "__dict__") else device
+                        for device in self.devices.list()],
+            "opportunities": [opp.__dict__ if hasattr(opp, "__dict__") else opp
+                              for opp in OpportunityStore(self.root).list_all()],
+            "scheduler_jobs": [job.__dict__ if hasattr(job, "__dict__") else job
+                               for job in self.scheduler.list()],
+            "capability_gaps": CapabilityRegistry(self.root)._load().get("gaps", []),
+            "policy": PolicyStore(self.root).load(),
+        }
+        wanted = sorted(all_sections) if include is None else [
+            name for name in all_sections if name in set(include)]
+        unknown = set(include or ()) - set(all_sections)
+        if unknown:
+            raise ValueError(f"unknown export section(s): {sorted(unknown)}")
+        return {
+            "format": "ghost-export",
+            "version": 1,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "sections": {name: redact_secrets(all_sections[name]) for name in wanted},
         }
 
 
