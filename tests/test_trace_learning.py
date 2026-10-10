@@ -32,13 +32,19 @@ def _analysis(*signatures: FailureSignature) -> TraceAnalysis:
 
 
 def _write_outcome(root: Path, job_id: str, *, status: str, result: str,
-                   errors: list | None = None) -> None:
+                   errors: list | None = None,
+                   run_state: dict | None = None) -> None:
     d = root / ".ghost" / "outcomes" / job_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "outcome.json").write_text(json.dumps({
         "job_id": job_id, "status": status, "result": result,
         "errors": errors or [],
     }), encoding="utf-8")
+    if run_state is not None:
+        run_dir = d / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "state.json").write_text(json.dumps(run_state),
+                                            encoding="utf-8")
 
 
 # -- normalization ----------------------------------------------------------
@@ -122,6 +128,71 @@ class TestTraceAnalyzer:
         analysis = TraceAnalyzer(tmp_path).analyze()
         assert analysis.scanned == 0
 
+    def _top_types(self, tmp_path):
+        analysis = TraceAnalyzer(tmp_path).analyze()
+        return {s.error_type for s in analysis.top_signatures}
+
+    def test_truncations_rule(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="failed", result="iteration_limit",
+                       run_state={"truncations": 2})
+        assert self._top_types(tmp_path) == {"model_output_truncated"}
+
+    def test_truncations_priority_over_limit_reason(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="failed", result="iteration_limit",
+                       run_state={"truncations": 3, "limit_reason": "required_files_missing"})
+        assert self._top_types(tmp_path) == {"model_output_truncated"}
+
+    def test_model_unavailable_rule(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="failed", result="failed",
+                       run_state={"last_result": "model_unavailable"})
+        _write_outcome(tmp_path, "j2", status="failed", result="failed",
+                       run_state={"model_failures": 2})
+        types = self._top_types(tmp_path)
+        assert types == {"model_unavailable"}
+        top = TraceAnalyzer(tmp_path).analyze().top_signatures[0]
+        assert top.subsystem == "model"
+
+    def test_parse_errors_rule(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="failed", result="failed",
+                       run_state={"parse_errors": 3})
+        assert self._top_types(tmp_path) == {"model_protocol_errors"}
+
+    def test_limit_reason_rule(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="needs_review",
+                       result="iteration_limit",
+                       run_state={"limit_reason": "required_files_missing"})
+        assert self._top_types(tmp_path) == {"limit_required_files_missing"}
+
+    def test_missing_state_falls_back(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="needs_review",
+                       result="iteration_limit")
+        assert self._top_types(tmp_path) == {"result_iteration_limit"}
+
+    def test_corrupt_state_falls_back(self, tmp_path):
+        d = tmp_path / ".ghost" / "outcomes" / "j1"
+        (d / "run").mkdir(parents=True)
+        (d / "outcome.json").write_text(json.dumps(
+            {"job_id": "j1", "status": "needs_review",
+             "result": "iteration_limit", "errors": []}), encoding="utf-8")
+        (d / "run" / "state.json").write_text("{not json", encoding="utf-8")
+        assert self._top_types(tmp_path) == {"result_iteration_limit"}
+
+    def test_non_dict_state_ignored(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="needs_review",
+                       result="iteration_limit")
+        d = tmp_path / ".ghost" / "outcomes" / "j1" / "run"
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps(["not", "a", "dict"]),
+                                      encoding="utf-8")
+        assert self._top_types(tmp_path) == {"result_iteration_limit"}
+
+    def test_benign_state_falls_back(self, tmp_path):
+        _write_outcome(tmp_path, "j1", status="needs_review",
+                       result="iteration_limit",
+                       run_state={"truncations": 1, "model_failures": 1,
+                                  "parse_errors": 2})
+        assert self._top_types(tmp_path) == {"result_iteration_limit"}
+
 
 # -- proposer ---------------------------------------------------------------
 
@@ -162,6 +233,39 @@ class TestImprovementProposer:
     def test_min_count_validation(self, tmp_path):
         with pytest.raises(ValueError):
             ImprovementProposer(tmp_path, min_count=0)
+
+    def test_model_diagnostic_types_never_capability_gaps(self, tmp_path):
+        for error_type in ("model_output_truncated", "model_unavailable",
+                           "model_protocol_errors"):
+            analysis = _analysis(_sig(error_type=error_type,
+                                      normalized="iteration_limit", count=2))
+            actions = ImprovementProposer(tmp_path).propose_from(analysis)
+            assert len(actions) == 1
+            act = actions[0]
+            assert act["action"] != "capability_gap"
+            assert act["note"] == ("consider a larger output budget, "
+                                   "a different model, or file-block output")
+        assert not (tmp_path / ".ghost" / "capabilities.json").exists()
+
+    def test_limit_tests_failed_creates_capability_gap(self, tmp_path):
+        analysis = _analysis(_sig(error_type="limit_tests_failed",
+                                  normalized="tests_failed", count=2))
+        actions = ImprovementProposer(tmp_path).propose_from(analysis)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "capability_gap"
+
+    def test_limit_focused_tests_failed_creates_capability_gap(self, tmp_path):
+        analysis = _analysis(_sig(error_type="limit_focused_tests_failed",
+                                  normalized="focused_tests_failed", count=2))
+        actions = ImprovementProposer(tmp_path).propose_from(analysis)
+        assert actions[0]["action"] == "capability_gap"
+
+    def test_other_limit_types_report_only(self, tmp_path):
+        analysis = _analysis(_sig(error_type="limit_required_files_missing",
+                                  normalized="required_files_missing", count=2))
+        actions = ImprovementProposer(tmp_path).propose_from(analysis)
+        assert actions[0]["action"] == "report_only"
+        assert not (tmp_path / ".ghost" / "capabilities.json").exists()
 
 
 # -- end-to-end -------------------------------------------------------------
