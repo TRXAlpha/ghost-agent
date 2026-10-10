@@ -5,6 +5,7 @@ import pytest
 from ghost_agent.extensions import ExtensionManager
 from ghost_agent.approvals import ApprovalStore
 from ghost_agent.runtime import EmergencyStop
+from ghost_agent.security import SecurityMonitor
 from ghost_agent.utils.storage import exclusive_lock
 
 
@@ -145,3 +146,46 @@ def test_active_extension_cannot_silently_add_secret_reference(tmp_path):
     with pytest.raises(PermissionError, match="Disable"):
         manager.declare_secret("demo", "new", "GHOST_TEST_SECRET", "test")
     assert manager.load("demo").permissions["secrets"] == []
+
+
+def test_modified_enabled_extension_is_tampered_on_verify(tmp_path):
+    manager, approval = approved_candidate(tmp_path)
+    manager.enable("demo", approval)
+    (manager.directory("demo") / "adapter" / "__init__.py").write_text("changed = True\n")
+    assert manager.verify_integrity() == [{"name": "demo", "status": "tampered"}]
+    assert manager.load("demo").status == "tampered"
+    events = SecurityMonitor(tmp_path).recent_events()
+    assert any(event["kind"] == "extension.tampered" for event in events)
+
+
+def test_scope_drift_from_stored_approval_is_tampered_on_verify(tmp_path):
+    manager, approval = approved_candidate(tmp_path)
+    manager.enable("demo", approval)
+    # Tamper with the stored approval scope so it no longer matches the manifest.
+    store = ApprovalStore(tmp_path)
+    path = store.path
+    data = json.loads(path.read_text())
+    data[-1]["scope"]["permissions"]["network"] = True
+    path.write_text(json.dumps(data))
+    assert manager.verify_integrity() == [{"name": "demo", "status": "tampered"}]
+    assert manager.load("demo").status == "tampered"
+
+
+def test_unchanged_enabled_extension_stays_ok_on_verify(tmp_path):
+    manager, approval = approved_candidate(tmp_path)
+    manager.enable("demo", approval)
+    assert manager.verify_integrity() == []
+    assert manager.load("demo").status == "enabled"
+
+
+def test_tampered_extension_cannot_be_reenabled_or_retested(tmp_path):
+    manager, approval = approved_candidate(tmp_path)
+    manager.enable("demo", approval)
+    (manager.directory("demo") / "extra.py").write_text("new = True\n")
+    assert manager.verify_integrity()
+    with pytest.raises(ValueError, match="tampered; re-test and re-approve"):
+        manager.mark_tested("demo")
+    with pytest.raises(ValueError, match="tampered; re-test and re-approve"):
+        manager.enable("demo", approval)
+    with pytest.raises(ValueError, match="tampered; re-test and re-approve"):
+        manager.request_enable("demo")
