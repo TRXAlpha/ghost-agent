@@ -3179,6 +3179,8 @@ def _cmd_jobs(args: argparse.Namespace) -> None:
         print(json.dumps(job.__dict__, indent=2))
     except (OSError, ValueError) as exc:
         print(f"Job operation refused: {exc}. Running processes cannot yet be cancelled by this command.")
+    except LookupError as exc:
+        print(f"Job operation refused: {exc}")
 
 
 def _cmd_self_repair(args: argparse.Namespace) -> None:

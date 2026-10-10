@@ -89,3 +89,12 @@ def test_http_pause_end_to_end(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_cli_unknown_job_refused_gracefully(tmp_path: Path, monkeypatch, capsys) -> None:
+    import argparse
+    from ghost_agent.cli import _cmd_jobs
+    monkeypatch.chdir(tmp_path)
+    _cmd_jobs(argparse.Namespace(action="pause", job_id="ghost-id",
+                                 recurrence="", goal_id="", priority=50, iterations=1))
+    assert "Job operation refused" in capsys.readouterr().out
