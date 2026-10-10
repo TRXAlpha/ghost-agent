@@ -36,7 +36,7 @@ def make_results(n, *, user_active, quiet_hours=False):
 
 
 def make_daemon(tmp_path, results, *, trace_every=1, **kw):
-    calls = {"trace": 0, "improve": 0}
+    calls = {"trace": 0, "improve": 0, "sync": 0}
 
     def trace_fn():
         calls["trace"] += 1
@@ -46,9 +46,14 @@ def make_daemon(tmp_path, results, *, trace_every=1, **kw):
         calls["improve"] += 1
         return {"status": "ok"}
 
+    def improve_sync_fn():
+        calls["sync"] += 1
+        return []
+
     daemon = GhostDaemon(tmp_path, "m", trace_every=trace_every,
                          runner=FakeRunner(results),
                          trace_fn=trace_fn, improver_fn=improver_fn,
+                         improve_sync_fn=improve_sync_fn,
                          sleep_fn=lambda s: None, **kw)
     return daemon, calls
 
@@ -97,6 +102,34 @@ def test_trace_every_cadence(tmp_path):
         daemon.run_cycle()
     assert calls["trace"] == 2
     assert calls["improve"] == 6
+
+
+def test_improve_sync_runs_when_owner_away_even_in_quiet_hours(tmp_path):
+    daemon, calls = make_daemon(tmp_path, make_results(1, user_active=False, quiet_hours=True))
+    record = daemon.run_cycle()
+    assert calls["sync"] == 1
+    assert record["improve_sync"] == []
+
+
+def test_improve_sync_deferred_when_owner_active(tmp_path):
+    daemon, calls = make_daemon(tmp_path, make_results(1, user_active=True))
+    record = daemon.run_cycle()
+    assert calls["sync"] == 0
+    assert record["improve_sync"] == "deferred"
+
+
+def test_improve_sync_error_recorded_not_raised(tmp_path):
+    def bad_sync():
+        raise RuntimeError("sync boom")
+
+    daemon = GhostDaemon(tmp_path, "m", trace_every=1,
+                         runner=FakeRunner(make_results(1, user_active=False)),
+                         trace_fn=lambda: {}, improver_fn=lambda: {},
+                         improve_sync_fn=bad_sync,
+                         sleep_fn=lambda s: None)
+    record = daemon.run_cycle()
+    assert record["improve_sync"]["status"] == "error"
+    assert "sync boom" in record["improve_sync"]["error"]
 
 
 def test_hook_exception_recorded_not_raised(tmp_path):
