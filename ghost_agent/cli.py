@@ -2045,7 +2045,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     task_data = json.loads(task_path.read_text(encoding="utf-8"))
     task_id = task_data.get("id", task_path.stem)
@@ -2083,7 +2083,7 @@ def _cmd_resume(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     tui = create_tui(task_id=args.task_id, verbose=args.verbose)
     tui.start(task_id=args.task_id)
@@ -2126,7 +2126,7 @@ def _cmd_interactive(args: argparse.Namespace) -> None:
     """Interactive mode with file watching."""
     project_root = Path(args.project_root).resolve()
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
 
     model_state = {"model": _resolve_model()}
     if not model_state["model"]:
@@ -2529,7 +2529,7 @@ def _cmd_research(args: argparse.Namespace) -> None:
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
     if not model:
         model = _pick_model_interactive(base_url)
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     topic = " ".join(args.topic).strip()
     if not topic:
         print("Research topic cannot be empty.")
@@ -2957,7 +2957,7 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", "Inference route differs from the queued job. Start the matching worker/environment; no provider was contacted.")
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     research = "Research intentionally skipped for this job."
     try:
         if not job.skip_research:
@@ -3322,7 +3322,7 @@ def _cmd_parallel(args: argparse.Namespace) -> None:
         base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
         model = _pick_model_interactive(base_url)
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
-    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "60"))
+    timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     project_root = Path.cwd()
 
     def make_orchestrator(workspace: Path) -> Orchestrator:
