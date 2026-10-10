@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .devices import Device
+from .utils.storage import exclusive_lock
 
 MAX_STRING_LEN = 64
 METRIC_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
@@ -85,8 +86,10 @@ def validate_sample(raw: Any, *, device: Device, now: float,
         _reject("unit is not in the allowlist")
 
     observed_at = raw["observed_at"]
-    if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
-        _reject("observed_at must be a number")
+    if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool) \
+            or observed_at != observed_at \
+            or observed_at in (float("inf"), float("-inf")):
+        _reject("observed_at must be a finite number")
     if observed_at > now + max_skew_s:
         _reject("observed_at is too far in the future (clock skew)")
     if now - observed_at > max_age_s:
@@ -110,8 +113,9 @@ class TelemetryStore:
 
     def append(self, sample: TelemetrySample) -> None:
         line = json.dumps(asdict(sample))
-        with self._path(sample.device_id).open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        with exclusive_lock(self._path(sample.device_id).with_suffix(".lock")):
+            with self._path(sample.device_id).open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
 
     def latest(self, device_id: str, metric: str) -> Optional[TelemetrySample]:
         path = self._path(device_id)
@@ -143,7 +147,6 @@ def ingest_samples(raw: Any, *, device: Device, registry: Any,
     accepted: list[TelemetrySample] = []
     rejected: dict[str, int] = {}
 
-    from .devices import DeviceRegistry
     store = TelemetryStore(registry.root)
     for item in raw:
         try:

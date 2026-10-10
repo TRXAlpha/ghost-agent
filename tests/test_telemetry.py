@@ -55,6 +55,12 @@ def test_valid_sample_is_accepted_and_stored(env):
     ({"observed_at": NOW - 86401}, "too old"),
     ({"extra": 1}, "extra keys"),
     ({"value": None}, "value must be a finite number"),
+    ({"observed_at": "late"}, "observed_at must be a finite number"),
+    ({"observed_at": float("nan")}, "observed_at must be a finite number"),
+    ({"observed_at": float("inf")}, "observed_at must be a finite number"),
+    ({"unit": "c" * 65}, "unit too long"),
+    ({"device_id": "d" * 65}, "device_id too long"),
+    ({"metric": "m" * 65}, "metric too long"),
 ])
 def test_rejection_reasons(env, over, reason):
     reg = DeviceRegistry(env)
