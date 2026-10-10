@@ -1711,6 +1711,10 @@ def main() -> None:
         help="Max seconds per command (default 30; increase for heavyweight test suites)")
     accomplish_parser.add_argument("--require-file", action="append", default=[],
                                    help="Required relative deliverable path; repeat for multiple files")
+    accomplish_parser.add_argument("--check", action="append", default=[], choices=("unit", "compile", "smoke"),
+                                   help="Required verification class; repeat for multiple checks")
+    accomplish_parser.add_argument("--smoke-cmd", default=None,
+                                   help="Smoke command run when the 'smoke' check class is declared")
     accomplish_parser.add_argument("--workspace", choices=("project", "empty"), default="project",
                                    help="Sandbox start: copy of this project (default) or an empty directory for greenfield work")
     accomplish_parser.add_argument("--skip-research", action="store_true")
@@ -2965,7 +2969,11 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
         return
     try:
         required_files = Task.validate_relative_files(getattr(args, "require_file", []))
-        Task("preview", "preview", goal, {"iteration_limit": args.iterations}, {})
+        required_checks = list(getattr(args, "check", []) or [])
+        smoke_cmd = getattr(args, "smoke_cmd", None)
+        Task("preview", "preview", goal, {"iteration_limit": args.iterations,
+            "required_checks": required_checks,
+            **({"smoke_cmd": smoke_cmd} if smoke_cmd is not None else {})}, {})
         command_seconds = getattr(args, "command_budget_seconds", 300)
         command_calls = getattr(args, "command_budget_calls", 32)
         command_timeout = getattr(args, "command_timeout_seconds", 30)
@@ -3034,6 +3042,10 @@ def _cmd_accomplish(args: argparse.Namespace) -> None:
     events = EventBus(project_root)
     job = store.create(goal)
     job.acceptance_contract["required_files"] = list(required_files)
+    if required_checks:
+        job.acceptance_contract["required_checks"] = required_checks
+    if smoke_cmd is not None:
+        job.acceptance_contract["smoke_cmd"] = smoke_cmd
     job.acceptance_contract["workspace_mode"] = getattr(args, "workspace", "project")
     from .models.chat import route_identity
     job.acceptance_contract["inference_route"] = route_identity()
@@ -3376,6 +3388,28 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         store.save(job)
         _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", "Inference route differs from the queued job. Start the matching worker/environment; no provider was contacted.")
+
+    # TO3: re-check policy before starting; owner jobs (no source / telegram) skip this.
+    source = job.acceptance_contract.get("source", "")
+    if source in {"proactive", "capability_improver", "self_improver", "benchmark"}:
+        from .policy import PolicyError, PolicyStore
+        try:
+            PolicyStore(project_root).require("build", f"running {source} sandbox work")
+            if source == "self_improver":
+                PolicyStore(project_root).require("improve", f"running {source} sandbox work")
+        except PolicyError as exc:
+            job.status = "paused"
+            job.errors.append(f"paused: {exc}")
+            store.save(job)
+            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"},
+                                         paused_by="policy")
+            AttentionManager(project_root).notify(Notification(
+                "normal",
+                f"[TO3] Job {job.job_id} paused before starting: {exc}",
+                notification_id=f"policy-paused-{job.job_id}",
+                source="worker"))
+            return WorkerResult(job.job_id, "paused", str(exc))
+
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
     timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     research = "Research intentionally skipped for this job."

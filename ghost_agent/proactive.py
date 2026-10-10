@@ -344,10 +344,8 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
         "command_budget_seconds": QUEUED_JOB_COMMAND_SECONDS,
         "command_budget_calls": QUEUED_JOB_COMMAND_CALLS,
         "promotion_requires_approval": True,
-        # Unattended sources yield to the owner when they return (TO1);
-        # the owner's own Telegram requests keep False.
         # The owner-started benchmark and Telegram requests are not unattended work.
-        "yield_on_owner_return": source not in {"telegram", "benchmark"},
+        "yield_on_owner_return": source == "proactive" or source == "self_improver",
         "inference_route": route_identity(),
         "workspace_mode": workspace_mode,
     })
