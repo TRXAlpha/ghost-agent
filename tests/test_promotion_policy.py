@@ -44,6 +44,22 @@ def test_load_update_policy_reads_owner_overrides(tmp_path: Path) -> None:
     assert policy["version"] == 1
 
 
+def test_load_update_policy_malformed_json_fails_loud(tmp_path: Path) -> None:
+    policy_path = tmp_path / ".ghost" / "update_policy.json"
+    policy_path.parent.mkdir(parents=True)
+    policy_path.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(ValueError, match="update_policy.json is unreadable or malformed"):
+        load_update_policy(tmp_path)
+
+
+def test_load_update_policy_non_object_fails_loud(tmp_path: Path) -> None:
+    policy_path = tmp_path / ".ghost" / "update_policy.json"
+    policy_path.parent.mkdir(parents=True)
+    policy_path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    with pytest.raises(ValueError, match="update_policy.json is unreadable or malformed"):
+        load_update_policy(tmp_path)
+
+
 def test_self_repair_protected_path_refused(tmp_path: Path) -> None:
     sandbox = tmp_path / "workspace" / "candidate"
     sandbox.mkdir(parents=True)

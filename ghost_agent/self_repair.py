@@ -26,7 +26,7 @@ import json
 import secrets
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 from .promotion import PromotionManager, PromotionService, load_update_policy
@@ -433,7 +433,8 @@ class SelfRepairManager:
             raise PermissionError("Only verified self-repair proposals can request promotion")
         policy = load_update_policy(self.root)
         for name in proposal.verified_snapshot:
-            if name.replace("\\", "/") in policy["protected_paths"]:
+            normalized = PurePosixPath(name.replace("\\", "/")).parts
+            if "/".join(normalized) in policy["protected_paths"]:
                 raise SelfRepairError(PROTECTED_PATH_MESSAGE.format(path=name))
         return PromotionService(self.root).request(
             goal_id, Path(proposal.sandbox), expected_snapshot=proposal.verified_snapshot)
