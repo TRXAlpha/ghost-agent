@@ -681,6 +681,10 @@ class Orchestrator:
                     state["phase"] = "REPAIR"
                     state["last_result"] = "implement_failed"
                     last_feedback = self._format_results(results)
+                elif self._read_only_turn(action_response):
+                    # Stay in IMPLEMENT and show the model what it read.
+                    state["last_result"] = "read_only"
+                    last_feedback = self._read_feedback(results)
                 else:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "implement_ok"
@@ -814,6 +818,10 @@ class Orchestrator:
                     state["phase"] = "REPAIR"
                     state["last_result"] = "repair_failed"
                     last_feedback = self._format_results(results)
+                elif self._read_only_turn(action_response):
+                    # Stay in REPAIR and show the model what it read.
+                    state["last_result"] = "read_only"
+                    last_feedback = self._read_feedback(results)
                 else:
                     state["phase"] = "VERIFY"
                     state["last_result"] = "repair_ok"
@@ -1332,6 +1340,22 @@ class Orchestrator:
             return execute(per_command)
         with budget.slot(timeout=per_command) as timeout:
             return execute(timeout)
+
+    READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "search_in_files", "web_search"})
+    READ_FEEDBACK_LIMIT = 8000
+
+    def _read_only_turn(self, action_response: Any) -> bool:
+        """True when the turn only gathered information (nothing written or run)."""
+        actions = getattr(action_response, "actions", None) or []
+        return bool(actions) and all(getattr(a, "tool", "") in self.READ_ONLY_TOOLS for a in actions)
+
+    def _read_feedback(self, results: List[Dict[str, Any]]) -> str:
+        """Hand read results back to the model; turns are otherwise stateless."""
+        text = self._format_results(results)
+        if len(text) > self.READ_FEEDBACK_LIMIT:
+            text = text[: self.READ_FEEDBACK_LIMIT] + "\n... (truncated)"
+        return ("Results of your read actions are below. Do not read the same files again; "
+                "now write the needed files (implementation and tests).\n" + text)
 
     def _format_results(self, results: List[Dict[str, Any]]) -> str:
         try:
