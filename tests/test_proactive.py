@@ -444,3 +444,47 @@ def test_mark_less_like_this_marks_and_dismisses_proposed_only(tmp_path: Path):
     # missing id raises
     with pytest.raises(ProactiveError, match="not found"):
         second.mark_less_like_this("does_not_exist")
+
+
+# --- TD4: one clarifying question for needs_input ---
+
+def test_parse_proposal_question_dropped_when_invalid_or_overlong():
+    assert parse_proposal(proposal(question="Should I target a weekly or daily schedule?"))["question"] == \
+        "Should I target a weekly or daily schedule?"
+    assert parse_proposal(proposal(question="   "))["question"] == ""      # blank dropped
+    assert parse_proposal(proposal(question=42))["question"] == ""          # non-text dropped
+    assert parse_proposal(proposal(question="x" * 241))["question"] == ""   # overlong dropped
+    assert parse_proposal(proposal(question="x" * 240))["question"] == "x" * 240
+
+
+def test_needs_input_with_question_notifies_once_across_ticks(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(
+        goal="Explain why the system is slow (report only).",
+        requires_user_input=True,
+        question="Which workload felt slow, and when?"))
+    first = engine.tick(auto_queue=False)
+    assert first["status"] == "needs_input"
+    assert first["opportunity"]["question"] == "Which workload felt slow, and when?"
+    second = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(
+        goal="Explain why the system is slow (report only).",
+        requires_user_input=True,
+        question="Which workload felt slow, and when?")).tick(auto_queue=False)
+    assert second["status"] == "needs_input"  # needs_input is not suppressed
+    from ghost_agent.runtime import AttentionManager
+    notes = AttentionManager(tmp_path).pending()
+    assert len(notes) == 1  # deduplicated by notification_id across both ticks
+    assert notes[0].notification_id == f"opp-question-{first['opportunity']['opportunity_id']}"
+    assert notes[0].priority == "normal"
+    assert notes[0].source == "proactive"
+    assert notes[0].message == (
+        f"Ghost needs input: Which workload felt slow, and when? "
+        f"(opportunity {first['opportunity']['opportunity_id']})")
+
+
+def test_needs_input_without_question_sends_no_notification(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(
+        goal="Diagnose whether my symptoms mean I am sick.", kind="research"))
+    result = engine.tick()
+    assert result["status"] == "needs_input"
+    from ghost_agent.runtime import AttentionManager
+    assert AttentionManager(tmp_path).pending() == []
