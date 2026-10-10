@@ -1810,6 +1810,9 @@ def main() -> None:
     # TN3: transparent ranking of proposed/queued opportunities by score.
     proactive_parser.add_argument("--limit", type=int, default=10,
                                    help="Max opportunities shown by `proactive ranking`")
+    # TN3: JSON output for `proactive ranking` (read by args.json).
+    proactive_parser.add_argument("--json", action="store_true",
+                                  help="Print ranking as JSON")
     repair_parser = sub.add_parser("self-repair", help="Manage bounded Ghost self-repair proposals")
     repair_parser.add_argument("action", choices=["propose", "verify", "request-promotion"])
     repair_parser.add_argument("value", help="Diagnosis for propose or proposal ID otherwise")
