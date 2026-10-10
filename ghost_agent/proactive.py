@@ -342,6 +342,9 @@ def queue_sandbox_outcome(root: Path, goal: str, model: str, *, source: str = "p
         "command_budget_seconds": QUEUED_JOB_COMMAND_SECONDS,
         "command_budget_calls": QUEUED_JOB_COMMAND_CALLS,
         "promotion_requires_approval": True,
+        # Unattended sources yield to the owner when they return (TO1);
+        # the owner's own Telegram requests keep False.
+        "yield_on_owner_return": source != "telegram",
         "inference_route": route_identity(),
         "workspace_mode": workspace_mode,
     })

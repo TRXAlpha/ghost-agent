@@ -3381,6 +3381,16 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
         job.result = str(state.get("last_result", "unknown"))
         job.sandbox_path = str(run_dir / "sandbox")
+        if job.result == "yielded_to_owner":
+            # TO1: the owner is back; pause (resumable with `ghost jobs resume`)
+            # instead of failing. Sandbox and checkpoint are preserved. Marking
+            # the scheduler record paused lets OutcomeWorker observe the
+            # control-state change instead of recording a terminal failure.
+            job.status = "paused"
+            job.errors.append("paused: yielded_to_owner")
+            store.save(job)
+            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"})
+            return WorkerResult(job.job_id, "paused", "yielded_to_owner")
         job.status = "completed" if job.result == "tests_passed" else "needs_review"
         store.save(job)
         if job.status == "completed":

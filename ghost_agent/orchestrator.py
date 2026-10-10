@@ -13,6 +13,8 @@ import json
 import re
 import shutil
 import stat
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PureWindowsPath
@@ -39,6 +41,31 @@ from .utils.storage import atomic_json
 # TH1: after this many consecutive model failures (timeout/connection), the job
 # ends honestly as model_unavailable instead of burning every iteration in REPAIR.
 MAX_CONSECUTIVE_MODEL_FAILURES = 3
+
+# TO1: owner-return yield threshold, in seconds of measured OS idle.
+OWNER_RETURN_IDLE_ENV = "GHOST_OWNER_RETURN_IDLE_S"
+OWNER_RETURN_IDLE_DEFAULT = 120
+
+
+def _owner_return_idle_s() -> float:
+    raw = os.getenv(OWNER_RETURN_IDLE_ENV)
+    if raw is None:
+        return OWNER_RETURN_IDLE_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return OWNER_RETURN_IDLE_DEFAULT
+    return value if value >= 0 else OWNER_RETURN_IDLE_DEFAULT
+
+
+def _owner_idle_seconds() -> Optional[float]:
+    # Late import: None (unknown/non-Windows) never yields. GetLastInputInfo
+    # can fail; treat that as unknown too.
+    from .proactive import idle_seconds
+    try:
+        return idle_seconds()
+    except OSError:
+        return None
 
 
 class TUICallback(Protocol):
@@ -464,6 +491,14 @@ class Orchestrator:
         state: Dict[str, Any],
         artifacts_root: Optional[Path] = None,
     ) -> None:
+        """Drive INGEST → PLAN → IMPLEMENT → VERIFY ↔ REPAIR → DONE.
+
+        Environment knobs:
+        - GHOST_OWNER_RETURN_IDLE_S: owner-idle threshold in seconds (default
+          120). Jobs with constraint yield_on_owner_return end with
+          last_result="yielded_to_owner" at the next model turn when measured
+          OS idle drops below it.
+        """
         iteration_limit = task.iteration_limit()
         goal_lower = task.goal.lower()
         self._goal_prints = "print" in goal_lower or "prints" in goal_lower
@@ -561,6 +596,24 @@ class Orchestrator:
                     last_feedback = f"Command budget refused: {exc}"
                 if state["phase"] == "DONE":
                     self._write_state(state_path, state, last_feedback)
+            # TO1: unattended jobs yield to the owner at the next model turn.
+            if state["phase"] in ("PLAN", "IMPLEMENT", "REPAIR") and \
+                    task.constraints.get("yield_on_owner_return") is True:
+                idle = _owner_idle_seconds()
+                if idle is not None and idle < _owner_return_idle_s():
+                    now = time.time()
+                    state["phase"] = "DONE"
+                    state["last_result"] = "yielded_to_owner"
+                    state["yield"] = {
+                        "detected_at": now,
+                        "idle_s": idle,
+                        "latency_s": now - state.get("last_turn_end", now),
+                    }
+                    self._write_state(state_path, state)
+                    self._write_memory(task, workspace, state, strategy)
+                    self._record_knowledge(task, state, strategy)
+                    self._tui_complete(state["last_result"])
+                    break
             # VERIFY makes no model call; always verify the final attempt before stopping.
             # TH1: three consecutive model failures end the job honestly.
             if state["phase"] not in ("DONE", "VERIFY") and \
@@ -637,6 +690,7 @@ class Orchestrator:
                         strategy = "plan_first"
                 self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
+                state["last_turn_end"] = time.time()
                 self._write_state(state_path, state, last_feedback)
                 continue
 
@@ -686,6 +740,7 @@ class Orchestrator:
                     state["last_result"] = "implement_ok"
                 self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
+                state["last_turn_end"] = time.time()
                 state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
                 continue
@@ -820,6 +875,7 @@ class Orchestrator:
                     last_feedback = self._format_results(results)
                 self._note_result(state)
                 self._tui_phase(state["phase"], state["iteration"])
+                state["last_turn_end"] = time.time()
                 state["iteration"] += 1
                 self._write_state(state_path, state, last_feedback)
                 continue
