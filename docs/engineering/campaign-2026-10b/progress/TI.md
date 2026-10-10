@@ -12,6 +12,13 @@ Command: `"$PY" -m pytest -q -p no:cacheprovider --deselect tests/test_overnight
 Result: `1 failed, 1159 passed, 1 deselected in 134.34s`
 The 1 failure is `tests/test_tf1_tf4_huawei.py::test_purge_all_and_event_privacy` — PRE-EXISTING and outside TI's ownership list: verified failing identically at base commit 5b2ca59 (before any TI change) and reproduced on untouched master. Assertion precedence bug in the test itself (line 95, conditional-expression binding). Flagged for the meta-orchestrator / TF track owner; not fixed here per ownership rules.
 
+## Pre-existing failure disposition (tests/test_tf1_tf4_huawei.py::test_purge_all_and_event_privacy)
+
+- Root cause (from the test source, tests/test_tf1_tf4_huawei.py:95): the final assertion is a bare conditional expression, `assert "42" not in text.split("huawei.purge")[-1] if "huawei.purge" in text else True` — Python parses this as `assert (("42" not in ...) if cond else True)`, and the post-purge event segment still contains the ingested value "42", so the privacy assertion fails. It is a bug in the TF track's test, not in any TI-touched code.
+- Evidence it predates TI: ran the single test at base commit 5b2ca59 (the TI track's starting HEAD, before any TI change) — FAILED, 1 failed in 4.37s. The TI3 reviewer independently reproduced it on the untouched main checkout (master). It is deterministic (fails alone and in the full suite).
+- Ownership: tests/test_tf1_tf4_huawei.py belongs to track TF, not to TI's ownership list; per the phase-B brief only sheet-listed files may change, so TI does not repair it. Disposition: PRE-EXISTING, OUT OF SCOPE, flagged to the meta-orchestrator for the TF track / a repair task.
+- All TI-owned suites are green: tests/test_trace_learning.py 32 passed, tests/test_benchmark.py 15 passed; 1159 other tests pass on the final c2/TI tree.
+
 ## Notes
 
 - TI1 (2026-10-10): implemented per sheet (state.json `_state` attach, 4 signature rules in priority order, model/route actions for model types, capability-gap path limited to limit_tests_failed/limit_focused_tests_failed). Two independent reviewers, both VERDICT PASS, no P0-P2. Pre-existing deselected test: tests/test_overnight.py::TestRun::test_max_cycles_stops (campaign baseline).
