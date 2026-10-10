@@ -3357,6 +3357,27 @@ def _execute_queued_outcome(project_root: Path, scheduled: ScheduledJob) -> Work
         store.save(job)
         _close_proactive_feedback(project_root, job)
         return WorkerResult(job.job_id, "failed", "Inference route differs from the queued job. Start the matching worker/environment; no provider was contacted.")
+
+    # TO3: re-check policy before starting; owner jobs (no source / telegram) skip this.
+    source = job.acceptance_contract.get("source", "")
+    if source in {"proactive", "capability_improver", "self_improver", "benchmark"}:
+        from .policy import PolicyError, PolicyStore
+        try:
+            PolicyStore(project_root).require("build", f"running {source} sandbox work")
+            if source == "self_improver":
+                PolicyStore(project_root).require("improve", f"running {source} sandbox work")
+        except PolicyError as exc:
+            job.status = "paused"
+            job.errors.append(f"paused: {exc}")
+            store.save(job)
+            Scheduler(project_root).mark(scheduled.job_id, "paused", expected={"running"})
+            AttentionManager(project_root).notify(Notification(
+                "normal",
+                f"[TO3] Job {job.job_id} paused before starting: {exc}",
+                notification_id=f"policy-paused-{job.job_id}",
+                source="worker"))
+            return WorkerResult(job.job_id, "paused", str(exc))
+
     base_url = os.getenv("GHOST_OLLAMA_BASE_URL")
     timeout = int(os.getenv("GHOST_OLLAMA_TIMEOUT", "180"))
     research = "Research intentionally skipped for this job."
