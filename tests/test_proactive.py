@@ -8,11 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 from ghost_agent.proactive import (
+    Opportunity,
     OpportunityStore,
     ProactiveEngine,
     ProactiveError,
     idle_seconds,
     parse_proposal,
+    similar,
 )
 from ghost_agent.autonomy import OutcomeStore
 from ghost_agent.runtime import Scheduler
@@ -346,3 +348,99 @@ def test_no_goals_yields_empty_stale_and_deadline_lists(tmp_path: Path):
     # key presence drives TD1's trigger, so absent when empty
     assert "stale_goals" not in context
     assert "upcoming_deadlines" not in context
+
+
+# --- TD3: similar(), reworded rejection memory, less of this ---
+
+def test_similar_jaccard_cases():
+    from ghost_agent.proactive import similar
+    # tokenization: punctuation/case are normalized to word tokens
+    assert similar("Hello, World!", "hello world") == 1.0
+    # tokens shorter than 3 characters are ignored
+    assert similar("a an the", "zz qq") == 0.0
+    # tokens of length >= 3 are counted
+    assert similar("rust compiler", "rust compiler") == 1.0
+    # stopwords are removed before comparison
+    assert similar("the cat and the dog", "cat dog") == 1.0
+    # disjoint vocabularies -> 0.0
+    assert similar("rust compiler backend", "garden watering schedule") == 0.0
+    # identical -> 1.0
+    assert similar("turn my Rust lessons into a practice game",
+                   "turn my Rust lessons into a practice game") == 1.0
+    # empty inputs -> 0.0
+    assert similar("", "anything here") == 0.0
+    assert similar("anything", "") == 0.0
+    assert similar("", "") == 0.0
+
+
+def _rejected_opportunity(tmp_path: Path, goal: str):
+    """Queue a proposal then fail it so it becomes a rejected memory."""
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal(goal=goal))
+    result = engine.tick(auto_queue=False)
+    oid = result["opportunity"]["opportunity_id"]
+    op = engine.store.find_any(oid)
+    op.status = "queued"
+    engine.store.save(op)
+    engine.record_feedback(oid, "tests_failed", evidence="did not work")
+    assert engine.store.find_any(oid).status == "rejected"
+    return engine, oid
+
+
+def test_reworded_similar_rejected_idea_is_suppressed_and_not_queued(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, oid = _rejected_opportunity(tmp_path, original)
+    # same meaning, different wording: must still cross the 0.6 threshold
+    reworded = "Turn my Rust lessons into a small practice game to learn faster."
+    assert similar(original, reworded) >= 0.6
+    engine.chat = lambda *a, **k: proposal(goal=reworded)
+    result = engine.tick()
+    assert result["status"] == "suppressed"
+    record = result["opportunity"]
+    assert record["status"] == "rejected"
+    assert record["rejection_reason"].startswith(f"similar to {oid} (")
+    assert not Scheduler(tmp_path).list()
+
+
+def test_unrelated_idea_is_not_suppressed_by_rejection_memory(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, _ = _rejected_opportunity(tmp_path, original)
+    unrelated = "Investigate whether a Huawei Health Kit connector is feasible."
+    assert similar(original, unrelated) < 0.6
+    engine.chat = lambda *a, **k: proposal(goal=unrelated, kind="integration")
+    result = engine.tick()
+    # an unrelated idea is queued as normal, no suppression
+    assert result["status"] == "queued"
+
+
+def test_old_rejections_do_not_suppress_similar_new_ideas(tmp_path: Path):
+    original = "Research how to turn my Rust lessons into a small practice game."
+    engine, oid = _rejected_opportunity(tmp_path, original)
+    # age the rejection past the 30-day memory window
+    old = engine.store.find_any(oid)
+    old.created_at = time.time() - 31 * 86400
+    engine.store.save(old)
+    engine.chat = lambda *a, **k: proposal(
+        goal="Turn my Rust lessons into a small practice game to learn faster.")
+    result = engine.tick(auto_queue=False)
+    assert result["status"] == "proposed"
+    assert result["opportunity"]["status"] == "proposed"
+
+
+def test_mark_less_like_this_marks_and_dismisses_proposed_only(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    # still proposed: marked and dismissed
+    proposed = engine.tick(auto_queue=False)["opportunity"]["opportunity_id"]
+    marked = engine.mark_less_like_this(proposed)
+    assert marked.less_like_this is True
+    assert marked.status == "dismissed"
+    assert engine.store.find_any(proposed).less_like_this is True
+    # queued: marked but NOT dismissed
+    second = ProactiveEngine(tmp_path, "tiny",
+                             chat_fn=lambda *a, **k: proposal(goal="Build a tiny calculator app."))
+    queued_id = second.tick()["opportunity"]["opportunity_id"]
+    marked_queued = second.mark_less_like_this(queued_id)
+    assert marked_queued.less_like_this is True
+    assert marked_queued.status == "queued"
+    # missing id raises
+    with pytest.raises(ProactiveError, match="not found"):
+        second.mark_less_like_this("does_not_exist")

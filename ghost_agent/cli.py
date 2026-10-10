@@ -1721,7 +1721,7 @@ def main() -> None:
     checkin_parser.add_argument("--message", default="Check in: review active goals and pending approvals.")
     checkin_parser.add_argument("--quiet-hours", type=int, nargs=2, default=[22, 8], metavar=("START", "END"))
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
-    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss"])
+    proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss", "less"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
     proactive_parser.add_argument("--interval-seconds", type=float, default=900)
     proactive_parser.add_argument("--idle-after-seconds", type=float, default=900)
@@ -1937,10 +1937,15 @@ def _cmd_proactive(args: argparse.Namespace) -> None:
             engine.watch(interval=args.interval_seconds, idle_after=args.idle_after_seconds,
                          auto_queue=args.auto_queue, run_worker=worker_fn)
             return
-        else:
+        elif args.action == "dismiss":
             if not args.opportunity_id:
                 raise ProactiveError("dismiss requires an opportunity ID")
             result = {"status": "dismissed", "opportunity": engine.dismiss(args.opportunity_id).__dict__}
+        elif args.action == "less":
+            if not args.opportunity_id:
+                raise ProactiveError("less requires an opportunity ID")
+            result = {"status": "less_like_this",
+                      "opportunity": engine.mark_less_like_this(args.opportunity_id).__dict__}
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except ProactiveError as exc:
         print(f"Proactive action refused: {exc}")
