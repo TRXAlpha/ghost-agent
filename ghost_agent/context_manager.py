@@ -29,10 +29,16 @@ class MemoryRecord:
     invalidation_reason: str = ""
     created_at: float = field(default_factory=time.time)
     depends_on: list[str] = field(default_factory=list)
+    subject: str = ""
+    sensitivity: str = "normal"
+    last_verified_at: Optional[float] = None
+    revisions: list[dict] = field(default_factory=list)
 
 
 class ValidatedMemoryStore:
-    KINDS = {"working", "episodic", "semantic", "procedural", "validated_knowledge"}
+    KINDS = {"working", "episodic", "semantic", "procedural", "validated_knowledge",
+             "preference", "hypothesis", "feedback"}
+    SENSITIVITIES = {"normal", "personal", "health", "secret"}
     VALIDATIONS = {"unvalidated", "validated", "disputed", "retracted"}
     def __init__(self, project_root: Path) -> None:
         self.path = Path(project_root) / ".ghost" / "validated-memory.json"
@@ -65,13 +71,15 @@ class ValidatedMemoryStore:
     def _validate(cls, record: MemoryRecord) -> None:
         if not isinstance(record.kind, str) or record.kind not in cls.KINDS:
             raise ValueError(f"Unknown memory kind: {record.kind}")
+        if not isinstance(record.sensitivity, str) or record.sensitivity not in cls.SENSITIVITIES:
+            raise ValueError(f"Unknown memory sensitivity: {record.sensitivity}")
         if not isinstance(record.validation, str) or record.validation not in cls.VALIDATIONS:
             raise ValueError(f"Unknown memory validation: {record.validation}")
         if type(record.confidence) not in (int, float) or not 0.0 <= record.confidence <= 1.0:
             raise ValueError("Memory confidence must be between 0 and 1")
         if any(not isinstance(value, str) or not value.strip() for value in (record.memory_id, record.content, record.source)):
             raise ValueError("Memory ID, content, and source must be nonempty strings")
-        for stamp in (record.created_at, record.expires_at, record.invalidated_at):
+        for stamp in (record.created_at, record.expires_at, record.invalidated_at, record.last_verified_at):
             if stamp is not None and (type(stamp) not in (int, float) or stamp < 0 or not math.isfinite(stamp)):
                 raise ValueError("Memory timestamps must be finite and nonnegative")
         if record.created_at is None:
@@ -170,11 +178,109 @@ class ValidatedMemoryStore:
             self._save(data)
             return MemoryRecord(**root)
 
+    def edit(self, memory_id: str, *, content: Optional[str] = None,
+             subject: Optional[str] = None, sensitivity: Optional[str] = None,
+             confirm_verified: bool = False) -> MemoryRecord:
+        """Owner edit of an active memory; content edits keep revision history."""
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            data = self._load()
+            raw = next((item for item in data if item["memory_id"] == memory_id), None)
+            if raw is None:
+                raise ValueError("Memory not found")
+            record = MemoryRecord(**raw)
+            if record.invalidated_at is not None or record.validation == "retracted":
+                raise ValueError("Retracted or purged memories cannot be edited")
+            if content is not None:
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("Memory content must be a nonempty string")
+                revisions = record.revisions
+                revisions.append({"content": record.content, "edited_at": time.time()})
+                record.revisions = revisions[-10:]  # bounded revision history
+                record.content = content
+            if subject is not None:
+                if not isinstance(subject, str):
+                    raise ValueError("Memory subject must be a string")
+                record.subject = subject
+            if sensitivity is not None:
+                if not isinstance(sensitivity, str) or sensitivity not in self.SENSITIVITIES:
+                    raise ValueError(f"Unknown memory sensitivity: {sensitivity}")
+                record.sensitivity = sensitivity
+            if confirm_verified:
+                record.last_verified_at = time.time()
+            updated = MemoryRecord(**{**raw, **asdict(record)})
+            self._validate(updated)
+            for item in data:
+                if item["memory_id"] == memory_id:
+                    item.update(asdict(updated))
+            self._save(data)
+        return updated
+
     def active(self, validation: Optional[str] = None) -> list[MemoryRecord]:
         if validation is not None and validation not in self.VALIDATIONS:
             raise ValueError("Unknown memory validation filter")
-        return [record for record in self._active_records(self._load())
-                if validation is None or record.validation == validation]
+        retention = self._load_retention()
+        now = time.time()
+        kept = []
+        for record in self._active_records(self._load()):
+            if validation is not None and record.validation != validation:
+                continue
+            window = self._retention_days(record, retention)
+            # Retention only hides expired records; apply_retention purges them.
+            if window is not None and record.created_at + window <= now:
+                continue
+            kept.append(record)
+        return kept
+
+    def _load_retention(self) -> dict[str, Any]:
+        path = self.path.parent / "memory_retention.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"default_days": None, "by_kind": {}}
+        except (ValueError, OSError) as exc:
+            raise ValueError("Memory retention config is corrupt; preserve it for review") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("by_kind", {}), dict):
+            raise ValueError("Memory retention config is corrupt; preserve it for review")
+        return {"default_days": data.get("default_days"), "by_kind": data.get("by_kind", {})}
+
+    def set_retention(self, kind: str, days: Optional[int]) -> None:
+        if kind not in self.KINDS:
+            raise ValueError(f"Unknown memory kind: {kind}")
+        if days is not None and (type(days) is not int or days <= 0):
+            raise ValueError("Retention days must be a positive integer or null")
+        with exclusive_lock(self.path.with_suffix(".lock")):
+            data = self._load_retention()
+            if days is None:
+                data["by_kind"].pop(kind, None)
+            else:
+                data["by_kind"][kind] = days
+            atomic_json(self.path.parent / "memory_retention.json", data)
+
+    def _retention_days(self, record: MemoryRecord, retention: dict[str, Any]) -> Optional[float]:
+        days = retention["by_kind"].get(record.kind, retention.get("default_days"))
+        if days is None:
+            return None
+        return float(days) * 86_400.0
+
+    def apply_retention(self) -> int:
+        """Purge records past their retention through the existing purge path."""
+        retention = self._load_retention()
+        now = time.time()
+        data = self._load()
+        expired: list[str] = []
+        for raw in data:
+            record = MemoryRecord(**raw)
+            window = self._retention_days(record, retention)
+            if window is not None and record.created_at + window <= now and record.invalidated_at is None:
+                expired.append(record.memory_id)
+        count = 0
+        for memory_id in expired:
+            try:
+                self.purge(memory_id, "retention window elapsed")
+            except ValueError:
+                continue  # already cascade-purged by an earlier purge
+            count += 1
+        return count
 
 
 class ContextAssembler:

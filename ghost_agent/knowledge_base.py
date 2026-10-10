@@ -54,6 +54,11 @@ class DocChunk:
     content: str
     sha256: str             # of the whole source file at ingest time
     indexed_at: float = field(default_factory=time.time)
+    version: int = 1        # bumped when the same source is re-ingested changed
+    superseded: bool = False  # replaced by a newer version of the same source
+    section: str = ""       # nearest preceding heading (.md only)
+    page: Optional[int] = None  # reserved for future PDF support
+    extraction_quality: str = "text"  # text | ocr | partial
 
 
 @dataclass
@@ -129,17 +134,21 @@ class OwnerKnowledgeBase:
         if not text.strip():
             return 0
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        # Dedup by content hash: a chunk already indexed with identical source
-        # bytes is skipped (idempotent re-ingest; renames are caught by content).
-        if any(c.sha256 == digest for c in self.chunks):
-            return 0
-        # Relative-ish source label for provenance (never absolute in artifact?).
         label = self._relabel(file_path)
+        # Same source, same bytes -> idempotent no-op. Same source, changed
+        # bytes -> supersede the old chunks and store this as the next version.
+        existing = [c for c in self.chunks if c.source == label]
+        if any(c.sha256 == digest for c in existing):
+            return 0
+        version = (max((c.version for c in existing), default=0) + 1) if existing else 1
+        for c in existing:
+            c.superseded = True
         added = 0
-        for i, piece in enumerate(self._chunk(text)):
+        for i, (piece, section) in enumerate(self._chunk(text, label)):
             chunk_id = f"{digest[:12]}:{i}"
             self.chunks.append(DocChunk(chunk_id=chunk_id, source=label,
-                                        content=piece, sha256=digest))
+                                        content=piece, sha256=digest,
+                                        version=version, section=section))
             added += 1
         return added
 
@@ -150,12 +159,35 @@ class OwnerKnowledgeBase:
             return str(file_path)
 
     @staticmethod
-    def _chunk(text: str) -> Iterable[str]:
+    def _chunk(text: str, source: str = "") -> Iterable[tuple[str, str]]:
+        # Track the nearest preceding markdown heading so chunks keep their
+        # section provenance; other file types carry no section label.
+        is_markdown = source.lower().endswith((".md", ".markdown"))
         words = re.split(r"\s+", text.strip())
+        # Map word index -> section heading at the time that word was written.
+        sections: List[str] = []
+        current = ""
+        bare_hash_index: Optional[int] = None  # index of a bare '#' awaiting its heading text
+        for word in words:
+            if bare_hash_index is not None:
+                # Word after a bare '#': it names the heading; backfill the
+                # '#' position so the chunk starting there gets the heading.
+                current = word
+                sections[bare_hash_index] = current
+                bare_hash_index = None
+            elif is_markdown and word.startswith("#"):
+                heading = word.lstrip("#").strip()
+                if heading:
+                    current = heading
+                else:
+                    bare_hash_index = len(sections)
+                    sections.append(current)
+                    continue
+            sections.append(current)
         for i in range(0, max(1, len(words)), CHUNK_WORDS):
             piece = " ".join(words[i:i + CHUNK_WORDS]).strip()
             if piece:
-                yield piece
+                yield piece, sections[i] if i < len(sections) else ""
 
     # ── Retrieval ──────────────────────────────────────────────────────────
 
@@ -183,6 +215,8 @@ class OwnerKnowledgeBase:
 
         scored = []
         for c in self.chunks:
+            if c.superseded:
+                continue  # only the latest version of a source is retrievable
             c_tokens = set(self._tokens(c.content))
             score = 0.0
             for t in q_tokens:
@@ -216,6 +250,72 @@ class OwnerKnowledgeBase:
         if not parts:
             return ""
         return "Owner reference docs:\n" + "\n\n".join(parts)
+
+    # ── Lifecycle ──────────────────────────────────────────────────────────
+
+    def delete_source(self, source: str) -> int:
+        """Remove every chunk of ``source`` and invalidate derived content.
+
+        Emits ``kbase.source_deleted`` listing the removed chunk count and any
+        learner lessons citing this source (learner history is not modified).
+        ValidatedMemoryStore records whose supporting artifacts cite the source
+        are invalidated (cascade, same as retraction).
+        """
+        from .context_manager import ValidatedMemoryStore
+        from .runtime import EventBus, Event
+
+        before = len(self.chunks)
+        self.chunks = [c for c in self.chunks if c.source != source]
+        removed = before - len(self.chunks)
+        if removed:
+            self._save_index()
+
+        # Derived items built on this source must not outlive it.
+        invalidated: List[str] = []
+        try:
+            memory_store = ValidatedMemoryStore(self.root)
+            for record in memory_store.active():
+                if source in record.supporting_artifacts:
+                    memory_store.invalidate(
+                        record.memory_id,
+                        f"supporting source deleted from knowledge base: {source}")
+                    invalidated.append(record.memory_id)
+        except (OSError, ValueError):
+            pass  # missing/corrupt memory store must not block chunk deletion
+
+        affected_lessons: List[str] = []
+        try:
+            attempts_path = self.root / ".ghost" / "learner" / "attempts.json"
+            raw = json.loads(attempts_path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                affected_lessons = sorted({item.get("lesson_id", "")
+                                           for item in raw
+                                           if item.get("lesson_id") == source})
+        except (OSError, ValueError):
+            pass  # no learner history: nothing to report
+
+        EventBus(self.root).emit(Event("kbase.source_deleted", {
+            "source": source,
+            "chunks": removed,
+            "invalidated_memories": invalidated,
+            "affected_lessons": affected_lessons,
+        }, source="knowledge_base"))
+        return removed
+
+    def sources(self) -> List[Dict[str, Any]]:
+        """Per-source summary: latest version and live (non-superseded) count."""
+        by_source: Dict[str, List[DocChunk]] = {}
+        for c in self.chunks:
+            by_source.setdefault(c.source, []).append(c)
+        return [
+            {
+                "source": source,
+                "version": max(c.version for c in chunks),
+                "chunks": sum(1 for c in chunks if not c.superseded),
+                "sha256": max(chunks, key=lambda c: c.version).sha256,
+            }
+            for source, chunks in sorted(by_source.items())
+        ]
 
     def stats(self) -> KnowledgeBaseStats:
         return KnowledgeBaseStats(
