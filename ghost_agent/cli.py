@@ -1739,7 +1739,8 @@ def main() -> None:
     repair_parser.add_argument("--command", default="python -m pytest -q",
                                help="Evaluator command run inside the candidate to verify it")
     device_parser = sub.add_parser("device", help="Register or inspect declared Ghost devices")
-    device_parser.add_argument("action", choices=["list", "register", "pair", "revoke", "status"])
+    device_parser.add_argument("action", choices=["list", "register", "pair", "revoke",
+                                                  "status", "simulate"])
     device_parser.add_argument("device_id", nargs="?")
     device_parser.add_argument("--name", default="")
     device_parser.add_argument("--kind", default="computer")
@@ -1747,6 +1748,13 @@ def main() -> None:
     device_parser.add_argument("--transport", default=None,
                                help="unknown|usb_serial|ble|wifi|cloud_api|simulated")
     device_parser.add_argument("--firmware", default=None, help="Firmware version string")
+    # TF3: simulated pan/tilt command through the safety gate (no real hardware).
+    device_parser.add_argument("--pan", type=float, default=None)
+    device_parser.add_argument("--tilt", type=float, default=None)
+    device_parser.add_argument("--duration", type=float, default=1.0,
+                               help="Command duration in seconds")
+    device_parser.add_argument("--disconnect", action="store_true",
+                               help="Disconnect the simulator after the command")
     # TF1/TF4: `ghost huawei` — synthetic/manual data only until Huawei
     # credentials are configured (S02). One CLI action per existing public
     # HuaweiRoute method; no network calls.
@@ -3345,6 +3353,28 @@ def _cmd_device(args: argparse.Namespace) -> None:
                 "declared_capabilities": device.capabilities,
                 "verified_capabilities": device.verified_capabilities,
             }, indent=2))
+        elif args.action == "simulate":
+            from .device_control import (CommandRefused, DeviceCommandGate,
+                                         PanTiltCommand, SimulatedPanTilt,
+                                         limits_from_constraints)
+            device = registry.get(args.device_id)
+            if device is None:
+                print(f"Unknown device: {args.device_id}")
+                return
+            if args.pan is None or args.tilt is None:
+                print("simulate requires --pan and --tilt")
+                return
+            limits = limits_from_constraints(device.constraints)
+            sim = SimulatedPanTilt(limits)
+            sim.connected = True
+            gate = DeviceCommandGate(Path.cwd(), registry, args.device_id, limits)
+            try:
+                result = gate.send(sim, PanTiltCommand(args.pan, args.tilt), args.duration)
+                if args.disconnect:
+                    sim.disconnect()
+                print(json.dumps(result, indent=2))
+            except CommandRefused as exc:
+                print(f"Command refused: {exc}")
     except ValueError as exc:
         print(f"Device operation refused: {exc}")
 
