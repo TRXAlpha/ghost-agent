@@ -6,7 +6,77 @@ from pathlib import Path
 
 import pytest
 
-from ghost_agent.capability_acquisition import AcquisitionError, CapabilityAcquisition
+from ghost_agent.capability_acquisition import (
+    AcquisitionError,
+    CapabilityAcquisition,
+    installed_integrations,
+)
+
+
+def _write_manifest(root: Path, name: str, status: str) -> Path:
+    directory = root / ".ghost" / "extensions" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "manifest.json").write_text(
+        json.dumps({"extension_id": f"ext_{name}", "name": name,
+                    "goal": "test", "status": status}), encoding="utf-8")
+    return directory
+
+
+def test_installed_extension_found_for_capability(tmp_path: Path):
+    _write_manifest(tmp_path, "pdf_extractor", "enabled")
+    assert CapabilityAcquisition.reuse_inventory("pdf_extractor", tmp_path) == "pdf_extractor"
+
+
+def test_disabled_or_proposed_extension_not_installed(tmp_path: Path):
+    _write_manifest(tmp_path, "draft_ext", "proposed")
+    assert CapabilityAcquisition.reuse_inventory("draft_ext", tmp_path) is None
+    assert installed_integrations(tmp_path) == {}
+
+
+def test_mcp_extension_yields_tool_capabilities(tmp_path: Path):
+    directory = _write_manifest(tmp_path, "mcp-weather", "approved")
+    (directory / "mcp.json").write_text(json.dumps({
+        "name": "weather", "transport": "stdio", "status": "scaffolded_not_executable",
+        "tools": [{"name": "weather.lookup", "requires_approval": True}],
+    }), encoding="utf-8")
+    assert CapabilityAcquisition.reuse_inventory("weather.lookup", tmp_path) == "mcp-weather"
+
+
+def test_upstream_unavailable_records_error_and_uses_static_map(tmp_path: Path, monkeypatch):
+    import ghost_agent.capability_acquisition as module
+
+    def boom():
+        raise RuntimeError("no upstream")
+    monkeypatch.setattr("ghost_agent.openjarvis_bridge.runtime.require_upstream", boom)
+    result = CapabilityAcquisition.reuse_inventory("telegram_transport", tmp_path)
+    assert result == "openjarvis_telegram"
+    assert "no upstream" in module.last_error
+
+
+def test_reuse_inventory_without_root_is_static_only(tmp_path: Path):
+    # No filesystem access: an installed extension under tmp_path is ignored.
+    _write_manifest(tmp_path, "pdf_extractor", "enabled")
+    assert CapabilityAcquisition.reuse_inventory("pdf_extractor") is None
+    assert CapabilityAcquisition.reuse_inventory("telegram_transport") == "openjarvis_telegram"
+
+
+def test_installed_integrations_telegram_pairing(tmp_path: Path, monkeypatch):
+    from ghost_agent.utils import storage
+    monkeypatch.setattr("ghost_agent.openjarvis_bridge.runtime.require_upstream",
+                        lambda: "0.9.0")
+    state = tmp_path / ".ghost" / "openjarvis"
+    state.mkdir(parents=True)
+    storage.atomic_json(state / "telegram-pairing.json",
+                        {"enabled": True, "scope": "read_only_chat",
+                         "user_id": "12345", "chat_id": "12345", "paired_at": 0.0})
+    assert installed_integrations(tmp_path)["telegram_transport"] == "openjarvis_telegram"
+
+
+def test_corrupt_manifest_skipped(tmp_path: Path):
+    directory = root_dir = tmp_path / ".ghost" / "extensions" / "broken"
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text("{not json", encoding="utf-8")
+    assert installed_integrations(tmp_path) == {}
 
 
 def test_discover_research_build_return_flow(tmp_path: Path):

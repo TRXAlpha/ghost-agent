@@ -23,6 +23,12 @@ from typing import Any, Dict, Optional
 
 from .utils.storage import atomic_json, exclusive_lock
 
+# Extensions with this status count as installed integrations (R08/S01).
+_INSTALLED_EXTENSION_STATUSES = {"enabled", "approved"}
+
+# Set by installed_integrations when upstream discovery fails; None on success.
+last_error: Optional[str] = None
+
 
 class AcquisitionError(ValueError):
     """Invalid acquisition decision, transition, or record."""
@@ -290,14 +296,18 @@ class CapabilityAcquisition:
 
     # -- reuse-before-build -----------------------------------------------
     @staticmethod
-    def reuse_inventory(capability: str) -> Optional[str]:
-        """Return a known existing integration for `capability` if one exists.
+    def reuse_inventory(capability: str,
+                        root: Optional[Path] = None) -> Optional[str]:
+        """Return an existing integration for `capability` if one exists.
 
-        This encodes the OJ10 acceptance "reuse an existing integration before
-        coding": a recognized, already-present integration is the default reuse
-        target. A fresh capability returns None, meaning a build/adapt decision
-        is warranted after research.
+        With `root`, checks what is actually installed (extensions, MCP
+        add-ons, upstream bridge) before falling back to the static map.
+        Without `root`, only the static `known` map is consulted.
         """
+        if root is not None:
+            installed = installed_integrations(root)
+            if capability.strip() in installed:
+                return installed[capability.strip()]
         known = {
             "lesson_search": "openjarvis_memory",
             "telegram_transport": "openjarvis_telegram",
@@ -306,3 +316,50 @@ class CapabilityAcquisition:
             "web_research": "ghost_web_tools",
         }
         return known.get(capability.strip())
+
+
+def installed_integrations(root: Path) -> dict[str, str]:
+    """Enumerate integrations actually installed under `root/.ghost/extensions`.
+
+    R08/S01: reuse-before-build checks what is really installed, not only the
+    static `known` map. Read-only; never executes an extension or MCP server.
+    """
+    global last_error
+    last_error = None
+    found: dict[str, str] = {}
+    extension_root = Path(root) / ".ghost" / "extensions"
+    if extension_root.is_dir():
+        for manifest_path in extension_root.glob("*/manifest.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue  # Unreadable manifests stay a Doctor concern, not ours.
+            if not isinstance(manifest, dict):
+                continue
+            if manifest.get("status") not in _INSTALLED_EXTENSION_STATUSES:
+                continue
+            mcp_path = manifest_path.parent / "mcp.json"
+            if mcp_path.exists():
+                try:
+                    mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(mcp, dict):
+                    continue
+                tools = mcp.get("tools") or []
+                for tool in tools:
+                    if isinstance(tool, dict) and isinstance(tool.get("name"), str):
+                        found[tool["name"]] = f"mcp-{mcp.get('name', manifest.get('name', ''))}"
+            else:
+                name = manifest.get("name")
+                if isinstance(name, str) and name:
+                    found[name] = name
+    try:
+        from .openjarvis_bridge.runtime import require_upstream
+        from .openjarvis_bridge.telegram import pairing
+        require_upstream()
+        if pairing(Path(root)):
+            found.setdefault("telegram_transport", "openjarvis_telegram")
+    except Exception as exc:  # Upstream missing must never break the inventory.
+        last_error = str(exc)
+    return found
