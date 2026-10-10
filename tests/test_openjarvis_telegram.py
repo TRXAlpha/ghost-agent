@@ -2,6 +2,7 @@
 import asyncio
 import json
 import threading
+from itertools import chain, repeat
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ import pytest
 
 pytest.importorskip("openjarvis")
 
-from openjarvis.channels._stubs import ChannelMessage
+from openjarvis.channels._stubs import ChannelMessage, ChannelStatus
 from openjarvis.channels.telegram import TelegramChannel
 
 from ghost_agent.autonomy import OutcomeStore
@@ -227,22 +228,28 @@ def test_transient_error_is_retried_with_growing_backoff(tmp_path):
     pair(tmp_path, "1234", "1234")
     delays = []
     # Two transient failures, then healthy; each error forces one reconnect.
-    statuses = iter(["ERROR", "ERROR", "OK"])
+    # status() is polled once per loop pass and once after each reconnect.
+    statuses = chain([ChannelStatus.ERROR, ChannelStatus.ERROR, ChannelStatus.ERROR],
+                     repeat(ChannelStatus.CONNECTED))
     reconnects = []
+    reconnected = []
     channel = MagicMock()
     channel.status.side_effect = lambda: next(statuses)
     channel.connect.side_effect = lambda: reconnects.append(1)
-    _monitor(tmp_path, channel, sleep=delays.append, after_reconnect=reconnects.append)
+    _monitor(tmp_path, channel,
+             sleep=lambda s: delays.append(s) if s != 0.5 else None,
+             after_reconnect=lambda: reconnected.append(None),
+             )
     # 1 then 2 seconds, reset to 1 after a healthy status.
     assert delays == [1.0, 2.0]
-    assert len(reconnects) == 1
-    assert reconnects == [None]  # after_reconnect was called back
+    assert len(reconnects) == 2  # one reconnect per error pass
+    assert reconnected == [None]  # after_reconnect was called back
 
 
 def test_backoff_delay_resets_after_success_and_caps_at_limit(tmp_path):
     pair(tmp_path, "1234", "1234")
     delays = []
-    statuses = iter(["ERROR", "ERROR", "ERROR", "ERROR", "ERROR", "ERROR", "ERROR", "OK"])
+    statuses = iter([ChannelStatus.ERROR] * 7 + [ChannelStatus.CONNECTED])
     channel = MagicMock()
     channel.status.side_effect = lambda: next(statuses)
     with pytest.raises(StopIteration):
@@ -256,7 +263,7 @@ def test_emergency_stop_ends_retry_loop(tmp_path):
     EmergencyStop(tmp_path).engage("test")
     delays = []
     channel = MagicMock()
-    channel.status.return_value = "ERROR"
+    channel.status.return_value = ChannelStatus.ERROR
     channel.connect.side_effect = AssertionError("must not reconnect under emergency stop")
     with pytest.raises(IntegrationError):
         _monitor(tmp_path, channel, sleep=delays.append)
