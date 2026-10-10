@@ -73,6 +73,20 @@ RULES:
 - "thought" is at most two short sentences. Never put code in "thought".
 - Write at most ONE file per response; you will get more turns.
 - If no actions needed: {"thought": "...", "actions": []}
+- For any file over 5 lines, use the raw file-block form: put
+  "content_ref": "F1" in the write_file action (NOT "content") and append the
+  file body after the JSON object, unescaped, inside a block like:
+  <<<F1
+  ...raw file content, any characters, no escaping needed...
+  F1>>>
+  Example:
+  {"thought": "write app", "actions": [{"tool": "write_file", "path": "app.py", "content_ref": "F1"}]}
+  <<<F1
+  def greet(name):
+      return f"Hello, {name}!"
+  F1>>>
+  The block must be the last thing in your response. Quote marks, backslashes
+  and braces in the block body are written exactly as-is.
 
 STRATEGY:
 - Read relevant files first before writing

@@ -75,3 +75,88 @@ def test_parse_recovers_triple_quoted_multiline_file_content() -> None:
     result = parse_action_response(data)
 
     assert result.actions[0].content == 'def hello():\n    print("hi")\n'
+
+
+# ── Raw file blocks (content_ref) ───────────────────────────────────────────
+
+
+def test_parse_file_block_round_trips_hard_characters() -> None:
+    body = 'x = "quoted"\ny = 1 \\\\ 2\ndata = {"k": [1, 2]}\n'
+    text = '{"thought": "w", "actions": [{"tool": "write_file", "path": "a.py", "content_ref": "F1"}]}\n<<<F1\n' + body + "\nF1>>>"
+
+    result = parse_action_response(text)
+
+    assert result.actions[0].content == body
+
+
+def test_parse_multiple_file_blocks() -> None:
+    text = (
+        '{"thought": "w", "actions": ['
+        '{"tool": "write_file", "path": "a.py", "content_ref": "F1"},'
+        '{"tool": "write_file", "path": "b.py", "content_ref": "F2"}]}\n'
+        "<<<F1\nfirst = True\nF1>>>\n"
+        "<<<F2\nsecond = {\"x\": 1}\nF2>>>"
+    )
+
+    result = parse_action_response(text)
+
+    assert result.actions[0].content == "first = True"
+    assert result.actions[1].content == 'second = {"x": 1}'
+
+
+def test_parse_file_block_missing_ref_raises() -> None:
+    text = '{"thought": "w", "actions": [{"tool": "write_file", "path": "a.py", "content_ref": "F1"}]}'
+    with pytest.raises(ValueError, match="content_ref F1 has no matching block"):
+        parse_action_response(text)
+
+
+def test_parse_file_block_with_content_and_ref_raises() -> None:
+    text = (
+        '{"thought": "w", "actions": ['
+        '{"tool": "write_file", "path": "a.py", "content": "x", "content_ref": "F1"}]}\n'
+        "<<<F1\nbody\nF1>>>"
+    )
+    with pytest.raises(ValueError, match="both content and content_ref"):
+        parse_action_response(text)
+
+
+def test_parse_plain_content_form_unchanged() -> None:
+    text = '{"thought": "w", "actions": [{"tool": "write_file", "path": "a.py", "content": "print(1)\\n"}]}'
+
+    result = parse_action_response(text)
+
+    assert result.actions[0].content == "print(1)\n"
+    assert result.actions[0].content_ref is None
+
+
+def test_parse_file_block_body_passes_placeholder_guard(tmp_path, monkeypatch) -> None:
+    """Resolved block content flows through the T09 placeholder guard."""
+    import json
+    import ghost_agent.orchestrator as module
+    from ghost_agent.orchestrator import Orchestrator
+
+    task_path = tmp_path / "task.json"
+    task_path.write_text(json.dumps({"id": "example", "title": "Feature",
+        "goal": "Implement with tests", "context": {},
+        "constraints": {"iteration_limit": 3}}))
+
+    def model(_model, messages, **kwargs):
+        planning = "Create the plan now" in messages[-1]["content"]
+        if planning:
+            return ('{"thought": "plan", "actions": [{"tool": "write_file", '
+                    '"path": "plan.md", "content_ref": "F1"}]}\n'
+                    "<<<F1\nStep 1: implement\nVerification: run pytest\nF1>>>")
+        return ('{"thought": "implement", "actions": ['
+                '{"tool": "write_file", "path": "app.py", "content_ref": "F1"},'
+                '{"tool": "write_file", "path": "test_app.py", "content_ref": "F2"}]}\n'
+                "<<<F1\nanswer = 42\nF1>>>\n"
+                "<<<F2\nfrom app import answer\ndef test_answer():\n"
+                "    assert answer == 42\nF2>>>")
+
+    monkeypatch.setattr(module, "ollama_chat", model)
+    agent = Orchestrator(tmp_path, model="scripted")
+    agent.run_task(task_path)
+    state = json.loads((tmp_path / "workspaces" / "example" / "state.json").read_text())
+    assert state["last_result"] == "tests_passed"
+    app = (tmp_path / "workspaces" / "example" / "app.py").read_text()
+    assert app == "answer = 42"

@@ -69,8 +69,9 @@ def test_failed_plan_goes_to_implement(tmp_path, monkeypatch):
     def model(_model, messages, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            # Plan turn: invalid JSON (parse failure)
-            return "this is not json"
+            # Plan turn: response cut off mid-JSON (truncation feedback path)
+            return ('{"thought": "plan", "actions": [{"tool": "write_file",'
+                    ' "path": "plan.md", "content": "# plan steps')
         return json.dumps({
             "thought": "implement",
             "actions": [
@@ -87,7 +88,9 @@ def test_failed_plan_goes_to_implement(tmp_path, monkeypatch):
     state = json.loads(
         (tmp_path / "workspaces" / "planfail" / "state.json").read_text())
     assert state["last_result"] == "tests_passed"
+    # The truncated plan turn must be counted (P2: truncation feedback path).
+    assert state["truncations"] >= 1
+    # A failed plan must skip REPAIR and go straight to IMPLEMENT
+    # (P2: discriminates the TH5 change from the old REPAIR path).
+    assert state["turns"].get("REPAIR", 0) == 0
     assert state["turns"]["IMPLEMENT"] >= 1
-    # plan feedback became the repair-prompt context; last_feedback after a
-    # successful run reflects the final VERIFY results instead.
-    assert state["last_result"] == "tests_passed"
