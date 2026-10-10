@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import secrets
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -65,6 +68,46 @@ def _dir_digest(path: Path, algorithm: str = "sha256") -> str:
         digest.update(data)
         digest.update(b"\x00")
     return digest.hexdigest()
+
+
+def environment_identity(candidate: Path, command: str) -> dict[str, Any]:
+    """Describe which environment produced a verification result (R07, R13).
+
+    Records the interpreter, platform, the evaluator command, the supervisor
+    revision, and digests of dependency manifests in the candidate root. A later
+    verification whose dependency digests differ from a stored record therefore
+    counts as a different environment. Pass/fail semantics are unchanged; this
+    is evidence only.
+    """
+    supervisor_rev = "unknown"
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(Path(__file__).resolve().parent),
+            capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout.strip():
+            supervisor_rev = proc.stdout.strip()
+    except Exception:
+        supervisor_rev = "unknown"
+    dependency_digests: dict[str, str] = {}
+    patterns = ("pyproject.toml", "requirements*.txt", "*.lock",
+                "package.json", "package-lock.json")
+    seen: set[str] = set()
+    root = Path(candidate)
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if not path.is_file() or path.name in seen:
+                continue
+            seen.add(path.name)
+            dependency_digests[path.name] = hashlib.sha256(
+                path.read_bytes()).hexdigest()
+    return {
+        "python": sys.version.split()[0],
+        "executable": sys.executable,
+        "platform": platform.platform(),
+        "evaluator_command": command,
+        "supervisor_rev": supervisor_rev,
+        "dependency_digests": dependency_digests,
+    }
 
 
 @dataclass
@@ -319,13 +362,18 @@ class SelfRepairManager:
         post_digest = _dir_digest(candidate)
         if post_digest != pre_digest:
             raise SelfRepairError("candidate changed during evaluation")
+        # Environment identity is evidence only (R07, R13): it records which
+        # environment produced the run without changing pass/fail semantics.
+        environment = environment_identity(
+            candidate, str(result.get("command", "")))
         run_nonce = secrets.token_hex(16)
         with exclusive_lock(self.path.with_suffix(".lock")):
             return self._run_verified_locked(
-                proposal_id, run_nonce, pre_digest, result)
+                proposal_id, run_nonce, pre_digest, result, environment)
 
     def _run_verified_locked(self, proposal_id: str, run_nonce: str, pre_digest: str,
-                             result: dict[str, Any]) -> SelfRepairProposal:
+                             result: dict[str, Any],
+                             environment: Optional[dict[str, Any]] = None) -> SelfRepairProposal:
         data = self._load()
         for item in data:
             if item.get("proposal_id") != proposal_id:
@@ -344,6 +392,8 @@ class SelfRepairManager:
             for key in ("runner", "isolation_unavailable"):
                 if key in result:
                     evidence[0][key] = result[key]
+            if environment is not None:
+                evidence[0]["environment"] = environment
             # fresh_run: the manager just witnessed `pre_digest`; stamp that
             # nonce/digest pair as the new ground truth.
             return self._record_verification_locked(
