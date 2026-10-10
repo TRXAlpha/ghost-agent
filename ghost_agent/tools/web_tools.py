@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from html import unescape
 from html.parser import HTMLParser
+import ipaddress
+import os
 import re
+import socket
 from typing import Any, Dict, List
 from urllib.parse import unquote, urlparse, urldefrag, urljoin
 
@@ -12,6 +15,29 @@ import requests
 _DDG_URL = "https://html.duckduckgo.com/html/"
 _OPENALEX_URL = "https://api.openalex.org/works"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; GhostAgent/1.0)"}
+
+
+def _is_forbidden_destination(host: str) -> bool:
+    """True if host resolves to any loopback/private/link-local/reserved address.
+
+    Research fetches must never reach localhost, private networks, link-local
+    or metadata endpoints (e.g. 169.254.169.254) unless the owner explicitly
+    scopes them with GHOST_ALLOW_PRIVATE_FETCH=1. Resolution failure is
+    forbidden too (fail closed).
+    """
+    if os.environ.get("GHOST_ALLOW_PRIVATE_FETCH") == "1":
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, OSError, UnicodeError):
+        return True
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (address.is_loopback or address.is_private or address.is_link_local
+                or address.is_multicast or address.is_unspecified
+                or address.is_reserved):
+            return True
+    return False
 
 
 class _PageTextExtractor(HTMLParser):
@@ -129,6 +155,9 @@ def fetch_source_text(url: str, timeout: int = 15, max_chars: int = 24_000,
 
     This intentionally declines non-HTML pages (including PDFs) rather than
     pretending a search-result snippet is primary evidence.
+
+    The check refuses hosts that resolve to private/loopback/link-local or
+    reserved addresses (or that fail to resolve) unless GHOST_ALLOW_PRIVATE_FETCH=1.
     """
     if type(max_bytes) is not int or not 1 <= max_bytes <= 8 * 1024 * 1024:
         raise ValueError("max_bytes must be an integer from 1 to 8388608")
@@ -141,6 +170,9 @@ def fetch_source_text(url: str, timeout: int = 15, max_chars: int = 24_000,
         for redirect in range(6):
             if not source_credibility(current)["domain"]:
                 return {}
+            current_host = urlparse(current).hostname
+            if current_host is None or _is_forbidden_destination(current_host):
+                raise ValueError("refusing to fetch private, local or unresolvable host: " + repr(current_host))
             with requests.get(current, headers={**_HEADERS, "Accept-Encoding": "identity"},
                               timeout=timeout, stream=True, allow_redirects=False) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
@@ -213,6 +245,8 @@ def academic_search(query: str, max_results: int = 8) -> List[Dict[str, Any]]:
     full paper.
     """
     try:
+        if _is_forbidden_destination(urlparse(_OPENALEX_URL).hostname or ""):
+            return []
         response = requests.get(
             _OPENALEX_URL,
             params={"search": query, "per-page": max_results},
@@ -243,6 +277,9 @@ def academic_search(query: str, max_results: int = 8) -> List[Dict[str, Any]]:
             venue = {}
         landing_url = location.get("landing_page_url") or work.get("doi") or work.get("id")
         if not isinstance(landing_url, str) or not source_credibility(landing_url)["domain"]:
+            continue
+        landing_host = urlparse(landing_url).hostname
+        if landing_host is None or _is_forbidden_destination(landing_host):
             continue
         work_type = str(work.get("type") or "")
         score = 0.75 if work_type == "article" else 0.65
@@ -280,6 +317,8 @@ def web_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
     Returns an empty list on failure.
     """
     try:
+        if _is_forbidden_destination(urlparse(_DDG_URL).hostname or ""):
+            return []
         resp = requests.get(
             _DDG_URL,
             params={"q": query},
