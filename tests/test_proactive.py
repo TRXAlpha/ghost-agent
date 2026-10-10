@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -296,3 +297,52 @@ def test_tick_matches_active_goal_tokens_into_goal_ids_and_evidence(tmp_path: Pa
     assert record["goal_ids"] == [goal.goal_id]
     assert any(item["source"] == "active_goal" and item["excerpt"] == goal.goal_id
                for item in record["evidence_items"])
+
+
+# --- TD2: stale-goal and deadline triggers ---
+
+def test_stale_goal_appears_in_context_and_sets_stale_trigger(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    store = GoalStore(tmp_path)
+    expired = store.create("Old report draft", kind="focus",
+                           deadline_at=time.time() - 60)
+    fresh = store.create("Fresh plan", kind="focus", deadline_at=time.time() + 3600)
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    record = engine.tick(auto_queue=False)["opportunity"]
+    assert record["trigger"] == "stale_goal"
+    # mark_stale persisted the lifecycle change during tick's context() call
+    assert store.get(expired.goal_id).status == "stale"
+    assert store.get(fresh.goal_id).status == "active"
+    context = engine.context()
+    assert context.get("stale_goals", []) == []
+    assert [entry["goal_id"] for entry in context["upcoming_deadlines"]] == [fresh.goal_id]
+
+
+def test_mark_stale_throttled_to_once_per_six_hours(tmp_path: Path):
+    from ghost_agent.kernel import GoalStore
+    store = GoalStore(tmp_path)
+    first = store.create("Old report draft", kind="focus", deadline_at=1.0)
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    engine.context()  # first run: marks stale, writes state
+    state_path = tmp_path / ".ghost" / "proactive_state.json"
+    assert "mark_stale_at" in json.loads(state_path.read_text(encoding="utf-8"))
+    # a goal that expires after the throttled run is NOT flipped while throttled
+    late = store.create("Later report draft", kind="focus", deadline_at=2.0)
+    engine.context()
+    assert store.get(late.goal_id).status == "active"
+    # after the 6 h window the throttle expires and late goal is marked
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["mark_stale_at"] -= 6 * 3600 + 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    engine.context()
+    assert store.get(late.goal_id).status == "stale"
+
+
+def test_no_goals_yields_empty_stale_and_deadline_lists(tmp_path: Path):
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=lambda *a, **k: proposal())
+    context = engine.context()
+    assert context.get("stale_goals", []) == []
+    assert context.get("upcoming_deadlines", []) == []
+    # key presence drives TD1's trigger, so absent when empty
+    assert "stale_goals" not in context
+    assert "upcoming_deadlines" not in context
