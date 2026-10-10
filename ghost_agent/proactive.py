@@ -23,6 +23,7 @@ from .intent import IntentStore
 from .kernel import GoalStore
 from .models.chat import chat
 from .models.chat import route_identity
+from .openjarvis_bridge.spend import DurableInferenceBudget
 from .runtime import (AttentionManager, EmergencyStop, Event, EventBus,
                       Notification, ScheduledJob, Scheduler)
 from .autonomy_improver import CapabilityImprover
@@ -404,7 +405,8 @@ class ProactiveEngine:
 
     def __init__(self, root: Path, model: str, *, chat_fn: Callable[..., str] = chat,
                  idle_fn: Callable[[], Optional[float]] = idle_seconds,
-                 context_paths: Optional[list[str]] = None) -> None:
+                 context_paths: Optional[list[str]] = None,
+                 inference_budget: Optional[DurableInferenceBudget] = None) -> None:
         self.root = Path(root).resolve()
         if not isinstance(model, str) or not model.strip():
             raise ProactiveError("Proactive work requires an explicit model")
@@ -412,6 +414,7 @@ class ProactiveEngine:
         self.chat = chat_fn
         self.idle_fn = idle_fn
         self.context_paths = list(context_paths or [])
+        self.inference_budget = inference_budget  # TD5 (S06): daily call cap
         self.store = OpportunityStore(self.root)
 
     def _provided_context(self) -> list[dict[str, str]]:
@@ -562,8 +565,20 @@ class ProactiveEngine:
             if observed_idle < idle_after:
                 return {"status": "deferred", "reason": "owner_active", "idle_seconds": observed_idle}
         context = self.context()
-        response = self.chat(self.model, self._prompt(context), options={"temperature": 0.2, "num_predict": 700},
-                             timeout=min(60, int(os.environ.get("GHOST_OLLAMA_TIMEOUT", "60"))), response_format="json")
+        # TD5 (S06): reserve one inference call before the model call; when the
+        # durable daily budget is exhausted, defer without calling the model.
+        if self.inference_budget is not None:
+            try:
+                reservation = self.inference_budget.reserve(1)
+            except Exception:
+                return {"status": "deferred", "reason": "inference_budget_exhausted"}
+        else:
+            reservation = None
+        response = self.chat(self.model, self._prompt(context),
+                             options={"temperature": 0.2, "num_predict": 700},
+                             timeout=min(60, int(os.environ.get("GHOST_OLLAMA_TIMEOUT", "60"))),
+                             response_format="json",
+                             budget=self.inference_budget, reservation=reservation)
         if not isinstance(response, str):
             raise ProactiveError("Proactive model returned a non-text response")
         proposal = self._make_opportunity(parse_proposal(response), context)
