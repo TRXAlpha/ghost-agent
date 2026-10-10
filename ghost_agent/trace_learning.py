@@ -30,6 +30,36 @@ REPAIRABLE_ERROR_CLASSES = {"ollama_read_timeout", "connection_error"}
 
 DEFAULT_MIN_COUNT = 2
 
+#: Model/route failure types derived from run diagnostics (run/state.json),
+#: never capability gaps.
+MODEL_DIAGNOSTIC_TYPES = {
+    "model_output_truncated",
+    "model_unavailable",
+    "model_protocol_errors",
+}
+
+MODEL_DIAGNOSTIC_NOTE = (
+    "consider a larger output budget, a different model, or file-block output"
+)
+
+
+def _diagnostic_signature(state: dict) -> Optional[tuple[str, str]]:
+    """Map run diagnostics (run/state.json) to (error_type, subsystem).
+
+    Rules in priority order; the first match wins. Returns None when the
+    diagnostics do not identify a specific failure mode.
+    """
+    if state.get("truncations", 0) >= 2:
+        return ("model_output_truncated", "model")
+    if state.get("last_result") == "model_unavailable" or state.get("model_failures", 0) >= 2:
+        return ("model_unavailable", "model")
+    if state.get("parse_errors", 0) >= 3:
+        return ("model_protocol_errors", "model")
+    limit_reason = state.get("limit_reason")
+    if limit_reason:
+        return (f"limit_{limit_reason}", "orchestrator")
+    return None
+
 
 def normalize_error_text(text: str) -> str:
     """Collapse volatile detail so recurring failures share one bucket.
@@ -115,8 +145,20 @@ class TraceAnalyzer:
                 continue
             if isinstance(record, dict):
                 record.setdefault("_path", str(path))
+                state = self._load_run_state(path.parent / "run" / "state.json")
+                if state is not None:
+                    record["_state"] = state
                 outcomes.append(record)
         return outcomes
+
+    @staticmethod
+    def _load_run_state(path: Path) -> Optional[dict]:
+        """Read <outcome dir>/run/state.json; missing or corrupt is ignored."""
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return None
+        return state if isinstance(state, dict) else None
 
     def analyze(self) -> TraceAnalysis:
         analysis = TraceAnalysis(generated_at=datetime.now().isoformat(timespec="seconds"))
@@ -130,10 +172,24 @@ class TraceAnalyzer:
             if not is_failed:
                 continue
             analysis.failed += 1
-            subsystem = "worker" if any(
-                isinstance(e, str) and e.startswith("worker:") for e in errors
-            ) else "orchestrator"
-            if errors:
+            state = record.get("_state") or {}
+            diagnostic = _diagnostic_signature(state) if state else None
+            if diagnostic is not None:
+                # Run diagnostics identify a specific failure mode; the result
+                # code and error text are secondary for these outcomes.
+                error_type, subsystem = diagnostic
+                key = (error_type, result or "unspecified", subsystem)
+                sig = signatures.setdefault(key, FailureSignature(
+                    error_type=error_type, normalized_error=key[1],
+                    subsystem=subsystem))
+                sig.count += 1
+                sig.sample_error = sig.sample_error or (errors[0] if errors and
+                    isinstance(errors[0], str) else "")
+                sig.sample_job_id = sig.sample_job_id or str(record.get("job_id", ""))
+            elif errors:
+                subsystem = "worker" if any(
+                    isinstance(e, str) and e.startswith("worker:") for e in errors
+                ) else "orchestrator"
                 for raw in errors:
                     text = raw if isinstance(raw, str) else json.dumps(raw)
                     error_type = classify_error_text(text)
@@ -147,6 +203,7 @@ class TraceAnalyzer:
             else:
                 # No error text: the result code itself is the signature.
                 error_type = f"result_{result or 'unspecified'}"
+                subsystem = "orchestrator"
                 key = (error_type, result or "unspecified", subsystem)
                 sig = signatures.setdefault(key, FailureSignature(
                     error_type=error_type, normalized_error=key[1],
@@ -178,12 +235,35 @@ class ImprovementProposer:
         for sig in analysis.top_signatures:
             if sig.count < self.min_count:
                 continue
-            if sig.error_type in REPAIRABLE_ERROR_CLASSES:
+            if sig.error_type in MODEL_DIAGNOSTIC_TYPES:
+                # Model/route failures are never capability gaps: propose a
+                # model/route action for orchestrator review instead.
+                actions.append({
+                    "action": "model_route_action",
+                    "signature": sig.to_dict(),
+                    "note": MODEL_DIAGNOSTIC_NOTE,
+                })
+            elif sig.error_type in REPAIRABLE_ERROR_CLASSES:
                 actions.append({
                     "action": "repair_proposal",
                     "signature": sig.to_dict(),
                     "note": "self-repair proposal requires a sandbox candidate; "
                             "queued for orchestrator review instead of auto-created",
+                })
+            elif sig.error_type in ("limit_tests_failed", "limit_focused_tests_failed"):
+                # limit_* diagnostics follow the existing capability-gap path
+                # for these two reasons only.
+                registry = CapabilityRegistry(self.root)
+                gap = registry.record_gap(
+                    goal=f"capability for recurring {sig.error_type} outcomes",
+                    result=sig.error_type.removeprefix("limit_"),
+                    details=f"trace_learning: {sig.count} occurrences, "
+                            f"sample job {sig.sample_job_id}",
+                )
+                actions.append({
+                    "action": "capability_gap",
+                    "signature": sig.to_dict(),
+                    "gap_id": gap.get("id", ""),
                 })
             elif sig.error_type.startswith("result_") and sig.normalized_error in CAPABILITY_GAP_RESULTS:
                 registry = CapabilityRegistry(self.root)
