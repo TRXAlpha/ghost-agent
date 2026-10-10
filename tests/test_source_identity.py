@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 
 from ghost_agent.tools import web_tools
@@ -20,6 +22,15 @@ def test_exact_hosts_subdomains_ports_and_tertiary_classification():
 
 
 def test_academic_records_keep_work_publisher_and_retrieval_identity(monkeypatch):
+    # The fail-closed private-network block (TH3) refuses hosts that do not
+    # resolve. Map the synthetic publisher hosts to a public address so the
+    # records keep their retrieval identity without real DNS.
+    def allow_publishers(host, *args, **kwargs):
+        if host.endswith(".org"):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        raise socket.gaierror("resolution failed")
+
+    monkeypatch.setattr(web_tools.socket, "getaddrinfo", allow_publishers)
     abstract = "A controlled study measures carbon cycling and reports uncertainty across repeated observations. " * 3
     index = {}
     for offset, word in enumerate(abstract.split()):
