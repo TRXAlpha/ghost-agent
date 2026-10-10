@@ -1,6 +1,7 @@
 """OJ10: capability acquisition lifecycle, decisions, prerequisites, reuse."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,57 @@ def test_retire_and_health(tmp_path: Path):
     assert rec.status == "retired"
     assert rec.retired_reason == "superseded by upstream"
     assert rec not in acq.active_or_pending()
+
+
+def test_degraded_recover_and_verify_live(tmp_path: Path):
+    acq = CapabilityAcquisition(tmp_path)
+    rec = acq.discover("pdf_parsing", "extraction failing")
+    acq.research(rec.record_id, "build", "no reuse target")
+    for status in ("feasible", "building", "testing", "ready_to_activate", "active"):
+        acq.advance(rec.record_id, status)
+    # transition table: active -> degraded -> active and active -> degraded -> disabled
+    rec = acq.advance(rec.record_id, "degraded")
+    assert rec.status == "degraded"
+    rec = acq.advance(rec.record_id, "active")
+    assert rec.status == "active"
+    acq.advance(rec.record_id, "degraded")
+    rec = acq.advance(rec.record_id, "disabled")
+    assert rec.status == "disabled"
+    # invalid per table: disabled -> active must be refused
+    with pytest.raises(AcquisitionError, match="Invalid acquisition transition"):
+        acq.advance(rec.record_id, "active")
+
+
+def test_verify_live_requires_active_and_evidence(tmp_path: Path):
+    acq = CapabilityAcquisition(tmp_path)
+    rec = acq.discover("pdf_parsing", "extraction failing")
+    with pytest.raises(AcquisitionError, match="active"):
+        acq.mark_operationally_verified(rec.record_id, "live: parsed 3 PDFs")
+    acq.research(rec.record_id, "build", "no reuse target")
+    for status in ("feasible", "building", "testing", "ready_to_activate", "active"):
+        acq.advance(rec.record_id, status)
+    with pytest.raises(AcquisitionError, match="evidence"):
+        acq.mark_operationally_verified(rec.record_id, "   ")
+    rec = acq.mark_operationally_verified(rec.record_id, "live: parsed 3 PDFs end to end")
+    assert rec.operationally_verified is True
+    assert rec.verification_evidence == "live: parsed 3 PDFs end to end"
+    persisted = acq.get(rec.record_id)
+    assert persisted.operationally_verified is True
+
+
+def test_old_records_without_new_fields_load(tmp_path: Path):
+    acq = CapabilityAcquisition(tmp_path)
+    rec = acq.discover("legacy_cap", "written before verification fields")
+    path = tmp_path / ".ghost" / "acquisitions.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for item in data.values():
+        item.pop("operationally_verified", None)
+        item.pop("verification_evidence", None)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = acq.get(rec.record_id)
+    assert loaded is not None
+    assert loaded.operationally_verified is False
+    assert loaded.verification_evidence == ""
 
 
 def test_corrupt_state_fails_closed(tmp_path: Path):

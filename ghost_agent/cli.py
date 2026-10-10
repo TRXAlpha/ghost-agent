@@ -1633,6 +1633,14 @@ def main() -> None:
     capability_retire = capability_sub.add_parser("retire", help="Retire an active capability")
     capability_retire.add_argument("record_id", help="Acquisition record id")
     capability_retire.add_argument("--reason", default="", help="Retirement reason")
+    capability_degrade = capability_sub.add_parser("degrade", help="Mark an active capability degraded")
+    capability_degrade.add_argument("record_id", help="Acquisition record id")
+    capability_degrade.add_argument("--reason", default="", help="Why the capability is degraded")
+    capability_recover = capability_sub.add_parser("recover", help="Return a degraded capability to active")
+    capability_recover.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live = capability_sub.add_parser("verify-live", help="Record live operational verification")
+    capability_verify_live.add_argument("record_id", help="Acquisition record id")
+    capability_verify_live.add_argument("--evidence", default="", help="Live verification evidence")
 
     memory_parser = sub.add_parser("memory",
         help="Manage validated memories (retract/purge)")
@@ -2631,6 +2639,17 @@ def _cmd_capability(args: argparse.Namespace) -> None:
             if args.health == "degraded":
                 EventBus(Path.cwd()).emit(Event("capability.degraded",
                                                 {"record_id": args.record_id, "health": args.health}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "degrade":
+            record = store.advance(args.record_id, "degraded")
+            EventBus(Path.cwd()).emit(Event("capability.degraded",
+                                            {"record_id": args.record_id, "reason": args.reason or ""}))
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "recover":
+            record = store.advance(args.record_id, "active")
+            print(json.dumps(record.__dict__, indent=2))
+        elif action == "verify-live":
+            record = store.mark_operationally_verified(args.record_id, args.evidence or "")
             print(json.dumps(record.__dict__, indent=2))
         elif action == "retire":
             record = store.get(args.record_id)
