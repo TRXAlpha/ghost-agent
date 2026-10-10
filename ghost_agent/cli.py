@@ -2771,6 +2771,8 @@ def _cmd_doctor() -> None:
     """Report local runtime health without changing state."""
     doctor = Doctor(Path.cwd())
     checks = doctor.check()
+    tampered = ExtensionManager(Path.cwd()).verify_integrity()
+    checks["extensions"] = f"{len(tampered)} tampered" if tampered else "ok"
     service_names = {"ollama", "docker"}
     storage = {k: v for k, v in checks.items() if k not in service_names}
     services = {k: v for k, v in checks.items() if k in service_names}
@@ -2802,6 +2804,7 @@ def _cmd_emergency_stop(args: argparse.Namespace) -> None:
 def _cmd_extension(args: argparse.Namespace) -> None:
     """Create only reviewable extension scaffolds; enabling is a later approval step."""
     manager = ExtensionManager(Path.cwd())
+    manager.verify_integrity()
     if args.action == "propose":
         manifest = manager.propose(args.name, args.goal)
     elif args.action == "scaffold":
