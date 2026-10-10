@@ -579,6 +579,32 @@ class GhostSDK:
         }
 
 
+# ── Job controls shared by CLI and API (R14) ─────────────────────────────────
+
+_JOB_ACTIONS = {
+    "pause": lambda sdk, job_id: sdk.scheduler.mark(job_id, "paused", expected={"queued"}),
+    "resume": lambda sdk, job_id: sdk.scheduler.resume(job_id),
+    "cancel": lambda sdk, job_id: sdk.scheduler.mark(job_id, "cancelled",
+                                                    expected={"queued", "paused", "failed"}),
+}
+
+
+def apply_job_action(root: Path, job_id: str, action: str) -> Dict[str, Any]:
+    """Pause/resume/cancel a scheduled job through one shared code path.
+
+    Raises ValueError for an unknown job (404 at the API layer) and for a
+    disallowed transition (409 at the API layer).
+    """
+    handler = _JOB_ACTIONS.get(action)
+    if handler is None:
+        raise ValueError(f"Unknown job action: {action}")
+    sdk = GhostSDK(root)
+    jobs = {job.job_id for job in sdk.scheduler.list()}
+    if job_id not in jobs:
+        raise LookupError(f"Unknown job: {job_id}")
+    return handler(sdk, job_id).__dict__
+
+
 class ResourceMonitor:
     """Portable, read-only resource snapshot used for scheduler admission."""
 
