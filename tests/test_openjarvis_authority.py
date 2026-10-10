@@ -165,3 +165,109 @@ def test_real_agent_still_denies_consequential_tool(endpoint, tmp_path):
     assert result["tools"] == [{"name": "shell_exec", "success": False}]
     assert len(calls) == 2
     assert "not approved" in calls[1]["body"]["messages"][-1]["content"]
+
+
+# -- structured grant fields (TL1) ----------------------------------------
+
+def _write_grants(tmp_path, records):
+    path = _grants_json(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(records), encoding="utf-8")
+
+
+def _legacy_grant(tmp_path) -> dict:
+    return {
+        "grant_id": "grant_legacy",
+        "principal": "owner",
+        "capability": "lesson_search",
+        "scope": str(tmp_path.resolve()),
+        "reason": "legacy",
+        "status": "active",
+        "expires_at": None,
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+
+
+def test_legacy_grant_without_new_fields_loads(tmp_path):
+    _write_grants(tmp_path, [_legacy_grant(tmp_path)])
+    grants = GrantStore(tmp_path).all()
+    assert len(grants) == 1
+    assert grants[0].side_effects == []
+    assert grants[0].conditions == {}
+    assert grants[0].limits == {}
+    assert grants[0].provenance == "owner"
+
+
+def test_unknown_side_effect_fails_closed(tmp_path):
+    record = _legacy_grant(tmp_path)
+    record["side_effects"] = ["launch_missiles"]
+    _write_grants(tmp_path, [record])
+    with pytest.raises(AuthorityStateError):
+        GrantStore(tmp_path)._load()
+
+
+def test_unknown_condition_key_fails_closed(tmp_path):
+    record = _legacy_grant(tmp_path)
+    record["conditions"] = {"must_wave_flag": True}
+    _write_grants(tmp_path, [record])
+    with pytest.raises(AuthorityStateError):
+        GrantStore(tmp_path)._load()
+
+
+def test_wrong_condition_type_fails_closed(tmp_path):
+    record = _legacy_grant(tmp_path)
+    record["conditions"] = {"max_per_day": "three"}
+    _write_grants(tmp_path, [record])
+    with pytest.raises(AuthorityStateError):
+        GrantStore(tmp_path)._load()
+
+
+def test_unknown_limit_key_fails_closed(tmp_path):
+    record = _legacy_grant(tmp_path)
+    record["limits"] = {"max_tons": 1}
+    _write_grants(tmp_path, [record])
+    with pytest.raises(AuthorityStateError):
+        GrantStore(tmp_path)._load()
+
+
+def test_invalid_provenance_fails_closed(tmp_path):
+    record = _legacy_grant(tmp_path)
+    record["provenance"] = "self_minted"
+    _write_grants(tmp_path, [record])
+    with pytest.raises(AuthorityStateError):
+        GrantStore(tmp_path)._load()
+
+
+def test_ensure_records_structured_fields(tmp_path):
+    grant = GrantStore(tmp_path).ensure(
+        "owner", "lesson_search", str(tmp_path.resolve()), "r",
+        side_effects=["read"], conditions={"max_per_day": 2},
+        limits={"max_calls": 10})
+    assert grant.side_effects == ["read"]
+    assert grant.conditions == {"max_per_day": 2}
+    assert grant.limits == {"max_calls": 10}
+    assert grant.provenance == "owner"
+    with pytest.raises(ValueError, match="provenance"):
+        GrantStore(tmp_path).ensure(
+            "owner", "lesson_search", str(tmp_path.resolve()), "r",
+            provenance="migration")
+    with pytest.raises(ValueError, match="side_effects"):
+        GrantStore(tmp_path).ensure(
+            "owner", "lesson_search", str(tmp_path.resolve()), "r",
+            side_effects=["spend_money"])
+
+
+def test_max_per_day_denies_nth_call_and_resets_next_day(tmp_path, monkeypatch):
+    store = GrantStore(tmp_path)
+    store.ensure("owner", "lesson_search", str(tmp_path.resolve()), "r",
+                 conditions={"max_per_day": 2})
+    now = time.time()
+    assert authorize_call(tmp_path, "owner", "lesson_search", {"query": "a"}, now=now)[0]
+    assert authorize_call(tmp_path, "owner", "lesson_search", {"query": "b"}, now=now)[0]
+    ok, reason = authorize_call(tmp_path, "owner", "lesson_search", {"query": "c"}, now=now)
+    assert not ok
+    assert "max_per_day" in reason
+    next_day = now + 24 * 3600
+    ok, _ = authorize_call(tmp_path, "owner", "lesson_search", {"query": "d"}, now=next_day)
+    assert ok
