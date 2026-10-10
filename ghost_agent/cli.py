@@ -1720,6 +1720,12 @@ def main() -> None:
     checkin_parser.add_argument("--interval-seconds", type=int, default=86400)
     checkin_parser.add_argument("--message", default="Check in: review active goals and pending approvals.")
     checkin_parser.add_argument("--quiet-hours", type=int, nargs=2, default=[22, 8], metavar=("START", "END"))
+    notifications_parser = sub.add_parser("notifications", help="List or acknowledge pending notifications")
+    notifications_sub = notifications_parser.add_subparsers(dest="subaction", required=True)
+    list_parser = notifications_sub.add_parser("list", help="Show deliverable notifications")
+    list_parser.add_argument("--all", action="store_true", help="Show all pending, marking held items")
+    ack_parser = notifications_sub.add_parser("ack", help="Acknowledge a notification")
+    ack_parser.add_argument("notification_id")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
     proactive_parser.add_argument("action", choices=["tick", "watch", "status", "dismiss"])
     proactive_parser.add_argument("--model", default=None, help="Model used to propose the next experiment")
@@ -1886,6 +1892,7 @@ def main() -> None:
         "integration": lambda: _cmd_integration(args),
         "worker": lambda: _cmd_worker(args),
         "check-in": lambda: _cmd_check_in(args),
+        "notifications": lambda: _cmd_notifications(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3048,6 +3055,34 @@ def _cmd_worker(args: argparse.Namespace) -> None:
         if not args.watch:
             return
         time.sleep(max(0.25, args.poll_seconds))
+
+
+def _cmd_notifications(args: argparse.Namespace) -> None:
+    sdk = GhostSDK(Path.cwd())
+    attention = AttentionManager(Path.cwd())
+    try:
+        if args.subaction == "ack":
+            note = attention.acknowledge(args.notification_id)
+            print(json.dumps(note.__dict__, indent=2))
+            return
+        prefs = sdk.notification_preferences()
+        quiet_hours: tuple[int, int] | None = None
+        start, end = prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")
+        if type(start) is int and type(end) is int and 0 <= start <= 23 and 0 <= end <= 23:
+            quiet_hours = (start, end)
+        deliverable_ids = {note.notification_id for note in attention.deliverable(quiet_hours=quiet_hours)}
+        if not args.all:
+            print(json.dumps([note.__dict__ for note in attention.deliverable(quiet_hours=quiet_hours)], indent=2))
+            return
+        payload = []
+        for note in attention.pending():
+            record = note.__dict__.copy()
+            if note.notification_id not in deliverable_ids:
+                record["held"] = "quiet hours"
+            payload.append(record)
+        print(json.dumps(payload, indent=2))
+    except (ValueError, OSError) as exc:
+        print(f"Notifications refused: {exc}")
 
 
 def _cmd_check_in(args: argparse.Namespace) -> None:
