@@ -281,3 +281,134 @@ def test_queue_accepts_benchmark_source(tmp_path: Path):
     job = queue_sandbox_outcome(tmp_path, "x task", "tiny", source="benchmark")
     assert job.job_id
     assert job.acceptance_contract["source"] == "benchmark"
+
+
+# ------------------------------------------------------------------
+# TI2: history and compare
+# ------------------------------------------------------------------
+
+from ghost_agent.benchmark import compare, list_reports  # noqa: E402
+
+
+def _make_report(tmp_path: Path, run_id: str, model: str, goals: list[tuple[str, bool, bool]]) -> dict:
+    """Write a fixture report under .ghost/bench/<run_id>/ and return it."""
+    report = {
+        "run_id": run_id,
+        "model": model,
+        "iterations": 10,
+        "goals": [
+            {"goal_id": gid, "tests_passed": tp, "accepted": acc}
+            for gid, tp, acc in goals
+        ],
+        "summary": {
+            "total": len(goals),
+            "tests_passed": sum(1 for _, tp, _ in goals if tp),
+            "accepted": sum(1 for _, _, acc in goals if acc),
+            "ghost_pass_rate": round(sum(1 for _, tp, _ in goals if tp) / len(goals), 3),
+            "accepted_rate": round(sum(1 for _, _, acc in goals if acc) / len(goals), 3),
+        },
+    }
+    run_dir = tmp_path / ".ghost" / "bench" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    return report
+
+
+def _goal(gid: str, accepted: bool, tests_passed: bool = True) -> tuple[str, bool, bool]:
+    return (gid, tests_passed, accepted)
+
+
+def test_list_reports_newest_first_with_corrupt(tmp_path: Path):
+    """list_reports returns reports newest first; corrupt ones become error entries."""
+    ra = _make_report(tmp_path, "20260101_000000_a", "m1", [_goal("intervals", True)])
+    rb = _make_report(tmp_path, "20260102_000000_b", "m2", [_goal("intervals", False)])
+    corrupt_dir = tmp_path / ".ghost" / "bench" / "20260103_000000_c"
+    corrupt_dir.mkdir(parents=True)
+    (corrupt_dir / "report.json").write_text("{not json", encoding="utf-8")
+
+    reports = list_reports(tmp_path)
+    assert [r["run_id"] for r in reports] == ["20260103_000000_c", "20260102_000000_b", "20260101_000000_a"]
+    assert "error" in reports[0]
+    assert reports[1] == rb
+    assert reports[2] == ra
+
+
+def test_compare_each_change_kind(tmp_path: Path):
+    """accepted decides the change; tests_passed breaks ties; new/removed handled."""
+    _make_report(tmp_path, "old", "m1", [
+        _goal("improved", False, True),    # accepted improves -> improved
+        _goal("regressed", True, True),    # accepted regresses -> regressed
+        _goal("tie_tp", True, False),      # accepted same, tp improves -> improved
+        _goal("tie_acc", False, True),     # accepted same, tp regresses -> regressed
+        _goal("same_goal", True, True),    # identical -> same
+        _goal("gone", True, True),         # only in a -> removed
+    ])
+    _make_report(tmp_path, "new", "m1", [
+        _goal("improved", True, True),
+        _goal("regressed", False, True),
+        _goal("tie_tp", True, True),
+        _goal("tie_acc", False, False),
+        _goal("same_goal", True, True),
+        _goal("brand_new", True, True),    # only in b -> new
+    ])
+    reports = {r["run_id"]: r for r in list_reports(tmp_path)}
+    result = compare(reports["old"], reports["new"])
+    changes = {gid: entry["change"] for gid, entry in result["goals"].items()}
+    assert changes == {
+        "improved": "improved",
+        "regressed": "regressed",
+        "tie_tp": "improved",
+        "tie_acc": "regressed",
+        "same_goal": "same",
+        "gone": "removed",
+        "brand_new": "new",
+    }
+    assert result["different_models"] is False
+    assert result["summary"]["improved"] == 2
+    assert result["summary"]["regressed"] == 2
+    assert result["summary"]["same"] == 1
+    assert result["summary"]["new"] == 1
+    assert result["summary"]["removed"] == 1
+
+
+def test_compare_flags_different_models(tmp_path: Path):
+    """Comparing runs of different models is allowed but flagged."""
+    ra = _make_report(tmp_path, "r1", "modelA", [_goal("intervals", True)])
+    rb = _make_report(tmp_path, "r2", "modelB", [_goal("intervals", False)])
+    result = compare(ra, rb)
+    assert result["different_models"] is True
+    assert result["model_a"] == "modelA"
+    assert result["model_b"] == "modelB"
+
+
+def test_cli_compare_resolves_latest_previous_aliases(tmp_path, monkeypatch, capsys):
+    """`ghost bench compare latest previous` resolves to the two newest runs."""
+    import argparse
+    from ghost_agent.cli import _cmd_bench
+
+    monkeypatch.chdir(tmp_path)
+    ra = _make_report(tmp_path, "20260101_a", "m1", [_goal("intervals", True)])
+    rb = _make_report(tmp_path, "20260102_b", "m1", [_goal("intervals", True)])
+
+    args = argparse.Namespace(bench_action="compare", run_a="latest", run_b="previous")
+    _cmd_bench(args)
+    out = capsys.readouterr().out
+    assert f"{ra['run_id']}" in out and f"{rb['run_id']}" in out
+    assert "intervals" in out and "same" in out
+    assert "different models" not in out
+
+
+def test_cli_history_lists_runs(tmp_path, monkeypatch, capsys):
+    """`ghost bench history` prints one row per run, newest first."""
+    import argparse
+    from ghost_agent.cli import _cmd_bench
+
+    monkeypatch.chdir(tmp_path)
+    _make_report(tmp_path, "20260101_a", "m1", [_goal("intervals", True)])
+    _make_report(tmp_path, "20260102_b", "m2", [_goal("intervals", False)])
+
+    _cmd_bench(argparse.Namespace(bench_action="history"))
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.startswith("2026")]
+    assert [line.split()[0] for line in lines] == ["20260102_b", "20260101_a"]
+    assert "m1" in out and "m2" in out

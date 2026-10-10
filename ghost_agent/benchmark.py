@@ -226,6 +226,109 @@ def latest_report(project_root: Path) -> Optional[dict]:
     return json.loads((dirs[-1] / "report.json").read_text(encoding="utf-8"))
 
 
+def list_reports(project_root: Path) -> list[dict]:
+    """Every .ghost/bench/*/report.json, newest first.
+
+    Unreadable reports are skipped, replaced by a warning entry
+    ``{"run_id": <dir name>, "error": <message>}``.
+    """
+    bench_root = Path(project_root).resolve() / ".ghost" / "bench"
+    if not bench_root.is_dir():
+        return []
+    dirs = sorted(
+        (d for d in bench_root.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    reports: list[dict] = []
+    for d in dirs:
+        path = d / "report.json"
+        if not path.is_file():
+            continue
+        try:
+            reports.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            reports.append({"run_id": d.name, "error": str(exc)})
+    return reports
+
+
+def _run_index(report: dict) -> dict[str, dict[str, bool]]:
+    return {
+        g["goal_id"]: {
+            "tests_passed": bool(g.get("tests_passed")),
+            "accepted": bool(g.get("accepted")),
+        }
+        for g in report.get("goals", [])
+    }
+
+
+def compare(report_a: dict, report_b: dict) -> dict:
+    """Compare two benchmark reports per goal.
+
+    ``accepted`` decides the change kind; ``tests_passed`` breaks ties.
+    Comparing runs of different models is allowed but flagged.
+    """
+    a_idx = _run_index(report_a)
+    b_idx = _run_index(report_b)
+    goals: dict[str, dict[str, Any]] = {}
+    improved = regressed = same = 0
+    for goal_id in sorted(set(a_idx) | set(b_idx)):
+        if goal_id not in a_idx:
+            change = "new"
+        elif goal_id not in b_idx:
+            change = "removed"
+        else:
+            a_acc, b_acc = a_idx[goal_id]["accepted"], b_idx[goal_id]["accepted"]
+            a_tp, b_tp = a_idx[goal_id]["tests_passed"], b_idx[goal_id]["tests_passed"]
+            if a_acc != b_acc:
+                change = "improved" if b_acc else "regressed"
+            elif a_tp != b_tp:
+                change = "improved" if b_tp else "regressed"
+            else:
+                change = "same"
+        entry = {
+            "a": a_idx.get(goal_id),
+            "b": b_idx.get(goal_id),
+            "change": change,
+        }
+        goals[goal_id] = entry
+        if change == "improved":
+            improved += 1
+        elif change == "regressed":
+            regressed += 1
+        elif change == "same":
+            same += 1
+
+    def _rate(report: dict, key: str) -> float:
+        return float(report.get("summary", {}).get(key, 0.0))
+
+    return {
+        "run_a": report_a.get("run_id"),
+        "run_b": report_b.get("run_id"),
+        "model_a": report_a.get("model"),
+        "model_b": report_b.get("model"),
+        "different_models": report_a.get("model") != report_b.get("model"),
+        "goals": goals,
+        "summary": {
+            "a": {
+                "accepted_rate": _rate(report_a, "accepted_rate"),
+                "ghost_pass_rate": _rate(report_a, "ghost_pass_rate"),
+            },
+            "b": {
+                "accepted_rate": _rate(report_b, "accepted_rate"),
+                "ghost_pass_rate": _rate(report_b, "ghost_pass_rate"),
+            },
+            "delta_accepted_rate": round(_rate(report_b, "accepted_rate") - _rate(report_a, "accepted_rate"), 3),
+            "delta_ghost_pass_rate": round(_rate(report_b, "ghost_pass_rate") - _rate(report_a, "ghost_pass_rate"), 3),
+            "improved": improved,
+            "regressed": regressed,
+            "same": same,
+            "new": sum(1 for g in goals.values() if g["change"] == "new"),
+            "removed": sum(1 for g in goals.values() if g["change"] == "removed"),
+        },
+    }
+
+
 def format_report(report: dict) -> str:
     """Return a plain-text benchmark table."""
     lines = []
