@@ -9,6 +9,13 @@ import pytest
 from ghost_agent.learner import RustCompileOracle
 
 
+def _no_rustc(monkeypatch, home: Path) -> None:
+    """Simulate a host without rustc: not on PATH and no rustup install in home."""
+    import ghost_agent.learner as learner_mod
+    monkeypatch.setattr(learner_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(learner_mod.Path, "home", staticmethod(lambda: home))
+
+
 def test_toolchain_returns_version(monkeypatch):
     proc = mock.Mock(returncode=0, stdout="rustc 1.75.0\n", stderr="")
     monkeypatch.setattr("shutil.which", lambda name: "/fake/rustc")
@@ -49,7 +56,8 @@ def test_check_prefixes_feedback_with_toolchain_version(monkeypatch):
     assert "compiles" in feedback
 
 
-def test_check_unavailable_writes_dependency_plan(tmp_path: Path):
+def test_check_unavailable_writes_dependency_plan(tmp_path: Path, monkeypatch):
+    _no_rustc(monkeypatch, tmp_path / "home")
     plan_root = tmp_path / "repo"
     plan_root.mkdir()
     oracle = RustCompileOracle(plan_root=plan_root)
@@ -65,7 +73,8 @@ def test_check_unavailable_writes_dependency_plan(tmp_path: Path):
     assert "Ghost will not install toolchains itself." in text
 
 
-def test_check_unavailable_without_plan_root_writes_nothing(tmp_path: Path):
+def test_check_unavailable_without_plan_root_writes_nothing(tmp_path: Path, monkeypatch):
+    _no_rustc(monkeypatch, tmp_path / "home")
     oracle = RustCompileOracle()
     correct, feedback = oracle.check("fn main() {}")
     assert not correct
