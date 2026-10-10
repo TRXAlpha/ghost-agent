@@ -22,6 +22,10 @@ from .utils.storage import atomic_json, exclusive_lock
 # emergency-stop paths in _execute_queued_outcome).
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "needs_review", "cancelled"}
 
+# Backoff: a signature whose candidates keep failing stops being re-proposed.
+MAX_FAILURES_PER_SIGNATURE = 3
+FAILURE_WINDOW_SECONDS = 7 * 86400
+
 
 @dataclass
 class ImprovementCandidate:
@@ -196,6 +200,20 @@ class SelfImprover:
                          if c.status in ("queued", "handed_to_self_repair")}
             if key in open_keys:
                 continue  # duplicate open work
+            now = time.time()
+            recent_failures = [
+                c for c in self.store.list_candidates("failed")
+                if c.signature_key == key
+                and now - c.created_at <= FAILURE_WINDOW_SECONDS
+            ]
+            if len(recent_failures) >= MAX_FAILURES_PER_SIGNATURE:
+                # repeated-failure backoff: defer this signature (R13)
+                last_failed = max(recent_failures, key=lambda c: c.created_at)
+                if not self.store.list_decisions(last_failed.candidate_id):
+                    self.store.record_decision(
+                        last_failed.candidate_id, "rejected",
+                        "deferred: 3 failures in 7 days")
+                continue
             break
         else:
             return None  # none usable
