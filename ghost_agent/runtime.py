@@ -8,11 +8,15 @@ import shutil
 import subprocess
 import time
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from .utils.storage import atomic_json, exclusive_lock
+
+
+EVENT_SENSITIVITIES = ("normal", "personal", "health", "secret")
 
 
 @dataclass
@@ -21,6 +25,12 @@ class Event:
     payload: Dict[str, Any]
     source: str = "ghost"
     created_at: float = field(default_factory=time.time)
+    event_id: str = field(default_factory=lambda: uuid4().hex)
+    ingested_at: Optional[float] = None
+    correlation_id: str = ""
+    causation_id: str = ""
+    sensitivity: str = "normal"
+    schema_version: int = 2
 
 
 class EventBus:
@@ -29,6 +39,10 @@ class EventBus:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, event: Event) -> Event:
+        if event.sensitivity not in EVENT_SENSITIVITIES:
+            raise ValueError("unknown event sensitivity")
+        if event.ingested_at is None:
+            event.ingested_at = time.time()
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(asdict(event)) + "\n")
         return event
@@ -36,10 +50,15 @@ class EventBus:
     def recent(self, limit: int = 50, kind: Optional[str] = None) -> list[Event]:
         if not self.path.exists():
             return []
+        known = {f.name for f in fields(Event)}
         events: list[Event] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             try:
-                event = Event(**json.loads(line))
+                raw = json.loads(line)
+                data = {key: value for key, value in raw.items() if key in known}
+                if "schema_version" not in data:
+                    data["schema_version"] = 1
+                event = Event(**data)
                 if not kind or event.kind == kind:
                     events.append(event)
             except (json.JSONDecodeError, TypeError):
@@ -193,7 +212,7 @@ class Scheduler:
                 raise ValueError("Scheduled job already exists")
             jobs.append(asdict(job))
             self._save(jobs)
-        self.events.emit(Event("job.queued", {"job_id": job.job_id, "goal_id": job.goal_id}))
+        self.events.emit(Event("job.queued", {"job_id": job.job_id, "goal_id": job.goal_id}, correlation_id=job.job_id))
         return job
 
     def next(self, available: Optional[Dict[str, float]] = None) -> Optional[ScheduledJob]:
@@ -270,7 +289,7 @@ class Scheduler:
                     # SAME locked save — no window for a duplicate claim.
                     next_due, missed = self._next_due(raw["recurrence"], raw.get("due_at"), time.time())
                     if missed > 0:
-                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed})
+                        recurrence_event = Event("job.recurrence.skipped", {"job_id": job_id, "missed": missed}, correlation_id=job_id)
                     raw["due_at"] = next_due
                     raw["status"] = "queued"
                     raw["owner"] = None
@@ -278,12 +297,13 @@ class Scheduler:
                     raw["attempts"] = 0
                 self._save(jobs)
                 job = ScheduledJob(**raw)
-                self.events.emit(Event(f"job.{status}", {"job_id": job_id, "goal_id": job.goal_id}))
+                self.events.emit(Event(f"job.{status}", {"job_id": job_id, "goal_id": job.goal_id}, correlation_id=job_id))
                 if recurrence_event is not None:
                     self.events.emit(recurrence_event)
                 if raw.get("recurrence") and status in {"completed", "failed"}:
                     self.events.emit(Event("job.recurrence.requeued",
-                                           {"job_id": job_id, "goal_id": job.goal_id, "due_at": raw["due_at"]}))
+                                           {"job_id": job_id, "goal_id": job.goal_id, "due_at": raw["due_at"]},
+                                           correlation_id=job_id))
                 return job
         raise ValueError("Scheduled job not found")
 
@@ -320,7 +340,7 @@ class Scheduler:
                     removed = ScheduledJob(**raw)
                     del jobs[index]
                     self._save(jobs)
-                    self.events.emit(Event("job.removed", {"job_id": job_id, "goal_id": removed.goal_id}))
+                    self.events.emit(Event("job.removed", {"job_id": job_id, "goal_id": removed.goal_id}, correlation_id=job_id))
                     return removed
             raise ValueError("Scheduled job not found")
 

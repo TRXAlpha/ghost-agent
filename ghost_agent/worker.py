@@ -57,7 +57,8 @@ class OutcomeWorker:
                 self.attention.notify(Notification("important",
                     f"Worker exited during {previous.job_id}. Job paused; review artifacts and any child processes before resuming.",
                     source="worker"))
-                self.events.emit(Event("worker.interrupted", {"job_id": previous.job_id}, source="worker"))
+                self.events.emit(Event("worker.interrupted", {"job_id": previous.job_id}, source="worker",
+                                       correlation_id=previous.job_id))
         if any(job.owner and job.owner.startswith("worker_") and job.status == "paused"
                for job in self.scheduler.list()):
             return None
@@ -68,7 +69,8 @@ class OutcomeWorker:
                                         owner=self.owner, job_id=job_id)
         if not job:
             return None
-        self.events.emit(Event("worker.started", {"job_id": job.job_id}, source="worker"))
+        self.events.emit(Event("worker.started", {"job_id": job.job_id}, source="worker",
+                               correlation_id=job.job_id))
         try:
             result = handler(job)
             if result.job_id != job.job_id:
@@ -84,5 +86,6 @@ class OutcomeWorker:
         priority = "normal" if terminal == "completed" else "important"
         self.attention.notify(Notification(priority, f"Job {job.job_id} {terminal}: {result.detail}", source="worker"))
         self.events.emit(Event("worker.finished", {"job_id": job.job_id, "status": terminal,
-                                                     "detail": result.detail}, source="worker"))
+                                                     "detail": result.detail}, source="worker",
+                               correlation_id=job.job_id))
         return WorkerResult(job.job_id, terminal, result.detail)
