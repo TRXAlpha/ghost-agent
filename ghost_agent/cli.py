@@ -1945,6 +1945,10 @@ def main() -> None:
     bench_run.add_argument("--goal", dest="goals", action="append", default=None, help="Goal id to run (default: all 8)")
     bench_run.add_argument("--iterations", type=int, default=10, help="Max iterations per goal (default: 10)")
     bench_sub.add_parser("report", help="Show the latest benchmark report")
+    bench_sub.add_parser("history", help="List all benchmark runs with their rates")
+    bench_cmp = bench_sub.add_parser("compare", help="Compare two benchmark runs")
+    bench_cmp.add_argument("run_a", help="Older run id (or 'latest'/'previous')")
+    bench_cmp.add_argument("run_b", help="Newer run id (or 'latest'/'previous')")
 
     # Protocol benchmark CLI (R05) — forwards to protocol_benchmark.main()
     protocol_bench_parser = sub.add_parser(
@@ -4158,7 +4162,7 @@ def _cmd_context(args: argparse.Namespace) -> None:
 
 def _cmd_bench(args: argparse.Namespace) -> None:
     """Run the fixed benchmark of 8 non-toy goals with hidden acceptance tests."""
-    from .benchmark import format_report, latest_report, run_benchmark
+    from .benchmark import format_report, latest_report, list_reports, run_benchmark
     from .benchmark_goals import BENCH_GOALS
 
     root = Path.cwd()
@@ -4197,8 +4201,86 @@ def _cmd_bench(args: argparse.Namespace) -> None:
             print(format_report(report))
         return
 
+    if action == "history":
+        reports = list_reports(root)
+        if not reports:
+            print("No benchmark runs yet.")
+            return
+        print(f"{'run_id':<24} {'model':<20} {'accepted':<9} {'ghost':<7} goals")
+        for entry in reports:
+            if "error" in entry:
+                print(f"{entry['run_id']:<24} <unreadable report: {entry['error']}>")
+                continue
+            sm = entry.get("summary", {})
+            print(
+                f"{entry['run_id']:<24} {str(entry.get('model', '')):<20} "
+                f"{sm.get('accepted_rate', 0.0):<9.3f} {sm.get('ghost_pass_rate', 0.0):<7.3f} "
+                f"{sm.get('total', 0)}"
+            )
+        return
+
+    if action == "compare":
+        from .benchmark import compare as compare_reports
+
+        reports = list_reports(root)
+        by_id: dict[str, dict] = {}
+        for entry in reports:
+            if "error" not in entry:
+                by_id[entry.get("run_id", "")] = entry
+
+        def _resolve(token: str) -> Optional[dict]:
+            if token in by_id:
+                return by_id[token]
+            if token == "latest":
+                for entry in reports:
+                    if "error" not in entry:
+                        return entry
+                return None
+            if token == "previous":
+                seen = 0
+                for entry in reports:
+                    if "error" not in entry:
+                        seen += 1
+                        if seen == 2:
+                            return entry
+                return None
+            return None
+
+        report_a = _resolve(args.run_a)
+        report_b = _resolve(args.run_b)
+        if report_a is None or report_b is None:
+            print(f"Run not found: {args.run_a if report_a is None else args.run_b}")
+            print("Available run ids: " + (", ".join(by_id) if by_id else "(none)"))
+            return
+        result = compare_reports(report_a, report_b)
+        print(
+            f"comparing {result['run_a']} ({result['model_a']}) -> "
+            f"{result['run_b']} ({result['model_b']})"
+        )
+        if result["different_models"]:
+            print(f"WARNING: different models ({result['model_a']} vs {result['model_b']})")
+        print(f"{'goal_id':<14} {'a':<22} {'b':<22} change")
+        for goal_id, entry in result["goals"].items():
+            def _fmt(cell) -> str:
+                if cell is None:
+                    return "-"
+                return f"tp={str(cell['tests_passed']).lower()}/acc={str(cell['accepted']).lower()}"
+            print(f"{goal_id:<14} {_fmt(entry['a']):<22} {_fmt(entry['b']):<22} {entry['change']}")
+        sm = result["summary"]
+        print(
+            f"accepted_rate {sm['a']['accepted_rate']:.3f} -> {sm['b']['accepted_rate']:.3f} "
+            f"(delta {sm['delta_accepted_rate']:+.3f}); "
+            f"ghost_pass_rate {sm['a']['ghost_pass_rate']:.3f} -> {sm['b']['ghost_pass_rate']:.3f} "
+            f"(delta {sm['delta_ghost_pass_rate']:+.3f})"
+        )
+        print(
+            f"improved={sm['improved']} regressed={sm['regressed']} same={sm['same']} "
+            f"new={sm['new']} removed={sm['removed']}"
+        )
+        return
+
     print(f"Unknown bench action: {action}")
-    print("Available: list, run, report")
+    print("Available: list, run, report, history, compare")
 
 
 def _cmd_protocol_bench(args: argparse.Namespace) -> None:
