@@ -1,4 +1,6 @@
-"""Eight fixed benchmark goals with hidden acceptance tests for ghost bench."""
+"""Fixed benchmark goals with hidden acceptance tests for ghost bench.
+
+BENCH_GOALS: the 8 train goals. all_goals(): train + held-out (benchmark_heldout.py)."""
 from __future__ import annotations
 
 import textwrap
@@ -12,6 +14,11 @@ class BenchGoal:
     module_file: str
     goal: str
     hidden_test: str
+    # "train": results may drive evolution; "heldout": only gates promotion.
+    split: str = "train"
+    # (relative path, content) pairs written into the project before the job:
+    # bug-fix goals start from existing (buggy) code instead of an empty dir.
+    starter_files: tuple = ()
 
 
 BENCH_GOALS: tuple[BenchGoal, ...] = (
@@ -228,3 +235,15 @@ BENCH_GOALS: tuple[BenchGoal, ...] = (
         """),
     ),
 )
+
+
+
+def all_goals(split: str = "all") -> tuple:
+    """Goals for a split: "train", "heldout" or "all" (held-out loaded lazily)."""
+    from .benchmark_heldout import HELDOUT_GOALS
+    goals = BENCH_GOALS + HELDOUT_GOALS
+    if split == "all":
+        return goals
+    if split not in ("train", "heldout"):
+        raise ValueError(f"unknown split {split!r}")
+    return tuple(g for g in goals if g.split == split)
