@@ -34,6 +34,7 @@ from .runtime import EmergencyStop
 from .memory.store import MemoryStore
 from .models.chat import chat as ollama_chat
 from .schema import ActionResponse, parse_action_response
+from .strategy import DEFAULT_GENES, genes_digest, resolve_genes
 from .tools import cmd_tools, fs_tools, web_tools
 from .utils.logging import JsonlLogger
 from .utils.storage import atomic_json
@@ -240,6 +241,9 @@ class Orchestrator:
         self.verbose = verbose
         self.tui = tui
         self._goal_prints = False
+        # Strategy genome (E1): resolved per run in _run_loop; defaults keep
+        # the historical prompts for callers that build prompts directly.
+        self.genes: Dict[str, Any] = dict(DEFAULT_GENES)
 
         # ── Knowledge systems ────────────────────────────────────────────
         self.memory = MemoryStore(self.repo_root / "memories")
@@ -525,6 +529,8 @@ class Orchestrator:
             task.constraints.get("command_budget_calls", 32))
 
         # ── Build context with RAG + knowledge ───────────────────────────
+        self.genes = resolve_genes(task.constraints, self.repo_root)
+        state["strategy_digest"] = genes_digest(self.genes)
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self._build_system_prompt(task)},
             {"role": "user", "content": self._build_context(task, workspace)},
@@ -586,6 +592,24 @@ class Orchestrator:
             kb_text = ""
         if kb_text:
             messages.append({"role": "user", "content": kb_text})
+
+        # Skill library (E4): advisory procedures distilled from past successes.
+        # Measured outcomes (not self-assessment) later promote or retire them.
+        if self.genes.get("use_skills") and self.genes.get("skill_k", 0) > 0 and not state.get("skills_used"):
+            try:
+                from .skills import SkillLibrary
+                skills_root = Path(task.constraints.get("skills_root") or self.repo_root)
+                skills = SkillLibrary(skills_root).retrieve(task.goal, k=self.genes["skill_k"])
+            except Exception:
+                skills = []
+            if skills:
+                lines = ["Advisory skills from past successful work (use only if they fit this task):"]
+                for skill in skills:
+                    lines.append(f"- {skill.title}: when {skill.when_to_use}")
+                    lines.extend(f"    step: {step}" for step in skill.steps)
+                    lines.extend(f"    pitfall: {pit}" for pit in skill.pitfalls)
+                messages.append({"role": "user", "content": "\n".join(lines)})
+                state["skills_used"] = [skill.skill_id for skill in skills]
 
         last_feedback = state.get("last_feedback", "")
         strategy = "default"
@@ -650,18 +674,13 @@ class Orchestrator:
 
             phase = state["phase"]
             if phase == "INGEST":
-                state["phase"] = "PLAN"
-                self._tui_phase("PLAN", state["iteration"])
+                state["phase"] = "PLAN" if self.genes["plan_enabled"] else "IMPLEMENT"
+                self._tui_phase(state["phase"], state["iteration"])
                 self._write_state(state_path, state)
                 continue
 
             if phase == "PLAN":
-                prompt = (
-                    "Create the plan now. Output exactly ONE JSON object containing exactly "
-                    "ONE write_file action: path must be plan.md and content must list concise "
-                    "implementation steps plus a verification strategy. Do not read files or "
-                    "perform any other action in this turn."
-                )
+                prompt = self.genes["plan_prompt"]
                 action_response, parse_error = self._model_turn(
                     messages, prompt, llm_log, last_feedback
                 )
@@ -708,7 +727,10 @@ class Orchestrator:
                 continue
 
             if phase == "IMPLEMENT":
-                prompt = "Implement the task. Use tools to read/write files as needed."
+                prompt = self.genes["implement_prompt"]
+                if (self.genes["test_policy"] == "tests_first"
+                        and not self._has_task_test_change(state)):
+                    prompt = self.genes["tests_first_prompt"]
                 # Add file change context if knowledge graph knows affected files
                 touched_files = state.get("files_touched", [])
                 if self.code_index and touched_files:
@@ -940,6 +962,9 @@ class Orchestrator:
     def _build_system_prompt(self, task: Task) -> str:
         """Build a system prompt enriched with codebase knowledge."""
         prompt = SYSTEM_PROMPT
+        extra = self.genes.get("system_rules_extra", "")
+        if extra:
+            prompt += "\n\nADDITIONAL RULES:\n" + extra
 
         # Add codebase structure summary if available
         if self.code_index and self._needs_existing_code_context(task):
@@ -1457,8 +1482,9 @@ class Orchestrator:
     def _read_feedback(self, results: List[Dict[str, Any]]) -> str:
         """Hand read results back to the model; turns are otherwise stateless."""
         text = self._format_results(results)
-        if len(text) > self.READ_FEEDBACK_LIMIT:
-            text = text[: self.READ_FEEDBACK_LIMIT] + "\n... (truncated)"
+        limit = self.genes.get("read_feedback_limit", self.READ_FEEDBACK_LIMIT)
+        if len(text) > limit:
+            text = text[: limit] + "\n... (truncated)"
         return ("Results of your read actions are below. Do not read the same files again; "
                 "now write the needed files (implementation and tests).\n" + text)
 
@@ -1554,11 +1580,8 @@ class Orchestrator:
                 else:
                     test_path = str(first.with_name(f"{first.stem}.test{first.suffix}")).replace("\\", "/")
                     kind = "node:test tests"
-                return (
-                    "The goal requires tests and no test file has been written yet. Your next "
-                    f"response must write exactly ONE file: {test_path}, containing {kind}. "
-                    f"Do NOT rewrite {', '.join(sources)} again; it already exists."
-                )
+                return self.genes["repair_tests_missing"].format(
+                    test_path=test_path, kind=kind, sources=", ".join(sources))
             return (
                 "The goal requires tests and none were written in this run. Output JSON actions "
                 "that write focused coverage for the behavior you implemented: pytest for Python, "
@@ -1569,16 +1592,11 @@ class Orchestrator:
             or "implement_failed" in last_result
             or "verification_missing" in last_result
         ):
-            return (
-                f"Previous step failed with errors:\n{last_feedback}\n\n"
-                "Fix the issues listed above. Use tools to update files, "
-                "then let VERIFY re-run the tests."
-            )
+            tail = self.genes.get("feedback_tail_chars", 0)
+            feedback = last_feedback[-tail:] if tail and len(last_feedback) > tail else last_feedback
+            return self.genes["repair_tests_failed"].format(feedback=feedback)
         else:
-            return (
-                f"Fix the issues from the last step:\n{last_feedback}\n\n"
-                "Use tools to update files."
-            )
+            return self.genes["repair_generic"].format(feedback=last_feedback)
 
     def _validate_action_inputs(self, action: Any) -> Optional[str]:
         def is_placeholder(value: Optional[str]) -> bool:

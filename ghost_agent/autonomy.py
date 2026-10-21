@@ -137,7 +137,8 @@ class OutcomeStore:
         constraints = {"iteration_limit": iterations}
         for key in ("required_files", "required_checks", "smoke_cmd",
                     "command_budget_seconds", "command_budget_calls",
-                    "command_timeout_seconds", "workspace_mode", "yield_on_owner_return"):
+                    "command_timeout_seconds", "workspace_mode", "yield_on_owner_return",
+                    "strategy_genes", "skills_root"):
             if key in job.acceptance_contract:
                 constraints[key] = deepcopy(job.acceptance_contract[key])
         return {
