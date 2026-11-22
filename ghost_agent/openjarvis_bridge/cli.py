@@ -35,7 +35,7 @@ def add_parser(sub):
     search = actions.add_parser("search", help="Search explicitly imported documents")
     search.add_argument("query")
     telegram = actions.add_parser("telegram", help="Pair/revoke/serve Telegram or check credentials")
-    telegram.add_argument("action", choices=["pair", "revoke", "status", "serve",
+    telegram.add_argument("action", choices=["pair", "revoke", "status", "serve", "relay",
                                               "rotate-token-check", "live-check", "receipts"])
     telegram.add_argument("--user-id", default="")
     telegram.add_argument("--chat-id", default="")
@@ -46,6 +46,7 @@ def add_parser(sub):
     telegram.add_argument("--run-worker", action="store_true",
                           help="Run Ghost's existing bounded worker alongside the Telegram transport")
     telegram.add_argument("--status", default="", help="[receipts] filter receipts by status")
+    telegram.add_argument("--host", default="ghostpi", help="[relay] SSH host running ghost-bot")
     return parser
 
 
@@ -83,6 +84,13 @@ def dispatch(args):
             result = live_check(root, args.chat_id)
         elif args.action == "receipts":
             result = list_receipts(root, status=args.status)
+        elif args.action == "relay":
+            if not args.model:
+                raise IntegrationError("Telegram relay requires --model.")
+            from .telegram import relay_serve
+            relay_serve(root, args.model, host=args.host, memory=args.memory,
+                        allow_sandbox_builds=args.allow_sandbox_builds, run_worker=args.run_worker)
+            return
         else:
             if not args.model:
                 raise IntegrationError("Telegram serve requires --model.")

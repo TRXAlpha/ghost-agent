@@ -108,7 +108,8 @@ connection test.
 | Salience gate: owner facts, briefings and situation changes bring the heartbeat forward (5 min minimum gap) | live, tested | daemon |
 | Telegram owner intake: every message records `owner.contact`; statements become owner facts; `stop` engages the emergency stop (resume stays local) | built and tested; live once the bot token and pairing exist | `ghost openjarvis telegram serve` |
 | **Telegram outbound** | **live**: ghostbot token from ghostpi, paired owner chat, live check `success` on 2026-11-22. Inbound polling stays with ghost-bot on the Pi (one poller per token) | `ghost openjarvis telegram live-check` |
-| **Telegram inbound to Ghost** | **placeholder.** Transport, pairing, receipts and uncertain-delivery reconciliation are built and tested; no live authorized connection is recorded | `ghost openjarvis telegram …` |
+| **Telegram inbound via ghost-bot relay**: ghost-bot on ghostpi keeps the only poller; messages that are not hub commands go to `state/ghost-inbox.jsonl`; Ghost follows it over one SSH `tail -F`, runs them through the same paired bridge (receipts, dedup, emergency stop) and replies via the Bot API | built, tested, relay attached live; first real owner message not yet recorded | `ghost openjarvis telegram relay --model <m> --allow-sandbox-builds` |
+| **Telegram direct polling from Ghost** | **not used** (would fight ghost-bot for the token). Transport, pairing, receipts and uncertain-delivery reconciliation are built and tested; no live authorized connection is recorded | `ghost openjarvis telegram …` |
 | **Huawei live data** | **placeholder** until Huawei developer credentials and user authorization exist | |
 | **DeskSentinel (ESP32 pan/tilt)** | **placeholder** until firmware and protocol exist; the safety gate and simulator are ready | |
 

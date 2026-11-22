@@ -419,37 +419,15 @@ def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
     channel.on_message(bridge.handle)
     worker_stop = threading.Event()
     worker_thread = None
-    if run_worker:
-        if not allow_sandbox_builds:
-            raise IntegrationError("--run-worker requires --allow-sandbox-builds.")
-        from ..cli import _execute_queued_outcome
-        from ..worker import OutcomeWorker
-
-        def worker_loop():
-            worker = OutcomeWorker(root)
-            while not worker_stop.is_set():
-                try:
-                    result = worker.run_next(lambda scheduled: _execute_queued_outcome(root, scheduled))
-                    if result is not None:
-                        print(f"Telegram worker {result.status}: {result.job_id} ({result.detail})",
-                              flush=True)
-                    else:
-                        worker_stop.wait(1.0)
-                except Exception as exc:
-                    # The durable job/worker records the normal failure path;
-                    # keep the transport alive for later requests if the loop
-                    # itself encounters an unexpected boundary error.
-                    print(f"Telegram worker loop error: {type(exc).__name__}", flush=True)
-                    worker_stop.wait(1.0)
-
+    if run_worker and not allow_sandbox_builds:
+        raise IntegrationError("--run-worker requires --allow-sandbox-builds.")
     token_id = hashlib.sha256(token.encode()).hexdigest()
     # One bot poller across Ghost projects, not just one per working directory.
     lock = Path.home() / ".ghost" / "telegram-locks" / f"{token_id}.lock"
     with exclusive_lock(lock):
         channel.connect()
         if run_worker:
-            worker_thread = threading.Thread(target=worker_loop, name="ghost-telegram-worker", daemon=True)
-            worker_thread.start()
+            worker_thread = _start_worker(root, worker_stop)
         mode = "read-only + sandbox build queue"
         if run_worker:
             mode += " + worker"
@@ -464,3 +442,138 @@ def serve(root: Path, model: str, *, memory=False, allow_sandbox_builds=False,
             channel.disconnect()
             if worker_thread is not None:
                 worker_thread.join(timeout=2.0)
+
+
+def _start_worker(root: Path, stop: threading.Event) -> threading.Thread:
+    """Run Ghost's existing bounded worker beside a Telegram transport until `stop` is set."""
+    from ..cli import _execute_queued_outcome
+    from ..worker import OutcomeWorker
+
+    def worker_loop():
+        worker = OutcomeWorker(root)
+        while not stop.is_set():
+            try:
+                result = worker.run_next(lambda scheduled: _execute_queued_outcome(root, scheduled))
+                if result is not None:
+                    print(f"Telegram worker {result.status}: {result.job_id} ({result.detail})", flush=True)
+                else:
+                    stop.wait(1.0)
+            except Exception as exc:
+                # The durable job/worker records the normal failure path; keep the
+                # transport alive if the loop itself hits an unexpected boundary error.
+                print(f"Telegram worker loop error: {type(exc).__name__}", flush=True)
+                stop.wait(1.0)
+
+    thread = threading.Thread(target=worker_loop, name="ghost-telegram-worker", daemon=True)
+    thread.start()
+    return thread
+
+
+# -- ghost-bot relay (one poller per token stays on ghostpi) ----------------------
+
+RELAY_INBOX = "~/ghost-hub/state/ghost-inbox.jsonl"
+
+
+class RelayMessage:
+    """The fields TelegramBridge.handle reads, built from one ghost-bot inbox row."""
+
+    def __init__(self, row: dict) -> None:
+        self.channel = "telegram"
+        self.sender = str(row.get("from_id", ""))
+        self.conversation_id = str(row.get("chat_id", ""))
+        self.message_id = str(row.get("message_id", ""))
+        self.content = row.get("text", "")
+
+
+class BotApiChannel:
+    """Reply path for relayed messages: Bot API sendMessage only (no polling)."""
+
+    def __init__(self, token: str, sender: Callable[[str, str, str], dict] | None = None) -> None:
+        self.token = token
+        self.sender = sender or _bot_api_send
+
+    def send(self, chat_id: str, text: str, conversation_id: str = "") -> bool:
+        try:
+            return bool(self.sender(self.token, chat_id, text).get("ok"))
+        except Exception:
+            return False
+
+
+def _relay_cursor_path(root: Path) -> Path:
+    return state_root(root) / "telegram-relay-cursor.json"
+
+
+def relay_lines(root: Path, bridge: "TelegramBridge", lines) -> int:
+    """Feed inbox rows (JSON lines) to the bridge, committing a line cursor after each.
+
+    Receipts dedup by chat:message_id, so a row re-read after a crash is never
+    answered twice. Malformed rows are skipped but still advance the cursor.
+    """
+    path = _relay_cursor_path(root)
+    try:
+        line_no = int(json.loads(path.read_text(encoding="utf-8")).get("line", 0))
+    except (OSError, ValueError):
+        line_no = 0
+    handled = 0
+    for raw in lines:
+        line_no += 1
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            row = None
+        if isinstance(row, dict) and isinstance(row.get("text"), str):
+            bridge.handle(RelayMessage(row))
+            handled += 1
+        atomic_json(path, {"line": line_no, "updated_at": time.time()})
+        if EmergencyStop(root).active():
+            break
+    return handled
+
+
+def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
+                allow_sandbox_builds=False, run_worker=False, popen=None, sleep=time.sleep) -> None:
+    """Follow ghost-bot's owner inbox on ghostpi over one SSH `tail -F` and answer via Bot API.
+
+    ghostpi keeps the only getUpdates poller for the shared token; Ghost Core
+    stays the only authority (pairing, receipts, emergency stop, policy).
+    """
+    import subprocess
+    owner = pairing(root)
+    if not owner["enabled"]:
+        raise IntegrationError("Pair Telegram locally before relaying.")
+    if run_worker and not allow_sandbox_builds:
+        raise IntegrationError("--run-worker requires --allow-sandbox-builds.")
+    token = os.environ.get("GHOST_TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise IntegrationError("Set GHOST_TELEGRAM_BOT_TOKEN in this process.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", host):
+        raise IntegrationError("Relay host must be a plain SSH host alias.")
+    reconcile_receipts(root)
+    bridge = TelegramBridge(root, BotApiChannel(token), model, memory=memory,
+                            allow_sandbox_builds=allow_sandbox_builds)
+    worker_stop = threading.Event()
+    worker = _start_worker(root, worker_stop) if run_worker else None
+    popen = popen or subprocess.Popen
+    delay = 1.0
+    print(f"Telegram relay following {host}:{RELAY_INBOX}. Ctrl+C stops it.", flush=True)
+    try:
+        while not EmergencyStop(root).active():
+            try:
+                start = int(json.loads(_relay_cursor_path(root).read_text(encoding="utf-8")).get("line", 0))
+            except (OSError, ValueError):
+                start = 0
+            proc = popen(["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", host,
+                          f"touch {RELAY_INBOX} && tail -n +{start + 1} -F {RELAY_INBOX}"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+            try:
+                if relay_lines(root, bridge, proc.stdout):
+                    delay = 1.0
+            finally:
+                proc.kill()
+            sleep(delay)  # ssh dropped (PC slept, Wi-Fi): reconnect with backoff
+            delay = min(delay * 2, 60.0)
+    finally:
+        bridge.stopped.set()
+        worker_stop.set()
+        if worker is not None:
+            worker.join(timeout=2.0)

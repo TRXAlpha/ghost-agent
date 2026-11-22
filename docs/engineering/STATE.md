@@ -17,7 +17,9 @@ Slice 1 (LL0, LL1, LL3/LL3b core, LL4, Telegram intake) on `life-layer`:
   `heartbeat.life_tick` (situation rebuild, reminders, reports, briefings) run by the daemon before the
   beat, salience gate, prompted deliveries outside the unprompted cap. Suite 1479 passed / 1 skipped;
   OpenJarvis venv 67 passed.
-- Live: Telegram outbound only (ghostbot token, live check success 2026-11-22). No live model,
+- Slice 3: ghost-bot relay (ghostpi patched, Ghost `telegram relay` follows the inbox over SSH).
+  Suite 1484 passed / 1 skipped; OpenJarvis venv 72 passed.
+- Live: Telegram outbound; relay attached to ghostpi (ghostbot token, live check success 2026-11-22). No live model,
   search, ActivityWatch, HA or HealthHub evidence yet (owner steps in STATUS.md).
 
 ## Repository

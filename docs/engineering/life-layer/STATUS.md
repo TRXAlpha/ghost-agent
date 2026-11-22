@@ -8,9 +8,12 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
 1. **Done 2026-11-22 (outbound):** ghostbot token copied from ghostpi `~/ghost-hub/.env` into the Windows
    user env var `GHOST_TELEGRAM_BOT_TOKEN` (never printed, not in the repo); chat 5309400589 paired from
    `state/owner.json`; live check `success` (fingerprint 4d6c579e43942932).
-2. **Inbound needs its own bot.** ghost-bot on the Pi long-polls `getUpdates` with the same token, and
-   Telegram allows one poller per token (HTTP 409). Either make a second bot for Ghost (BotFather
-   `/newbot`, set `GHOST_TELEGRAM_BOT_TOKEN` to it, re-pair), or later have ghost-bot relay owner messages.
+2. **Inbound: done via ghost-bot relay (owner choice 2026-11-22).** `~/ghost-hub/bot/ghost_bot.py` patched
+   (backup `ghost_bot.py.bak-relay`, service restarted): non-command owner messages are appended to
+   `~/ghost-hub/state/ghost-inbox.jsonl` instead of "Unknown command". Ghost runs
+   `ghost openjarvis telegram relay --model <m> --allow-sandbox-builds` (OpenJarvis venv, token in env);
+   it needs to be started after each PC boot (no autostart yet). Hub commands (status, wake, dns, brief, ...)
+   still go to ghost-bot. To undo on the Pi: restore the backup and restart `ghost-bot.service`.
 2b. **Search backend.** DuckDuckGo returns a bot challenge (HTTP 202) to Ghost. Run SearXNG on ghostpi
    (`docker run -d -p 8888:8080 searxng/searxng`, enable `json` in `formats`) and set
    `GHOST_SEARCH_URL=http://<pi-tailnet-ip>:8888`.
