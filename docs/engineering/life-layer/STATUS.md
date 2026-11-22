@@ -18,11 +18,11 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
    (`docker run -d -p 8888:8080 searxng/searxng`, enable `json` in `formats`) and set
    `GHOST_SEARCH_URL=http://<pi-tailnet-ip>:8888`.
 3. **Turn on the assistant-lane grant:** `ghost grant care.message_owner on` (cap 3 per 24 h).
-4. **Model for the heartbeat and proactive loop.** Either start Ollama with a model that fits, or set
-   the GLM-5.3-Flash route in the Ghost shell: `GHOST_INFERENCE_BACKEND=openjarvis`,
-   `GHOST_OPENJARVIS_ENGINE=openai-compat`, `GHOST_OPENJARVIS_URL`, `GHOST_OPENJARVIS_API_KEY`,
-   `GHOST_ALLOW_REMOTE_INFERENCE=1`. Remote inference sends owner files and situation (health values
-   are withheld) to that endpoint; that is your call.
+4. **Model: GLM-5.3-Flash via gonkarouter (owner choice 2026-11-22, remote).** Copy the Hermes key once into a
+   Ghost-only user env var (run it yourself; Ghost was not allowed to read the Hermes key):
+   `$k = (Select-String '^HERMES_CUSTOM_API_GONKAROUTER_IO_API_KEY=' "$env:LOCALAPPDATA\hermes\.env").Line.Split('=',2)[1]; [Environment]::SetEnvironmentVariable('GHOST_OPENJARVIS_API_KEY', $k, 'User')`
+   Then `.\scripts\ghost-life.ps1 -Check` and `.\scripts\ghost-life.ps1` (relay + daemon; routing env is
+   per process). Remote inference sends owner files, facts and situation (health values withheld) to gonkarouter.
 5. **ActivityWatch** on the PC (https://activitywatch.net, free). Ghost reads `localhost:5600`.
 6. **Home Assistant Companion** on the phone (place zones), or let ghostpi push place from AdGuard
    phone DNS: `ghost situation push --field place --value home --source ghostpi.adguard --ttl 900`.
