@@ -70,7 +70,8 @@ Edit with: ghost owner edit USER.md --file <path>
 _HEALTH_WORDS = ("sleep", "slept", "heart", "hrv", "sick", "ill", "pain", "health", "temperature",
                  "fever", "doctor", "medic", "oura", "readiness", "steps", "weight", "tired")
 _DEVICE_RE = re.compile(
-    r"\b(?:i\s+(?:got|bought|have|own|received|ordered|just\s+got)|my\s+new|i'?m\s+using)\s+"
+    # "I" is optional at the start: "got a new watch", "just bought a ring".
+    r"(?:\b(?:i\s+)?(?:just\s+)?(?:got|bought|received|ordered)|\bi\s+(?:have|own)|\bmy\s+new|\bi'?m\s+using)\s+"
     r"(?:a\s+|an\s+|the\s+|new\s+|my\s+)*(?P<subject>[\w\- ]{2,60}?)(?:[.!,]|$|\s+(?:today|yesterday|for|from|and|arrived|came|is|works)\b)",
     re.IGNORECASE)
 _DEVICE_NOUNS = ("watch", "phone", "ring", "band", "tracker", "laptop", "pc", "tablet",

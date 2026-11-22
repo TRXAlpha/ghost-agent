@@ -39,7 +39,7 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
 | 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | Intake, fact, event, one-shot owner context in the tick, `why` link: built | **mock** (scripted planner). Whether the model concludes "reuse" is unverified: no model was reachable |
 | 2. Hackathon: research, reminders, 3 ideas, "build 2" | Briefing with quote-verified facts, reminders, 3 ideas, `build N` (CLI + Telegram), one result report: built | **mock** (scripted search/fetch/model). Live blocked on search backend and a model |
 | 3. 24 h run: fresh situation, <= 3 unprompted messages, digest with situation | Situation record, decay, heartbeat cap 3/24 h, digest line: built | **local** (situation rebuild on this PC: Windows idle + CLI contact; ActivityWatch absent). No 24 h run |
-| 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **mock** for inbound; outbound send **live** |
+| 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **live** inbound fact path: 2026-11-22 owner sent "got a new Samsung watch" -> ghost-bot inbox -> relay -> fact owner_dab60c695a28 -> reply delivered. `stop` over Telegram: mock only |
 | 5. All existing tests pass; new code has tests | see STATE.md | **local** |
 
 ## Next slices

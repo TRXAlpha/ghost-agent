@@ -82,3 +82,18 @@ def test_relay_refuses_without_pairing_token_or_bad_host(tmp_path, monkeypatch):
     monkeypatch.setenv("GHOST_TELEGRAM_BOT_TOKEN", "x")
     with pytest.raises(tg.IntegrationError):
         tg.relay_serve(tmp_path, "tiny", host="ghostpi; rm -rf /")
+
+
+def test_statement_without_leading_i_is_a_fact():
+    from ghost_agent.owner import parse_statement
+    assert parse_statement("got a new Samsung watch")["kind"] == "device"
+    assert parse_statement("just bought a new ring")["subject"] == "ring"
+    assert parse_statement("got it, thanks")["kind"] == "note"
+
+
+def test_responder_failure_is_told_not_silent(tmp_path):
+    sent = []
+    b, responder = bridge(tmp_path, sent)
+    responder.side_effect = ConnectionError("engine down")
+    tg.relay_lines(tmp_path, b, [row(1, "how are you?")])
+    assert "can't answer chat questions right now" in sent[0][1]

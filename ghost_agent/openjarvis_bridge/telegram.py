@@ -342,8 +342,14 @@ class TelegramBridge:
                     result = {"task_id": job.job_id,
                               "content": f"Queued a sandbox build ({job.job_id}). Ghost will research, implement, test, and report; nothing is promoted live automatically."}
                 else:
-                    result = self.responder(self.root, message.content, self.model, memory=self.memory,
-                                            channel="telegram", identity="owner:telegram")
+                    try:
+                        result = self.responder(self.root, message.content, self.model, memory=self.memory,
+                                                channel="telegram", identity="owner:telegram")
+                    except Exception as exc:
+                        # Tell the owner instead of failing silently; nothing was sent yet.
+                        result = {"task_id": "responder_unavailable",
+                                  "content": f"I can't answer chat questions right now ({type(exc).__name__}: "
+                                             "no model reachable). Facts, 'stop' and 'build N' still work."}
                 receipt["task_id"] = result["task_id"]
                 if not self.authorized(message):
                     receipt["status"] = "revoked_before_delivery"
