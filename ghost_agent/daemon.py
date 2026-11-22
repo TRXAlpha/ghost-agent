@@ -44,6 +44,18 @@ def _default_improve_sync_fn(root: Path) -> Callable[[], list]:
     return sync
 
 
+def _default_heartbeat_fn(root: Path, model: str) -> Callable[[], dict]:
+    """Run one heartbeat when due; returns its receipt or a not_due status."""
+    def beat() -> dict:
+        from .heartbeat import Heartbeat
+        # Starts once Ghost has met the owner (`ghost tell` / `ghost owner show`).
+        if not (Path(root) / ".ghost" / "owner" / "SOUL.md").exists():
+            return {"status": "no_owner_files"}
+        heartbeat = Heartbeat(root, model)
+        return heartbeat.beat() if heartbeat.due() else {"status": "not_due"}
+    return beat
+
+
 class GhostDaemon:
     """Always-on composition of the existing loops; owns no scheduling of its own."""
 
@@ -54,6 +66,7 @@ class GhostDaemon:
                  improver_fn: Optional[Callable[[], dict]] = None,
                  improve_sync_fn: Optional[Callable[[], list]] = None,
                  sleep_fn: Callable[[float], None] = time.sleep,
+                 heartbeat_fn: Optional[Callable[[], dict]] = None,
                  quiet_hours: Optional[tuple[int, int]] = None,
                  digest_window: Optional[tuple[int, int]] = None) -> None:
         if not isinstance(model, str) or not model.strip():
@@ -82,6 +95,8 @@ class GhostDaemon:
             self.root, model)
         self.improve_sync_fn = improve_sync_fn if improve_sync_fn is not None else _default_improve_sync_fn(self.root)
         self.sleep_fn = sleep_fn
+        self.heartbeat_fn = heartbeat_fn if heartbeat_fn is not None else _default_heartbeat_fn(
+            self.root, model)
         self.status_path = self.root / ".ghost" / "daemon_status.json"
         self._cycles = 0
 
@@ -120,6 +135,12 @@ class GhostDaemon:
                 record["improve_sync"] = {"status": "error", "error": str(exc)[:200]}
         else:
             record["improve_sync"] = "deferred"
+
+        # LL4: the heartbeat is not idle-gated; it runs whenever 30 min passed.
+        try:
+            record["heartbeat"] = self.heartbeat_fn()
+        except Exception as exc:
+            record["heartbeat"] = {"status": "error", "error": str(exc)[:200]}
 
         atomic_json(self.status_path, record)
         return record

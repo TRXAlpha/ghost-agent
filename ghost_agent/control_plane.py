@@ -251,7 +251,8 @@ class GhostSDK:
             except (OSError, ValueError):
                 job = None
         if job is None and opportunity is None:
-            return None
+            from .heartbeat import explain as explain_life
+            return explain_life(self.root, item_id)
         goal = self.goals.get(job.goal_id) if job is not None and job.goal_id else None
         intent = next((record for record in self.intents._load()
                        if goal is not None and record.get("goal_id") == goal.goal_id), None)

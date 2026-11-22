@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..proactive import queue_sandbox_outcome
-from ..runtime import AttentionManager, EmergencyStop, Notification
+from ..runtime import AttentionManager, EmergencyStop, Event, EventBus, Notification
 from ..security import redact_secrets
 from ..utils.storage import atomic_json, exclusive_lock
 from .runtime import IntegrationError, require_upstream, state_root
@@ -167,6 +167,33 @@ def live_check(root: Path, chat_id: str, *, requester: Callable[[], dict] | None
     return record
 
 
+def send_owner(root: Path, text: str, *, sender: Callable[[str, str, str], dict] | None = None) -> dict:
+    """Send one assistant-lane message to the paired owner chat.
+
+    Callers (the heartbeat) must already hold the care grant and cap. This
+    refuses without the pairing, token, or with the emergency stop engaged;
+    "not_configured" is an honest result, never a fake success.
+    """
+    try:
+        owner = pairing(root)
+    except IntegrationError as exc:
+        return {"status": "refused", "detail": str(exc)}
+    if not owner.get("enabled"):
+        return {"status": "not_configured", "detail": "Telegram owner is not paired"}
+    if EmergencyStop(root).active():
+        return {"status": "refused", "detail": "emergency stop engaged"}
+    token = os.environ.get("GHOST_TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return {"status": "not_configured", "detail": "GHOST_TELEGRAM_BOT_TOKEN is not set"}
+    try:
+        response = (sender or _bot_api_send)(token, owner["chat_id"], redact_secrets(text))
+    except Exception as exc:
+        return {"status": "failed", "detail": f"{type(exc).__name__}"}
+    ok = bool(response.get("ok"))
+    return {"status": "sent" if ok else "failed",
+            "message_id": (response.get("result") or {}).get("message_id")}
+
+
 def revoke(root: Path) -> dict:
     with exclusive_lock(state_root(root) / "telegram-pairing.lock"):
         value = pairing(root)
@@ -239,6 +266,19 @@ class TelegramBridge:
                          content, flags=re.IGNORECASE | re.DOTALL)
         return match.group(2).strip() if match else None
 
+    @staticmethod
+    def _stop_request(content: str) -> bool:
+        """Owner emergency stop words. Resume stays local on purpose."""
+        return content.strip().casefold().rstrip("!.") in {"stop", "/stop", "emergency stop", "/emergency_stop"}
+
+    def _owner_fact(self, content: str):
+        """Statements (not questions) about the owner become owner facts (LL0)."""
+        from ..owner import parse_statement, tell
+        text = content.strip()
+        if "?" in text or len(text) > 1000 or parse_statement(text)["kind"] == "note":
+            return None
+        return tell(self.root, text, source="telegram")
+
     def authorized(self, message) -> bool:
         owner = pairing(self.root)
         return (not self.stopped.is_set() and owner["enabled"] and message.channel == "telegram"
@@ -260,9 +300,29 @@ class TelegramBridge:
                 return  # duplicate, failed, uncertain, or interrupted: review instead of replay
             receipt = {"message_id": message.message_id, "received_at": time.time(), "status": "processing"}
             atomic_json(path, receipt)
+            # LL2: every authorized owner message is a presence signal.
+            EventBus(self.root).emit(Event("owner.contact", {"channel": "telegram",
+                                                             "message_id": message.message_id},
+                                           source="owner:telegram"))
             try:
+                if self._stop_request(message.content):
+                    EmergencyStop(self.root).engage("owner via telegram")
+                    receipt["task_id"] = "emergency_stop"
+                    receipt["status"] = "sending"
+                    atomic_json(path, receipt)
+                    delivered = self.channel.send(
+                        message.conversation_id,
+                        "Emergency stop engaged. Ghost holds all consequential work. Resume locally: ghost emergency-stop clear",
+                        conversation_id=message.message_id)
+                    receipt["status"] = "delivered" if delivered else "delivery_failed"
+                    return
                 build_goal = self._sandbox_request(message.content) if self.allow_sandbox_builds else None
-                if build_goal:
+                fact = None if build_goal else self._owner_fact(message.content)
+                if fact:
+                    result = {"task_id": fact["memory_id"],
+                              "content": f"Noted ({fact['kind']}: {fact['subject']}). "
+                                         f"I'll work on it in the next idle window. Why: ghost why {fact['memory_id']}"}
+                elif build_goal:
                     job = queue_sandbox_outcome(self.root, build_goal, self.model,
                                                 source="telegram", priority=35)
                     result = {"task_id": job.job_id,

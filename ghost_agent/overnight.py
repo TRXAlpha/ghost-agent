@@ -224,6 +224,11 @@ class OvernightRunner:
             lines.append("- No failed jobs.")
         lines.extend(self._render_outcomes(now))
         lines.extend(self._render_coverage(now, entries))
+        try:  # LL3b situation summary
+            from .situation import summary
+            lines.extend(["", f"- {summary(self.root)}"])
+        except Exception:
+            pass
         return "\n".join(lines) + "\n"
 
     def _render_outcomes(self, now: datetime) -> list[str]:

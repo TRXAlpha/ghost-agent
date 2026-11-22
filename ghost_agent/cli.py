@@ -1800,7 +1800,7 @@ def main() -> None:
                              help="Hold normal/silent notifications for the session")
     focus_sub.add_parser("status", help="Show the active focus session")
     focus_sub.add_parser("stop", help="Stop the active focus session immediately")
-    why_parser = sub.add_parser("why", help="Explain why a job or opportunity exists")
+    why_parser = sub.add_parser("why", help="Explain why a job, opportunity, heartbeat action or owner fact exists")
     why_parser.add_argument("item_id", help="Job id or opportunity id")
     why_parser.add_argument("--json", action="store_true", help="Print JSON detail only")
     proactive_parser = sub.add_parser("proactive", help="Observe context and queue one bounded proactive experiment")
@@ -1820,6 +1820,28 @@ def main() -> None:
     # TN3: JSON output for `proactive ranking` (read by args.json).
     proactive_parser.add_argument("--json", action="store_true",
                                   help="Print ranking as JSON")
+    # Life layer (LL0-LL4): owner intake, owner files, situation, heartbeat, care grants.
+    tell_parser = sub.add_parser("tell", help="Tell Ghost a fact about you (device, goal, deadline, friction)")
+    tell_parser.add_argument("statement")
+    owner_parser = sub.add_parser("owner", help="Show or edit SOUL.md / USER.md and list owner facts")
+    owner_parser.add_argument("action", choices=["show", "edit", "history", "facts"])
+    owner_parser.add_argument("name", nargs="?", default="USER.md", choices=["SOUL.md", "USER.md"])
+    owner_parser.add_argument("--file", default="", help="New file content (for edit)")
+    situation_parser = sub.add_parser("situation", help="Show, rebuild, or push into .ghost/situation.json")
+    situation_parser.add_argument("action", choices=["show", "rebuild", "push"], nargs="?", default="show")
+    situation_parser.add_argument("--field", default="")
+    situation_parser.add_argument("--value", default="", help="JSON or plain text value (push)")
+    situation_parser.add_argument("--source", default="manual")
+    situation_parser.add_argument("--confidence", type=float, default=0.9)
+    situation_parser.add_argument("--ttl", type=float, default=3600)
+    heartbeat_parser = sub.add_parser("heartbeat", help="Run one assistant-lane heartbeat (not idle-gated)")
+    heartbeat_parser.add_argument("action", choices=["beat", "receipts"], nargs="?", default="beat")
+    heartbeat_parser.add_argument("--model", default=None)
+    heartbeat_parser.add_argument("--if-due", action="store_true", help="Skip unless 30 min passed")
+    grant_parser = sub.add_parser("grant", help="Show or set assistant-lane care.* grants")
+    grant_parser.add_argument("name", nargs="?", default="")
+    grant_parser.add_argument("state", nargs="?", choices=["on", "off"], default=None)
+    grant_parser.add_argument("--max", type=int, default=None, dest="max_count")
     repair_parser = sub.add_parser("self-repair", help="Manage bounded Ghost self-repair proposals")
     repair_parser.add_argument("action", choices=["propose", "verify", "request-promotion"])
     repair_parser.add_argument("value", help="Diagnosis for propose or proposal ID otherwise")
@@ -2107,6 +2129,11 @@ def main() -> None:
         "notifications": lambda: _cmd_notifications(args),
         "focus": lambda: _cmd_focus(args),
         "why": lambda: _cmd_why(args),
+        "tell": lambda: _cmd_life(args),
+        "owner": lambda: _cmd_life(args),
+        "situation": lambda: _cmd_life(args),
+        "heartbeat": lambda: _cmd_life(args),
+        "grant": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3562,7 +3589,15 @@ def _cmd_why(args: argparse.Namespace) -> None:
     if detail is None:
         print(f"No job or opportunity with id {args.item_id}")
         return
-    if not args.json:
+    if not args.json and (detail.get("heartbeat_receipt") or detail.get("owner_fact")):
+        receipt, fact = detail.get("heartbeat_receipt"), detail.get("owner_fact")
+        if receipt:
+            print(f"Heartbeat {receipt['receipt_id']}: {receipt.get('action')} -> {receipt.get('status')}")
+            print(f"  reason: {receipt.get('reason') or receipt.get('refusal') or 'none given'}")
+        if fact:
+            print(f"Owner fact {fact['memory_id']} ({fact.get('subject')}): {fact['content']}")
+            print(f"  linked opportunities: {', '.join(detail.get('opportunities') or []) or 'none yet'}")
+    elif not args.json:
         job = detail.get("job")
         opportunity = detail.get("opportunity")
         goal = detail.get("goal")
@@ -3580,6 +3615,60 @@ def _cmd_why(args: argparse.Namespace) -> None:
         if detail.get("events"):
             print(f"  recent events mentioning this id: {len(detail['events'])}")
     print(json.dumps(detail, indent=2))
+
+
+def _cmd_life(args: argparse.Namespace) -> None:
+    """Life-layer commands: tell, owner, situation, heartbeat, grant."""
+    from . import heartbeat as hb
+    from . import owner, situation
+    root = Path.cwd().resolve()
+    try:
+        if args.command == "tell":
+            result = owner.tell(root, args.statement, source="cli")
+            EventBus(root).emit(Event("owner.contact", {"channel": "cli"}, source="owner:cli"))
+        elif args.command == "owner":
+            if args.action == "show":
+                print(owner.read_owner_files(root)[args.name])
+                return
+            if args.action == "edit":
+                if not args.file:
+                    raise owner.OwnerError("edit needs --file <path>")
+                result = owner.edit_owner_file(root, args.name, Path(args.file).read_text(encoding="utf-8"))
+            elif args.action == "history":
+                result = owner.owner_file_history(root, args.name)
+            else:
+                result = owner.owner_facts(root, limit=50, include_health=True)
+        elif args.command == "situation":
+            if args.action == "rebuild":
+                result = situation.rebuild(root)
+            elif args.action == "push":
+                try:
+                    value = json.loads(args.value)
+                except ValueError:
+                    value = args.value
+                result = situation.push_observation(root, args.field, value, confidence=args.confidence,
+                                                    source=args.source, ttl=args.ttl)
+            else:
+                print(situation.summary(root))
+                result = situation.load(root)
+        elif args.command == "heartbeat":
+            if args.action == "receipts":
+                result = hb.receipts(root, 20)
+            else:
+                beat = hb.Heartbeat(root, _resolve_model(args.model))
+                if args.if_due and not beat.due():
+                    result = {"status": "not_due"}
+                else:
+                    result = beat.beat()
+        else:
+            if args.name and args.state:
+                result = hb.set_grant(root, args.name, args.state == "on", max_count=args.max_count)
+            else:
+                result = hb.load_grants(root)
+    except (ValueError, OSError) as exc:
+        print(f"{args.command} refused: {exc}")
+        return
+    print(json.dumps(result, indent=2, default=str))
 
 
 def _cmd_check_in(args: argparse.Namespace) -> None:

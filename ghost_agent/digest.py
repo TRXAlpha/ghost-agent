@@ -133,6 +133,11 @@ class MorningDigest:
                 # No meaningful overnight results -> skip (no speculative work).
                 return None
             message = self.render(items)
+            try:  # LL3b: what Ghost currently knows about the owner's situation
+                from .situation import summary
+                message += "\n" + summary(self.root, now=current)
+            except Exception:
+                pass  # the digest never fails on a missing situation record
             attention = AttentionManager(self.root)
             existing = attention.notify(Notification(
                 "normal", message, notification_id=f"digest_{today}",

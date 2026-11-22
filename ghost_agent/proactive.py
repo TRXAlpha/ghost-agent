@@ -19,6 +19,8 @@ from typing import Any, Callable, Optional
 
 from .autonomy import OutcomeJob, OutcomeStore
 from .devices import DeviceRegistry
+from .event_cursor import EventCursor
+from .owner import owner_context
 from .intent import IntentStore
 from .kernel import GoalStore
 from .models.chat import chat
@@ -495,8 +497,14 @@ class ProactiveEngine:
             "outcomes": [{"goal": item.goal[:240], "status": item.status, "result": item.result[:160]}
                          for item in outcomes[-8:]],
             "provided_context": self._provided_context(),
-            "recent_events": [asdict(item) for item in EventBus(self.root).recent(8)],
+            "recent_events": [asdict(item) for item in EventBus(self.root).recent(8)
+                              if item.sensitivity in {"normal", "personal"}],
+            # LL0/LL1: who the owner is and what he told Ghost. Health-tagged
+            # facts stay out of model prompts unless the owner approves a route.
+            "owner": owner_context(self.root),
             "rules": [
+                "Before proposing a new adapter, tool or integration, check owner.user 'Tools I already run' "
+                "and existing capabilities; prefer reusing or configuring them over building new ones.",
                 "Propose at most one bounded research, learning, coding, integration-feasibility, or focus experiment.",
                 "Use only supplied context. Missing credentials, accounts, sensors, firmware, or permissions require user input.",
                 "Never diagnose health, infer illness, send messages, control devices, spend money, deploy, or change live files.",
@@ -581,6 +589,17 @@ class ProactiveEngine:
             if observed_idle < idle_after:
                 return {"status": "deferred", "reason": "owner_active", "idle_seconds": observed_idle}
         context = self.context()
+        # LL0: owner statements not yet seen by a tick drive this one.
+        cursor = EventCursor(self.root, "proactive-owner-facts")
+        # One pass to the end of the log: a long pre-existing history must not hide a new fact.
+        unread = cursor.read_new(100_000)
+        pending = [(offset, event) for offset, event in unread if event.kind == "owner.fact"]
+        new_offset = unread[-1][0] if unread else 0
+        if pending:
+            context["new_owner_facts"] = [
+                {"memory_id": event.payload.get("memory_id", ""), "kind": event.payload.get("kind", ""),
+                 "subject": event.payload.get("subject", "")}
+                for _, event in pending[-5:] if event.sensitivity != "health"]
         # TD5 (S06): reserve one inference call before the model call; when the
         # durable daily budget is exhausted, defer without calling the model.
         if self.inference_budget is not None:
@@ -598,6 +617,14 @@ class ProactiveEngine:
         if not isinstance(response, str):
             raise ProactiveError("Proactive model returned a non-text response")
         proposal = self._make_opportunity(parse_proposal(response), context)
+        if context.get("new_owner_facts"):
+            proposal.trigger = "owner_request"
+            proposal.evidence_items = ([{"source": f"owner_fact:{fact['memory_id']}",
+                                         "excerpt": fact["subject"][:300]}
+                                        for fact in context["new_owner_facts"]]
+                                       + proposal.evidence_items)[:5]
+        if new_offset:
+            cursor.commit(new_offset)  # consumed: the model saw these facts once
         existing = self.store.find_active(proposal.opportunity_id)
         if existing:
             return {"status": "duplicate", "opportunity": asdict(existing)}

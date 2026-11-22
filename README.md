@@ -88,7 +88,7 @@ connection test.
 | Proactive opportunities: grounded evidence, transparent outcome-tuned ranking, similarity suppression, one clarifying question | live, idle-gated | `ghost proactive tick/watch/status/ranking/less/dismiss` |
 | Unattended loop: overnight cycles, quiet hours, digest with coverage gaps, daily inference cap, yields to you when you return | live, needs `idle_work` | `ghost daemon run`, `ghost overnight run` |
 | Notifications with quiet hours, batching and focus holds | live | `ghost notifications list/ack`, `ghost focus start/status/stop` |
-| "Why did you do this?" for any job or opportunity | live | `ghost why <id>` |
+| "Why did you do this?" for any job, opportunity, heartbeat action or owner fact | live | `ghost why <id>` |
 | Self-improvement: recurring failures → sandbox fix → self-repair evaluation → owner-gated promotion with update policy | live pipeline; no live end-to-end run recorded yet | `ghost trace-learning`, `ghost self-improve`, `ghost self-repair`, `ghost promote` |
 | Isolated evaluation in Docker (`--isolation auto/container/host`) | live when Docker and the OpenJarvis venv are present; otherwise records `runner: host` honestly | `ghost self-repair verify` |
 | Personal memory with provenance, edit/revisions, retention, sensitivity, retract/purge | live | `ghost memory …` |
@@ -100,6 +100,11 @@ connection test.
 | Model profiles (unknown limits and costs stay unknown); private-network fetch block in research | live | `ghost model-profile …`, `ghost research` |
 | Durable state: event IDs, cursors, failed-event queue, job leases/generations, schema registry and migrations, secret-free export | live | `ghost events …`, `ghost migrate`, `ghost export` |
 | Local dashboard and API with owner controls and token entry | live, loopback only | `ghost api` → http://127.0.0.1:8765/ |
+| **Life layer** owner intake: statements become validated owner facts + `owner.fact` event; the next proactive tick sees them once (trigger `owner_request`) | live, tested; no real-model run recorded yet | `ghost tell "<statement>"`, `ghost owner facts` |
+| **Life layer** owner files `SOUL.md` / `USER.md` in `.ghost/owner/`, versioned edits, loaded by proactive ticks and heartbeats | live | `ghost owner show/edit/history` |
+| **Life layer** situation record `.ghost/situation.json`: place, PC activity, current project, task guess, health, owner contact; each with value, confidence, source, freshness; stale decays to unknown | live for Windows idle, git, Telegram/CLI contact, pushed observations; ActivityWatch adapter built (not installed here); place and health **unknown** until HA Companion / HealthHub endpoint | `ghost situation [rebuild\|push]` |
+| **Life layer** heartbeat (assistant lane): every 30 min, **not idle-gated**, one action from `none/note/message_owner/post_room/propose_opportunity`; scoped `care.*` grants off by default, caps from a durable receipt ledger (hold across restart), quiet hours, no-diagnosis filter, health values withheld from the model | live, tested with scripted models; no live model or Telegram delivery recorded | `ghost heartbeat`, `ghost grant care.message_owner on`, `ghost why hb_…` |
+| Telegram owner intake: every message records `owner.contact`; statements become owner facts; `stop` engages the emergency stop (resume stays local) | built and tested; live once the bot token and pairing exist | `ghost openjarvis telegram serve` |
 | **Telegram** | **placeholder.** Transport, pairing, receipts and uncertain-delivery reconciliation are built and tested; no live authorized connection is recorded | `ghost openjarvis telegram …` |
 | **Huawei live data** | **placeholder** until Huawei developer credentials and user authorization exist | |
 | **DeskSentinel (ESP32 pan/tilt)** | **placeholder** until firmware and protocol exist; the safety gate and simulator are ready | |

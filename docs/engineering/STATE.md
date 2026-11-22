@@ -1,5 +1,20 @@
 # Ghost Engineering State
 
+## Active: life layer (branch `life-layer`, 2026-11-22)
+
+Owner directive: turn Ghost into a daily personal AI. Plan `life-layer/PLAN.md`; status, owner
+steps and evidence `life-layer/STATUS.md`. Campaign 2026-10c is **paused** (dispatcher already
+dead; c3/E4-E8 unmerged; E2b/E3 not started).
+
+Slice 1 (LL0, LL1, LL3/LL3b core, LL4, Telegram intake) on `life-layer`:
+- `owner.py` (facts on ValidatedMemoryStore, SOUL/USER files), `situation.py`, `heartbeat.py`
+  (care.* grants, receipt-ledger caps); proactive tick consumes `owner.fact` once via EventCursor
+  `proactive-owner-facts`; daemon runs the heartbeat each cycle (not idle-gated, starts once
+  `.ghost/owner/SOUL.md` exists); Telegram bridge records `owner.contact`, stores facts, `stop` engages
+  the emergency stop; `ghost why` explains `hb_*` and `owner_*` ids; digests append the situation line.
+- Coding lane unchanged: proactive kinds, blocked markers and sandbox gates untouched.
+- No live model, Telegram, ActivityWatch, HA or HealthHub evidence yet (owner steps in STATUS.md).
+
 ## Repository
 - Branch: master
 - HEAD: see `git log -1` (campaign 2026-10b closed at 6517b33 + this STATE update)
