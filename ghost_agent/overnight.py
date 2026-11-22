@@ -226,7 +226,8 @@ class OvernightRunner:
         lines.extend(self._render_coverage(now, entries))
         try:  # LL3b situation summary
             from .situation import summary
-            lines.extend(["", f"- {summary(self.root)}"])
+            from .heartbeat import services_health
+            lines.extend(["", f"- {summary(self.root)}", f"- {services_health(self.root)}"])
         except Exception:
             pass
         return "\n".join(lines) + "\n"

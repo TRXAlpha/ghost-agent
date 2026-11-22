@@ -1845,6 +1845,13 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    report_parser = sub.add_parser("life-report", help="Report what the assistant lane did (default last 24 h)")
+    report_parser.add_argument("--hours", type=float, default=24.0)
+    report_parser.add_argument("--out", default="", help="Write Markdown to this path")
+    report_parser.add_argument("--telegram", action="store_true", help="Also send a short summary to the owner")
+    remind_parser = sub.add_parser("remind", help="Add a reminder that fires on Telegram (via the daemon)")
+    remind_parser.add_argument("text")
+    remind_parser.add_argument("--in-minutes", type=float, required=True, dest="in_minutes")
     grant_parser = sub.add_parser("grant", help="Show or set assistant-lane care.* grants")
     grant_parser.add_argument("name", nargs="?", default="")
     grant_parser.add_argument("state", nargs="?", choices=["on", "off"], default=None)
@@ -2145,6 +2152,8 @@ def main() -> None:
         "ideas": lambda: _cmd_life(args),
         "build": lambda: _cmd_life(args),
         "reminders": lambda: _cmd_life(args),
+        "remind": lambda: _cmd_life(args),
+        "life-report": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3662,6 +3671,22 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "life-report":
+            from . import life_report
+            result = life_report.build(root, args.hours)
+            if args.out:
+                Path(args.out).write_text(life_report.render(result), encoding="utf-8")
+            if args.telegram:
+                m, h = result["messages"], result["heartbeats"]
+                hb.deliver_owner(root, f"Ghost {args.hours:g} h report: {result['daemon_cycles']} cycles, "
+                                 f"{h['total']} heartbeats, {m['total']} messages ({m['unprompted']} unprompted), "
+                                 f"{result['model_calls']['total_at_least']}+ model calls. "
+                                 f"Situation known: {result['situation']['known_fraction']}", why="life report")
+        elif args.command == "remind":
+            from . import briefing
+            if not 0 < args.in_minutes <= 60 * 24 * 365:
+                raise ValueError("--in-minutes must be between 0 and one year")
+            result = briefing.add_reminder(root, time.time() + args.in_minutes * 60, args.text)
         elif args.command in {"brief", "ideas", "build", "reminders"}:
             from . import briefing
             if args.command == "brief":

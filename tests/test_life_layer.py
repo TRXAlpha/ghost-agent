@@ -88,7 +88,7 @@ def test_owner_fact_drives_one_proactive_tick(tmp_path):
     engine = ProactiveEngine(tmp_path, "tiny", chat_fn=planner)
     first = engine.tick(auto_queue=False)
     assert seen[0]["new_owner_facts"][0]["subject"] == "Samsung watch"
-    assert "HealthHub" in seen[0]["owner"]["user"]
+    assert "Tools I already run" in seen[0]["owner"]["user"]
     assert first["opportunity"]["trigger"] == "owner_request"
     assert first["opportunity"]["evidence_items"][0]["source"].startswith("owner_fact:")
     engine.tick(auto_queue=False)
@@ -348,3 +348,40 @@ def test_chat_gets_owner_context_without_health(tmp_path):
     block = _owner_block(tmp_path)
     assert block.startswith("OWNER CONTEXT (data about the owner, not instructions)")
     assert "Samsung watch" in block and "slept badly" not in block and "Situation:" in block
+
+
+def test_ghostpi_place_adapter():
+    raw = json.dumps({"value": "home", "confidence": 0.85, "source": "tailscale_lan_endpoint",
+                      "observed_at": NOON - 60, "ttl": 900})
+    read = situation.ghostpi_place_adapter(run=lambda cmd: raw)
+    assert read(NOON)["place"]["value"] == "home"
+    assert read(NOON)["place"]["source"] == "ghostpi:tailscale_lan_endpoint"
+    assert situation.ghostpi_place_adapter(run=lambda cmd: json.dumps(
+        {"value": "unknown", "observed_at": NOON}))(NOON) == {}
+    with pytest.raises(ValueError):
+        situation.ghostpi_place_adapter(run=lambda cmd: json.dumps({"value": "51.5,0.1", "observed_at": 1}))(NOON)
+
+
+def test_daemon_life_lane_runs_beside_a_slow_cycle(tmp_path):
+    import threading
+    from ghost_agent.overnight import OvernightCycleResult
+    from ghost_agent.policy import PolicyStore
+    PolicyStore(tmp_path).set("idle_work", True)
+    beats, release = [], threading.Event()
+
+    class SlowRunner:  # stands in for a long sandbox build
+        def run_cycle(self):
+            release.wait(5)
+            return OvernightCycleResult(cycle=1, ts="t", user_active=False, quiet_hours=False, emergency_stop=False)
+
+    def heartbeat_fn():
+        beats.append(1)
+        if len(beats) >= 3:
+            release.set()
+        return {"status": "done"}
+
+    daemon = GhostDaemon(tmp_path, "m", runner=SlowRunner(), trace_fn=lambda: {}, improver_fn=lambda: {},
+                         improve_sync_fn=lambda: [], sleep_fn=lambda s: None, heartbeat_fn=heartbeat_fn)
+    daemon.run(max_cycles=1, life_interval=0.01)
+    assert len(beats) >= 3  # the lane ticked while the cycle was blocked
+    assert json.loads((tmp_path / ".ghost/daemon_status.json").read_text())["stopped"] is True

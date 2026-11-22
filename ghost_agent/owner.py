@@ -50,12 +50,13 @@ Owner-written. Ghost reads this on every heartbeat and proactive tick.
 Edit with: ghost owner edit USER.md --file <path>
 
 ## Routine
-- (fill in: school/work hours, sleep window, quiet hours)
+- (fill in: school/work hours, sleep window)
+
+## Quiet windows
+Quiet means DND and phone on silent. Example lines: "- Monday 09:05-09:49".
 
 ## Tools I already run (reuse before building)
-- HealthHub: aggregates Android Health Connect on my phone. Samsung Health,
-  Oura and other wearables sync into Health Connect, so new wearables need no
-  new adapter.
+- (list the apps and services you already run, e.g. a health aggregator)
 - ghostpi (Raspberry Pi 4B): AdGuard, Ghostwall, ghost-hub bot, Jellyfin.
 - ActivityWatch / WakaTime on the PC (when installed).
 
@@ -229,6 +230,23 @@ def owner_context(root: Path, *, include_health: bool = False) -> dict[str, Any]
     files = read_owner_files(root)
     return {"soul": files["SOUL.md"][:4000], "user": files["USER.md"][:6000],
             "facts": owner_facts(root, include_health=include_health)}
+
+
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WINDOW = re.compile(r"\b(mon|tue|wed|thu|fri|sat|sun)\w*\s+(\d{1,2})[:.](\d{2})\s*[-\u2013]\s*(\d{1,2})[:.](\d{2})",
+                     re.IGNORECASE)
+
+
+def quiet_windows(root: Path) -> list[tuple[int, int, int]]:
+    """(weekday, start_minute, end_minute) from the '## Quiet windows' section of USER.md."""
+    text = read_owner_files(root)["USER.md"]
+    match = re.search(r"^## Quiet windows\s*$(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    out = []
+    for day, h1, m1, h2, m2 in _WINDOW.findall(match.group(1) if match else ""):
+        start, end = int(h1) * 60 + int(m1), int(h2) * 60 + int(m2)
+        if 0 <= start < end <= 24 * 60:
+            out.append((_DAYS.index(day.lower()[:3]), start, end))
+    return out
 
 
 def fact_record(root: Path, memory_id: str) -> Optional[dict[str, Any]]:

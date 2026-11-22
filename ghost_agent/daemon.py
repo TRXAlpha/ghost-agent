@@ -10,6 +10,7 @@ invariant.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -102,6 +103,7 @@ class GhostDaemon:
             self.root, model)
         self.status_path = self.root / ".ghost" / "daemon_status.json"
         self._cycles = 0
+        self._life_thread: Optional[threading.Thread] = None
 
     # -- one cycle ---------------------------------------------------------
     def run_cycle(self) -> dict:
@@ -139,20 +141,47 @@ class GhostDaemon:
         else:
             record["improve_sync"] = "deferred"
 
-        # LL4: the heartbeat is not idle-gated; it runs whenever 30 min passed.
-        try:
-            record["heartbeat"] = self.heartbeat_fn()
-        except Exception as exc:
-            record["heartbeat"] = {"status": "error", "error": str(exc)[:200]}
+        # LL4: the heartbeat is not idle-gated. Under run() it has its own thread
+        # (a long sandbox build must not delay reminders or replies).
+        if self._life_thread is None:
+            record["heartbeat"] = self._life_once()
+        else:
+            record["heartbeat"] = "own_thread"
 
         atomic_json(self.status_path, record)
         return record
 
+    def _life_once(self) -> dict:
+        """One assistant-lane pass (life tick + heartbeat if due); errors are recorded, never raised."""
+        try:
+            return self.heartbeat_fn()
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)[:200]}
+
+    def _life_loop(self, stop_event: threading.Event, interval: float) -> None:
+        """Assistant lane on its own cadence, independent of worker builds."""
+        while not stop_event.is_set():
+            result = self._life_once()
+            atomic_json(self.root / ".ghost" / "life_status.json", {"ts": time.time(), "result": result})
+            stop_event.wait(interval)
+
     # -- main loop ---------------------------------------------------------
-    def run(self, *, max_cycles: Optional[int] = None) -> int:
+    def run(self, *, max_cycles: Optional[int] = None, life_interval: float = 60.0) -> int:
         from .policy import PolicyError, PolicyStore
         PolicyStore(self.root).require("idle_work", "unattended background work")
         stop = EmergencyStop(self.root)
+        life_stop = threading.Event()
+        self._life_thread = threading.Thread(target=self._life_loop, args=(life_stop, life_interval),
+                                             name="ghost-life-lane", daemon=True)
+        self._life_thread.start()
+        try:
+            return self._run_cycles(stop, max_cycles)
+        finally:
+            life_stop.set()
+            self._life_thread.join(timeout=5)
+            self._life_thread = None
+
+    def _run_cycles(self, stop, max_cycles: Optional[int]) -> int:
         while not stop.active():
             if max_cycles is not None and self._cycles >= max_cycles:
                 break

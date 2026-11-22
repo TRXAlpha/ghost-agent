@@ -48,9 +48,21 @@ def test_cursor_dedup_malformed_and_stranger(tmp_path):
 def test_stop_over_relay_engages_and_halts(tmp_path):
     sent = []
     b, responder = bridge(tmp_path, sent)
-    handled = tg.relay_lines(tmp_path, b, [row(1, "stop"), row(2, "I got a new phone")])
-    assert EmergencyStop(tmp_path).active() and handled == 1
-    assert "Emergency stop engaged" in sent[0][1]
+    tg.relay_lines(tmp_path, b, [row(1, "stop"), row(2, "I got a new phone")])
+    assert EmergencyStop(tmp_path).active()
+    assert "Emergency stop engaged" in sent[0][1] and len(sent) == 1  # second message ignored while stopped
+    assert not (tmp_path / ".ghost/validated-memory.json").exists()
+    tg.relay_lines(tmp_path, b, [row(3, "resume"), row(3, "resume")])
+    assert not EmergencyStop(tmp_path).active()
+    assert "Emergency stop cleared from Telegram" in sent[1][1] and len(sent) == 2  # dedup by message id
+
+
+def test_resume_only_from_owner(tmp_path):
+    sent = []
+    b, _ = bridge(tmp_path, sent)
+    EmergencyStop(tmp_path).engage("t")
+    tg.relay_lines(tmp_path, b, [row(1, "resume", sender=999)])
+    assert EmergencyStop(tmp_path).active() and not sent
 
 
 def test_relay_serve_follows_ssh_stream(tmp_path, monkeypatch):
@@ -67,7 +79,7 @@ def test_relay_serve_follows_ssh_stream(tmp_path, monkeypatch):
         def kill(self):
             pass
 
-    tg.relay_serve(tmp_path, "tiny", popen=Proc, sleep=lambda s: None)
+    tg.relay_serve(tmp_path, "tiny", popen=Proc, sleep=lambda s: None, rounds=1)
     assert commands[0][:3] == ["ssh", "-o", "BatchMode=yes"] and "tail -n +1 -F" in commands[0][-1]
     assert any("Noted" in s for s in sent) and EmergencyStop(tmp_path).active()
 

@@ -157,6 +157,25 @@ def pushed_adapter(root: Path) -> Callable[[float], dict]:
     return read
 
 
+def ghostpi_place_adapter(host: str = "ghostpi", run: Callable[[list[str]], str] | None = None) -> Callable[[float], dict]:
+    """Place from ghostpi's ghost-place timer (Telegram location, Tailscale, AdGuard); home/away only."""
+    def default_run(cmd: list[str]) -> str:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout
+    runner = run or default_run
+
+    def read(now: float) -> dict[str, dict]:
+        raw = runner(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+                      "cat ~/ghost-hub/state/ghost-place.json"])
+        data = json.loads(raw)
+        if data.get("value") not in {"home", "away", "unknown"} or type(data.get("observed_at")) not in (int, float):
+            raise ValueError("ghost-place.json has an unexpected shape")
+        if data["value"] == "unknown":
+            return {}
+        return {"place": observation(data["value"], data.get("confidence", 0.0), f"ghostpi:{data.get('source', '')}"[:60],
+                                     min(float(data.get("ttl", 900)), 3600), data["observed_at"])}
+    return read
+
+
 def push_observation(root: Path, field: str, value: Any, *, confidence: float, source: str,
                      ttl: float) -> dict[str, Any]:
     """Record one externally measured field (e.g. place from HA Companion)."""
@@ -193,7 +212,8 @@ def owner_repos(root: Path) -> list[Path]:
 
 def default_adapters(root: Path) -> dict[str, Callable[[float], dict]]:
     """Adapters in priority order: later ones only fill fields earlier ones left empty."""
-    return {"pushed": pushed_adapter(root), "activitywatch": activitywatch_adapter(),
+    return {"pushed": pushed_adapter(root), "ghostpi_place": ghostpi_place_adapter(),
+            "activitywatch": activitywatch_adapter(),
             "windows_idle": windows_idle_adapter(), "git": git_adapter(owner_repos(root)),
             "owner_contact": owner_contact_adapter(root)}
 
@@ -268,12 +288,45 @@ def rebuild(root: Path, adapters: Optional[dict[str, Callable[[float], dict]]] =
     with exclusive_lock(path.with_suffix(".lock")):
         previous = load(root, raw=True)
         atomic_json(path, record)
+    _append_history(root, record, now)
     before = {k: (previous.get("fields", {}).get(k) or {}).get("value") for k in ("place", "task_guess")}
     after = {k: record["fields"][k]["value"] for k in ("place", "task_guess")}
     if before != after:
         EventBus(root).emit(Event("situation.changed", {"before": before, "after": after},
                                   source="situation", sensitivity="personal"))
     return record
+
+
+HISTORY_MAX_LINES = 20_000  # ~70 days at one rebuild per 5 min
+
+
+def _append_history(root: Path, record: dict[str, Any], now: float) -> None:
+    """Compact sample per rebuild (known/unknown, confidence, source) for freshness reports and patterns."""
+    path = Path(root).resolve() / ".ghost" / "situation-history.jsonl"
+    sample = {"t": now, "f": {name: [item.get("value") if isinstance(item.get("value"), str) else
+                                     (item.get("value") or {}).get("state", "known"),
+                                     round(float(item.get("confidence", 0.0)), 2), item.get("source", "")]
+                              for name, item in record["fields"].items()}}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(sample) + "\n")
+    if path.stat().st_size > HISTORY_MAX_LINES * 400:  # rough cap; keep the newest half
+        lines = path.read_text(encoding="utf-8").splitlines()[-HISTORY_MAX_LINES // 2:]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def history(root: Path, since: float = 0.0) -> list[dict[str, Any]]:
+    """Situation samples newer than `since`; unreadable lines are skipped."""
+    path = Path(root).resolve() / ".ghost" / "situation-history.jsonl"
+    out = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                sample = json.loads(line)
+            except ValueError:
+                continue
+            if sample.get("t", 0) >= since:
+                out.append(sample)
+    return out
 
 
 def load(root: Path, *, raw: bool = False, now: Optional[float] = None) -> dict[str, Any]:

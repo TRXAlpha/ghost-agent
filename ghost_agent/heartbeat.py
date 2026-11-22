@@ -40,7 +40,7 @@ GRANT_DEFAULTS: dict[str, dict[str, Any]] = {
 ACTION_GRANT = {"message_owner": "care.message_owner", "post_room": "care.post_room"}
 INTERVAL_SECONDS = 1800
 DAILY_MODEL_CALLS = 60
-DEFAULT_QUIET_HOURS = (22, 8)
+DEFAULT_QUIET_HOURS = (23, 7)  # sleep varies; weekly windows come from USER.md
 # Health facts and trends only. Any wording that reads as a diagnosis is refused.
 _DIAGNOSIS = re.compile(r"\b(diagnos\w*|you (?:may|might|probably|likely) have|symptom\w*|"
                         r"disorder|disease|infection|illness|you are sick|you're sick|depress\w*)\b",
@@ -212,10 +212,18 @@ def parse_action(raw: str) -> dict[str, str]:
     return {"action": action, "text": text, "reason": reason}
 
 
-def _quiet(now: float, quiet: tuple[int, int]) -> bool:
-    hour = datetime.fromtimestamp(now).hour
+def _quiet(now: float, quiet: tuple[int, int], root: Optional[Path] = None) -> bool:
+    """Night quiet hours, plus the owner's weekly quiet windows (DND, phone silent) from USER.md."""
+    stamp = datetime.fromtimestamp(now)
     start, end = quiet
-    return (start <= hour or hour < end) if start > end else start <= hour < end
+    hour = stamp.hour
+    if (start <= hour or hour < end) if start > end else start <= hour < end:
+        return True
+    if root is not None:
+        from .owner import quiet_windows
+        minute = stamp.hour * 60 + stamp.minute
+        return any(day == stamp.weekday() and s <= minute < e for day, s, e in quiet_windows(root))
+    return False
 
 
 def _mask_health(fields: dict[str, Any]) -> dict[str, Any]:
@@ -361,7 +369,7 @@ class Heartbeat:
         if used >= grant["max"]:
             return {**receipt, "status": "refused",
                     "refusal": f"cap {grant['max']} per {grant['window_hours']} h reached"}
-        if _quiet(now, self.quiet_hours):
+        if _quiet(now, self.quiet_hours, self.root):
             AttentionManager(self.root).notify(Notification(
                 "normal", f"Ghost (held for quiet hours): {text}",
                 notification_id=f"hb-{receipt['receipt_id']}", source="heartbeat"))
@@ -395,11 +403,41 @@ def life_tick(root: Path, model: str, *, now: Optional[float] = None,
         out["situation"] = situation.rebuild(root, briefing_kwargs.pop("adapters", None), now)["fields"]["task_guess"]["value"]
     except Exception as exc:
         out["situation"] = f"error: {type(exc).__name__}"
-    if not _quiet(now, quiet_hours):
+    if not _quiet(now, quiet_hours, root):
         out["reminders"] = len(briefing.fire_due(root, deliver("reminder"), now))
     out["builds_reported"] = len(briefing.report_finished(root, deliver("build result")))
     out["briefings"] = briefing.run_pending(root, model, deliver("owner goal briefing"), **briefing_kwargs)
+    out["digest"] = deliver_digest(root, deliver("morning digest"), now)
     return out
+
+
+def services_health(root: Path, now: Optional[float] = None) -> str:
+    """One line on the autostart supervisor (scripts/ghost-life.ps1 -Supervise) for the digest."""
+    now = time.time() if now is None else now
+    path = Path(root).resolve() / ".ghost" / "life-logs" / "supervisor.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return "Services: supervisor not running (no .ghost/life-logs/supervisor.json)"
+    age = round((now - float(state.get("updated_at", 0))) / 60)
+    parts = [f"{name} {'up' if (state.get(name) or {}).get('alive') else 'DOWN'} "
+             f"(restarts {(state.get(name) or {}).get('restarts', 0)})" for name in ("relay", "daemon")]
+    stale = " STALE" if age > 5 else ""
+    return f"Services: {', '.join(parts)}; supervisor seen {age} min ago{stale}"
+
+
+def deliver_digest(root: Path, deliver: Callable[[str], dict], now: Optional[float] = None) -> str:
+    """Send today's overnight digest to the owner once (summary lines only)."""
+    now = time.time() if now is None else now
+    day = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    folder = Path(root).resolve() / ".ghost" / "digest"
+    path, marker = folder / f"{day}.md", folder / f".delivered-{day}"
+    if not path.exists() or marker.exists():
+        return "not_due"
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()][:18]
+    deliver("\n".join(lines))
+    marker.write_text("1", encoding="utf-8")
+    return "delivered"
 
 
 __all__ = ["life_tick", "deliver_owner", "salient_since", "ACTIONS", "GRANT_DEFAULTS", "Heartbeat", "HeartbeatError", "load_grants", "set_grant",

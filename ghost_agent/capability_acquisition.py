@@ -358,7 +358,7 @@ def installed_integrations(root: Path) -> dict[str, str]:
         from .openjarvis_bridge.runtime import require_upstream
         from .openjarvis_bridge.telegram import pairing
         require_upstream()
-        if pairing(Path(root)):
+        if pairing(Path(root)).get("enabled"):  # {"enabled": False} is truthy
             found.setdefault("telegram_transport", "openjarvis_telegram")
     except Exception as exc:  # Upstream missing must never break the inventory.
         last_error = str(exc)

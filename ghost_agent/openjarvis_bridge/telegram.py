@@ -279,15 +279,50 @@ class TelegramBridge:
             return None
         return tell(self.root, text, source="telegram")
 
-    def authorized(self, message) -> bool:
+    def _is_owner(self, message) -> bool:
+        """Paired private owner chat, transport not shut down (emergency stop not considered)."""
         owner = pairing(self.root)
         return (not self.stopped.is_set() and owner["enabled"] and message.channel == "telegram"
-                and message.sender == owner["user_id"] and message.conversation_id == owner["chat_id"]
-                and not EmergencyStop(self.root).active())
+                and message.sender == owner["user_id"] and message.conversation_id == owner["chat_id"])
+
+    def authorized(self, message) -> bool:
+        return self._is_owner(message) and not EmergencyStop(self.root).active()
+
+    @staticmethod
+    def _resume_request(content: str) -> bool:
+        """Owner words that clear the emergency stop (owner decision 2026-11-22)."""
+        return content.strip().casefold().rstrip("!.") in {"resume", "/resume", "clear stop", "/clear_stop"}
+
+    def _resume(self, message) -> None:
+        """Clear the emergency stop from the paired owner chat, exactly once per message."""
+        identifier = hashlib.sha256(f"{message.conversation_id}:{message.message_id}".encode()).hexdigest()
+        path = state_root(self.root) / "telegram-receipts" / f"{identifier}.json"
+        with exclusive_lock(path.with_suffix(".lock")):
+            if path.exists():
+                return
+            receipt = {"message_id": message.message_id, "received_at": time.time(), "status": "sending",
+                       "task_id": "emergency_resume"}
+            atomic_json(path, receipt)
+            from ..runtime import Scheduler
+            released = Scheduler(self.root).release_emergency_stop_holds()
+            EmergencyStop(self.root).clear()
+            EventBus(self.root).emit(Event("owner.contact", {"channel": "telegram", "message_id": message.message_id},
+                                           source="owner:telegram"))
+            delivered = self.channel.send(message.conversation_id,
+                                          f"Emergency stop cleared from Telegram. {len(released)} job(s) requeued.",
+                                          conversation_id=message.message_id)
+            receipt.update(status="delivered" if delivered else "delivery_failed", finished_at=time.time())
+            atomic_json(path, receipt)
 
     def handle(self, message):
-        if (not self.authorized(message) or not message.message_id.isdecimal()
-                or not isinstance(message.content, str) or not 0 < len(message.content) <= 12_000):
+        if (not message.message_id.isdecimal() or not isinstance(message.content, str)
+                or not 0 < len(message.content) <= 12_000):
+            return
+        if (EmergencyStop(self.root).active() and self._is_owner(message)
+                and self._resume_request(message.content)):
+            self._resume(message)
+            return
+        if not self.authorized(message):
             return
         identifier = hashlib.sha256(f"{message.conversation_id}:{message.message_id}".encode()).hexdigest()
         path = state_root(self.root) / "telegram-receipts" / f"{identifier}.json"
@@ -307,12 +342,14 @@ class TelegramBridge:
             try:
                 if self._stop_request(message.content):
                     EmergencyStop(self.root).engage("owner via telegram")
+                    from ..runtime import Scheduler
+                    Scheduler(self.root).hold_all("owner via telegram")  # same as `ghost emergency-stop engage`
                     receipt["task_id"] = "emergency_stop"
                     receipt["status"] = "sending"
                     atomic_json(path, receipt)
                     delivered = self.channel.send(
                         message.conversation_id,
-                        "Emergency stop engaged. Ghost holds all consequential work. Resume locally: ghost emergency-stop clear",
+                        "Emergency stop engaged. Ghost holds all consequential work. Send 'resume' to clear it (or locally: ghost emergency-stop clear)",
                         conversation_id=message.message_id)
                     receipt["status"] = "delivered" if delivered else "delivery_failed"
                     return
@@ -531,13 +568,12 @@ def relay_lines(root: Path, bridge: "TelegramBridge", lines) -> int:
             bridge.handle(RelayMessage(row))
             handled += 1
         atomic_json(path, {"line": line_no, "updated_at": time.time()})
-        if EmergencyStop(root).active():
-            break
     return handled
 
 
 def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
-                allow_sandbox_builds=False, run_worker=False, popen=None, sleep=time.sleep) -> None:
+                allow_sandbox_builds=False, run_worker=False, popen=None, sleep=time.sleep,
+                rounds: int | None = None) -> None:
     """Follow ghost-bot's owner inbox on ghostpi over one SSH `tail -F` and answer via Bot API.
 
     ghostpi keeps the only getUpdates poller for the shared token; Ghost Core
@@ -563,7 +599,10 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
     delay = 1.0
     print(f"Telegram relay following {host}:{RELAY_INBOX}. Ctrl+C stops it.", flush=True)
     try:
-        while not EmergencyStop(root).active():
+        # Keeps listening during an emergency stop: the bridge drops everything
+        # except the owner's 'resume'. `rounds` bounds SSH sessions (tests).
+        while rounds is None or rounds > 0:
+            rounds = None if rounds is None else rounds - 1
             try:
                 start = int(json.loads(_relay_cursor_path(root).read_text(encoding="utf-8")).get("line", 0))
             except (OSError, ValueError):
