@@ -87,6 +87,9 @@ def test_full_flow_briefing_reminders_ideas_build_report(tmp_path):
     # report once, from the job's real terminal result
     assert briefing.report_finished(tmp_path, lambda t: {}) == []  # still queued
     job.status, job.result = "completed", "tests_passed"
+    from ghost_agent.runtime import Scheduler
+    Scheduler(tmp_path).mark(job.job_id, "running")
+    Scheduler(tmp_path).mark(job.job_id, "completed")  # what the worker does at the end
     OutcomeStore(tmp_path).save(job)
     reports = []
     assert briefing.report_finished(tmp_path, lambda t: reports.append(t))[0]["result"] == "tests_passed"
@@ -146,3 +149,17 @@ def test_salience_brings_heartbeat_forward(tmp_path):
     owner.tell(tmp_path, "I got a new phone")
     assert beat.due(now + 400)       # salient event and >= 5 min since the last beat
     assert not beat.due(now + 100)   # minimum gap still holds
+
+
+def test_retried_build_is_not_reported_from_stale_verdict(tmp_path):
+    from ghost_agent.runtime import Scheduler
+    from ghost_agent.utils.storage import atomic_json
+    atomic_json(tmp_path / ".ghost/owner/ideas.json", {"goal_id": "g", "ideas": [
+        {"title": f"I{i}", "pitch": "p", "build_goal": f"Build tested prototype {i}", "job_id": "",
+         "reported": False} for i in (1, 2, 3)]})
+    job_id = briefing.build(tmp_path, 2, "tiny")["job_id"]
+    job = OutcomeStore(tmp_path).load(job_id)
+    job.status = "failed"  # old verdict while the scheduler has it queued again (retry)
+    OutcomeStore(tmp_path).save(job)
+    assert Scheduler(tmp_path).list()[0].status == "queued"
+    assert briefing.report_finished(tmp_path, lambda t: {}) == []

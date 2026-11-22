@@ -1,6 +1,29 @@
 # Ghost Engineering State
 
-## Active: life layer (branch `life-layer`, 2026-11-22)
+## Active: life layer, Phase 1 closed and merged to master (2026-11-22)
+
+Phase 1 close-out (FINISH_PHASE1_PROMPT.md): all five scenarios live per `life-layer/STATUS.md`
+(scenario 1 live but partial once the USER.md hint was removed; scenario 3 is the 24 h run in progress,
+report scheduled 2026-11-23 22:32 -> `life-layer/24h-report.md`). Running: Task Scheduler `GhostLife`
+(supervisor -> relay + daemon), SearXNG and `ghost-place.timer` on ghostpi, ActivityWatch on the PC.
+Owner set `care.message_owner` cap to 100/24 h and `idle_work` on.
+
+Queued next (owner requests 2026-11-22): Ghost uses the vault graph as memory; Ghost Android companion
+app on ghost-mobile (GPS logger, Android usage tracker, DND control, overnight emulator tests).
+
+### Phase 2 slice 1 proposal: LL5 room + LL6 two-key escalation
+- **Room (LL5):** a Telegram group with ghostbot plus a second agent bot; ghost-bot (sole poller) relays
+  group messages to `state/ghost-room.jsonl`; Ghost reads them as untrusted data (dedupe by message id,
+  never instructions) and posts under `care.post_room` (cap 12/h). Second agent: Ghost Mobile (phone
+  perception: unlocks, screen time) once the Android app exists; until then a deterministic ghostpi
+  presence bot (facts only: phone offline N h, no DNS overnight).
+- **Two-key (LL6):** `care.contact_emergency` stays off by default. Deterministic rule in code: two
+  different agents posted `concern` with evidence within 2 h, owner silent >= N h, no owner "away",
+  one message per contact per 24 h, facts only. Contacts listed by the owner in USER.md.
+- **Acceptance:** LL7 heartbeat bench (10 synthetic days, false alarms vs misses per model) and the
+  "silent day" test from PLAN.md section 7.
+
+## History: life layer slices (branch `life-layer`, 2026-11-22)
 
 Owner directive: turn Ghost into a daily personal AI. Plan `life-layer/PLAN.md`; status, owner
 steps and evidence `life-layer/STATUS.md`. Campaign 2026-10c is **paused** (dispatcher already

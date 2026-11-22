@@ -164,6 +164,9 @@ def _request(messages, options, response_format, engine):
         if type(value) is not int or not 0 <= value <= 131072:
             raise IntegrationError(f"Invalid {key} option.")
     kwargs = {"temperature": temp, "max_tokens": tokens, **opts}
+    effort = reasoning_effort(engine)
+    if effort:
+        kwargs["reasoning_effort"] = effort
     if response_format is not None:
         if response_format != "json" and not isinstance(response_format, dict):
             raise IntegrationError("response_format must be 'json' or a JSON schema.")
@@ -174,6 +177,17 @@ def _request(messages, options, response_format, engine):
         kwargs["response_format"] = ({"type": "json_object"} if response_format == "json" else
                                      {"type": "json_schema", "json_schema": {"name": "ghost", "schema": response_format}})
     return converted, kwargs
+
+
+def reasoning_effort(engine: str) -> str:
+    """GHOST_OPENJARVIS_REASONING_EFFORT for OpenAI-compatible engines (low|medium|high), else "".
+
+    gonkarouter caps GLM-5.3-Flash output at ~4k tokens including reasoning; at the default
+    effort it spent all 4000 on reasoning and returned no content (measured 2026-11-22),
+    at "low" it returned a 7.4k-character file in ~2k tokens.
+    """
+    value = os.environ.get("GHOST_OPENJARVIS_REASONING_EFFORT", "").strip().lower()
+    return value if engine != "ollama" and value in {"low", "medium", "high"} else ""
 
 
 def chat(model, messages, options=None, base_url=None, timeout=60, stream=False,

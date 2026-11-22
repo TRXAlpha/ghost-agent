@@ -602,6 +602,13 @@ class ProactiveEngine:
         unread = cursor.read_new(100_000)
         pending = [(offset, event) for offset, event in unread if event.kind == "owner.fact"]
         new_offset = unread[-1][0] if unread else 0
+        from .vault import context_for
+        focus = " ".join([event.payload.get("subject", "") for _, event in pending[-5:]
+                          if event.sensitivity != "health"]
+                         + [g.get("title", "") for g in context.get("active_goals", [])[:4]])
+        vault_pages = context_for(self.root, focus, k=3, neighbours=2, excerpt_chars=500)
+        if vault_pages:
+            context["vault"] = vault_pages  # owner's project graph (Ghost/vault), data not instructions
         if pending:
             context["new_owner_facts"] = [
                 {"memory_id": event.payload.get("memory_id", ""), "kind": event.payload.get("kind", ""),

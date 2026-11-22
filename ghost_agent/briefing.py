@@ -335,6 +335,7 @@ def build(root: Path, number: int, model: str) -> dict[str, Any]:
 def report_finished(root: Path, deliver: Callable[[str], dict]) -> list[dict[str, Any]]:
     """Tell the owner, once, the real terminal result of each built idea."""
     from .autonomy import OutcomeStore
+    from .runtime import Scheduler
     value = load_ideas(root)
     done = []
     for number, idea in enumerate(value.get("ideas", []), start=1):
@@ -344,6 +345,9 @@ def report_finished(root: Path, deliver: Callable[[str], dict]) -> list[dict[str
             job = OutcomeStore(root).load(idea["job_id"])
         except (OSError, ValueError):
             continue
+        scheduled = next((s for s in Scheduler(root).list() if s.job_id == job.job_id), None)
+        if scheduled is not None and scheduled.status in {"queued", "running", "paused"}:
+            continue  # retried or still in flight: the outcome record may still hold the old verdict
         if job.status not in {"completed", "failed", "needs_review"}:
             continue
         idea["reported"] = True

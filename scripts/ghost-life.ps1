@@ -68,6 +68,7 @@ $env:GHOST_OPENJARVIS_URL = 'https://api.gonkarouter.io/v1'
 $env:GHOST_ALLOW_REMOTE_INFERENCE = '1'
 $env:GHOST_MODEL = $Model
 $env:GHOST_OLLAMA_TIMEOUT = '180'
+$env:GHOST_OPENJARVIS_REASONING_EFFORT = 'low'  # GLM spends a 4k cap on reasoning otherwise
 $env:GHOST_SEARCH_URL = [Environment]::GetEnvironmentVariable('GHOST_SEARCH_URL', 'User')
 $env:PYTHONIOENCODING = 'utf-8'
 

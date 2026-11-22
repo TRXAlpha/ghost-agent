@@ -82,3 +82,28 @@ def test_value_error_from_chat_still_propagates(tmp_path, monkeypatch):
     agent = Orchestrator(tmp_path, model="scripted")
     with pytest.raises(ValueError):
         agent.run_task(task_path)
+
+
+def test_empty_reasoning_response_costs_one_turn(tmp_path, monkeypatch):
+    """GLM-5.3-Flash can spend its whole output cap on reasoning and return no text."""
+    from ghost_agent.openjarvis_bridge.runtime import IntegrationError
+    task_path = _write_task(tmp_path)
+    calls = {"n": 0}
+    feedback = []
+
+    def model(_model, messages, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise IntegrationError("Model returned no text content.")
+        feedback.append(messages[-1]["content"])
+        planning = "Create the plan now" in messages[-1]["content"]
+        actions = ([{"tool": "write_file", "path": "plan.md", "content": "Implement"}] if planning else [
+            {"tool": "write_file", "path": "app.py", "content": "answer = 42\n"},
+            {"tool": "write_file", "path": "test_app.py",
+             "content": "from app import answer\ndef test_answer():\n    assert answer == 42\n"}])
+        return json.dumps({"thought": "step", "actions": actions})
+
+    monkeypatch.setattr(module, "ollama_chat", model)
+    Orchestrator(tmp_path, model="scripted").run_task(task_path)
+    assert _state(tmp_path)["last_result"] == "tests_passed"
+    assert any("one small step" in text for text in feedback)

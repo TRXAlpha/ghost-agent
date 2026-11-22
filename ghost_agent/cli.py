@@ -1845,6 +1845,9 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    vault_parser = sub.add_parser("vault", help="Query the owner's Obsidian vault graph (read-only)")
+    vault_parser.add_argument("action", choices=["stats", "query"])
+    vault_parser.add_argument("text", nargs="?", default="")
     report_parser = sub.add_parser("life-report", help="Report what the assistant lane did (default last 24 h)")
     report_parser.add_argument("--hours", type=float, default=24.0)
     report_parser.add_argument("--out", default="", help="Write Markdown to this path")
@@ -2154,6 +2157,7 @@ def main() -> None:
         "reminders": lambda: _cmd_life(args),
         "remind": lambda: _cmd_life(args),
         "life-report": lambda: _cmd_life(args),
+        "vault": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3671,6 +3675,10 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "vault":
+            from . import vault
+            graph = vault.build_graph(cache=root / ".ghost" / "vault-graph.json")
+            result = vault.stats(graph) if args.action == "stats" else vault.query(graph, args.text)
         elif args.command == "life-report":
             from . import life_report
             result = life_report.build(root, args.hours)

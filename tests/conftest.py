@@ -37,3 +37,9 @@ def permissive_policy(tmp_path, monkeypatch):
     for mode in ("suggest", "build", "operate", "improve", "idle_work"):
         store.set(mode, True)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _no_owner_vault(tmp_path_factory, monkeypatch):
+    """Tests never read the owner's real Obsidian vault; tests that need one set GHOST_VAULT."""
+    monkeypatch.setenv("GHOST_VAULT", str(tmp_path_factory.getbasetemp() / "no-vault"))

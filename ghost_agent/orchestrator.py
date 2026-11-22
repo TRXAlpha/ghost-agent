@@ -1286,8 +1286,16 @@ class Orchestrator:
                 f"model call failed: {detail}",
             )
         except Exception as exc:
-            # ConnectionError, Timeout, HTTPError, etc.
-            # Let it propagate to the caller's except handler
+            # A reasoning model that spends its whole output cap thinking returns no text
+            # (GLM-5.3-Flash on gonkarouter, ~4k tokens incl. reasoning). That is one lost
+            # turn, not a failed job: ask for a smaller step next. Anything else propagates.
+            if type(exc).__name__ == "IntegrationError" and "no text content" in str(exc):
+                llm_log.log({"model_error": "empty_response"})
+                return (
+                    ActionResponse(thought="empty_response", actions=[]),
+                    "model call failed: empty response (output limit reached). Take one small step: "
+                    "write or edit a single file of at most ~120 lines, then stop.",
+                )
             raise
 
         llm_log.log({"response": response_text})

@@ -385,3 +385,23 @@ def test_daemon_life_lane_runs_beside_a_slow_cycle(tmp_path):
     daemon.run(max_cycles=1, life_interval=0.01)
     assert len(beats) >= 3  # the lane ticked while the cycle was blocked
     assert json.loads((tmp_path / ".ghost/daemon_status.json").read_text())["stopped"] is True
+
+
+def test_worker_alerts_forwarded_once(tmp_path):
+    from ghost_agent.runtime import Notification
+    AttentionManager(tmp_path).notify(Notification("important", "Worker exited during job_x. Job paused.",
+                                                   source="worker"))
+    AttentionManager(tmp_path).notify(Notification("normal", "fyi", source="worker"))
+    got = []
+    assert hb.forward_alerts(tmp_path, got.append) == 1
+    assert hb.forward_alerts(tmp_path, got.append) == 0
+    assert len(got) == 1 and "job_x" in got[0]
+
+
+def test_reasoning_effort_only_for_compatible_engines(monkeypatch):
+    from ghost_agent.openjarvis_bridge.runtime import reasoning_effort
+    monkeypatch.setenv("GHOST_OPENJARVIS_REASONING_EFFORT", "low")
+    assert reasoning_effort("openai-compat") == "low"
+    assert reasoning_effort("ollama") == ""
+    monkeypatch.setenv("GHOST_OPENJARVIS_REASONING_EFFORT", "max; drop table")
+    assert reasoning_effort("openai-compat") == ""

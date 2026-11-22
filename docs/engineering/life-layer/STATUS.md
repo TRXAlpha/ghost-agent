@@ -1,51 +1,59 @@
 # Life layer status
 
-Branch: `life-layer`. Plan: [PLAN.md](PLAN.md). Campaign 2026-10c is paused (its kanban
-dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
+Branch: `life-layer` (merged to master after Phase 1). Plan: [PLAN.md](PLAN.md).
+Campaign 2026-10c is paused (dispatcher already dead on 2026-11-22; c3/E4-E8 branches unmerged).
 
-## Owner-only steps (Ghost cannot do these)
+## What runs, and where (2026-11-22)
 
-1. **Done 2026-11-22 (outbound):** ghostbot token copied from ghostpi `~/ghost-hub/.env` into the Windows
-   user env var `GHOST_TELEGRAM_BOT_TOKEN` (never printed, not in the repo); chat 5309400589 paired from
-   `state/owner.json`; live check `success` (fingerprint 4d6c579e43942932).
-2. **Inbound: done via ghost-bot relay (owner choice 2026-11-22).** `~/ghost-hub/bot/ghost_bot.py` patched
-   (backup `ghost_bot.py.bak-relay`, service restarted): non-command owner messages are appended to
-   `~/ghost-hub/state/ghost-inbox.jsonl` instead of "Unknown command". Ghost runs
-   `ghost openjarvis telegram relay --model <m> --allow-sandbox-builds` (OpenJarvis venv, token in env);
-   it needs to be started after each PC boot (no autostart yet). Hub commands (status, wake, dns, brief, ...)
-   still go to ghost-bot. To undo on the Pi: restore the backup and restart `ghost-bot.service`.
-2b. **Search backend.** DuckDuckGo returns a bot challenge (HTTP 202) to Ghost. Run SearXNG on ghostpi
-   (`docker run -d -p 8888:8080 searxng/searxng`, enable `json` in `formats`) and set
-   `GHOST_SEARCH_URL=http://<pi-tailnet-ip>:8888`.
-3. **Turn on the assistant-lane grant:** `ghost grant care.message_owner on` (cap 3 per 24 h).
-4. **Done 2026-11-22: GLM-5.3-Flash via gonkarouter (owner choice, remote).** Key copied from the Hermes
-   .env into user env `GHOST_OPENJARVIS_API_KEY` with owner approval (not printed). Manual equivalent:
-   `$k = (Select-String '^HERMES_CUSTOM_API_GONKAROUTER_IO_API_KEY=' "$env:LOCALAPPDATA\hermes\.env").Line.Split('=',2)[1]; [Environment]::SetEnvironmentVariable('GHOST_OPENJARVIS_API_KEY', $k, 'User')`
-   Then `.\scripts\ghost-life.ps1 -Check` and `.\scripts\ghost-life.ps1` (relay + daemon; routing env is
-   per process). Remote inference sends owner files, facts and situation (health values withheld) to gonkarouter.
-5. **ActivityWatch** on the PC (https://activitywatch.net, free). Ghost reads `localhost:5600`.
-6. **Home Assistant Companion** on the phone (place zones), or let ghostpi push place from AdGuard
-   phone DNS: `ghost situation push --field place --value home --source ghostpi.adguard --ttl 900`.
-7. **HealthHub endpoint approval.** HealthHub was not found on this PC or in the vault; tell Ghost where
-   it runs (`ghost tell` or edit USER.md) and which endpoint it may read.
-8. **Edit `USER.md`** with your routine and quiet hours: `ghost owner show USER.md`, then
-   `ghost owner edit USER.md --file <path>`.
-9. **Enable unattended work** for the daemon: `ghost policy set idle_work on`, then `ghost daemon run`.
-
-## Evidence per Phase 1 scenario (2026-11-22)
-
-| Scenario | State | Evidence |
+| Piece | Where | Notes |
 |---|---|---|
-| 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | Built | **live** 2026-11-22, GLM-5.3-Flash: opportunity opp_4b39acab15acf5d0ea3a "Verify the Samsung watch syncs into HealthHub via Health Connect ... no new adapter", trigger owner_request, evidence owner_fact:owner_dab60c695a28. Caveat: the seeded USER.md states that Samsung Health syncs into Health Connect, so the model was given the key fact. Live heartbeat hb_0f06acf52e18 chose propose_opportunity (HealthHub endpoint approval) |
-| 2. Hackathon: research, reminders, 3 ideas, "build 2" | Briefing with quote-verified facts, reminders, 3 ideas, `build N` (CLI + Telegram), one result report: built | **mock** (scripted search/fetch/model). Live blocked on search backend and a model |
-| 3. 24 h run: fresh situation, <= 3 unprompted messages, digest with situation | Situation record, decay, heartbeat cap 3/24 h, digest line: built | **local** (situation rebuild on this PC: Windows idle + CLI contact; ActivityWatch absent). No 24 h run |
-| 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **live** chat answer 2026-11-22: "what do you know about me?" -> relay -> GLM with owner context -> delivered (task oj_df2f95a6...). **live** inbound fact path: 2026-11-22 owner sent "got a new Samsung watch" -> ghost-bot inbox -> relay -> fact owner_dab60c695a28 -> reply delivered. `stop` over Telegram: mock only |
-| 5. All existing tests pass; new code has tests | see STATE.md | **local** |
+| Relay + daemon (heartbeat, life lane, proactive, worker) | PC, Task Scheduler `GhostLife` at logon, user `chris`, no admin | `scripts/ghost-life.ps1 -Supervise` restarts each part with backoff; health in `.ghost/life-logs/supervisor.json`, in the digest |
+| Model | gonkarouter `zai-org/GLM-5.3-Flash`, OpenJarvis openai-compat (remote, owner choice) | key in user env `GHOST_OPENJARVIS_API_KEY` (copied from the Hermes .env with owner approval) |
+| Telegram | ghostbot token (user env `GHOST_TELEGRAM_BOT_TOKEN`); ghost-bot on ghostpi is the only poller | non-command owner messages -> `~/ghost-hub/state/ghost-inbox.jsonl` -> relay; owner location -> `state/ghost-location.json`; `/sethome` |
+| Search | SearXNG on ghostpi `100.71.145.20:8888` (tailnet only, mem 256 MB, JSON on) | `GHOST_SEARCH_URL`; compose `~/ghost-hub/searxng/` |
+| Place | `ghost-place.timer` on ghostpi every 2 min -> `state/ghost-place.json` (home/away/unknown only) | Telegram live location (<=150 m of home) > Tailscale LAN endpoint > public endpoint with recent AdGuard activity |
+| PC activity | ActivityWatch (user install, Startup shortcut), `localhost:5600` | `pc_activity`, `task_guess` |
+| Grants | `care.message_owner` on, cap 100/24 h (owner: no restriction); `idle_work` on | hard rules stay: no diagnosis, public = draft, emergency stop |
 
-## Next slices
+Pi changes (all owner-approved 2026-11-22): `ghost_bot.py` relay patch (backup `ghost_bot.py.bak-relay`),
+location + `/sethome` patch (backup `ghost_bot.py.bak-location`), `ghost-place.service/.timer`,
+SearXNG compose. Undo: restore the backups, `systemctl disable --now ghost-place.timer`,
+`docker compose -f ~/ghost-hub/searxng/docker-compose.yml down`.
 
-1. Phase 1 live run once a model is reachable: `ghost tell` the watch and a real hackathon, `ghost brief`,
-   24 h daemon run with `care.message_owner` on.
-2. LL5 room adapter + LL6 two-key escalation (Phase 2 start), ghost-bot relay for inbound if no second bot.
-3. Phase 2 patterns: per-weekday transition counts from situation history, proposed once, automated after accept.
-4. ActivityWatch installed -> 14-day `task_guess` replay against owner labels (LL3b acceptance).
+## Owner steps still open
+
+1. **HealthHub:** owner is checking where it runs. Until an endpoint is approved, `health` stays unknown.
+2. **Keep the Telegram live location shared** (Attach -> Location -> Share live location, until turned off);
+   otherwise place falls back to Tailscale (home on Wi-Fi only; mobile data at home reads as away 0.6).
+3. **Phone DND/silent during quiet windows:** Ghost holds messages in those windows; switching the phone
+   itself needs a phone-side component (the Ghost Android app, next).
+
+## Evidence per Phase 1 scenario
+
+| Scenario | Evidence | Detail |
+|---|---|---|
+| 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | **live, partial** | Fact `owner_dab60c695a28` from a real Telegram message. With the seeded hint removed from USER.md, GLM proposed `opp_4b5c6b4017fd6a1a2531` "Samsung watch data path: feasibility research": reuse-first, no new adapter, "HealthHub once confirmed", Health Connect only as "Health Connect-style paths". It does not conclude the full Health Connect -> HealthHub path because HealthHub is honestly unconfirmed. The earlier full match (`opp_4b39acab…`) was contaminated by the hint. |
+| 2. Hackathon: research, reminders, 3 ideas, "build 2" | **live** | `ghost tell "I'm joining the NASA Moon Base Challenge"` -> SearXNG -> 5 pages (3 nasa.gov) -> 15 quote-verified facts (registration until 2027-01-25 via NASA STEM Gateway; six design categories; U.S. high-school and post-secondary teams) -> Telegram message 190 with 3 ideas. Reminders 2027-01-18 and 2027-01-24 09:00; a live-check reminder fired on Telegram (message 197, `hb_78d4a8574902`). Owner sent `build 2` (msg 191) -> job `outcome_20261122_223559_c98a44bb_e80f064e` "DTN Lunar Mesh". Caveat: moonbasechallenge.org refuses Ghost's honest user agent, and the nasa.gov pages yielded one quotable fact (the $1 million prize), so dates, deadline and rules are quoted from news pages. |
+| 3. 24 h run: fresh situation, <= 3 unprompted messages, digest with situation | **live, running** | GhostLife started 2026-11-22 22:30; task `GhostLife24hReport` at 2026-11-23 22:32 writes [24h-report.md](24h-report.md) and a Telegram summary. Owner raised the unprompted cap to 100/24 h, so "<= 3" is now the owner's choice, not a code limit; the report counts unprompted messages either way. |
+| 4. `ghost why` explains every action; Telegram emergency stop | **live** | Real messages: `stop` (msg 193) engaged the stop and held jobs; `resume` (msg 195) cleared it (both receipts `delivered`). Heartbeat receipts and owner facts resolve with `ghost why`. |
+| 5. All existing tests pass; new code has tests | **local** | Main venv and OpenJarvis venv full suites; counts in STATE.md. |
+
+Build 2 result: reported to the owner on Telegram once the worker finishes (idle-gated); recorded in the 24 h report.
+
+## Found and fixed during the live run
+
+- 700/2048-token budgets returned no text on GLM (reasoning tokens count): `REASONING_BUDGET = 4000`.
+- GLM ignored new owner facts for older coding noise; tagging needed a relevance check.
+- A long sandbox build blocked reminders and replies: the life lane now has its own daemon thread.
+- Restarting services mid-build pauses the job and blocks the worker until review (by design); such
+  alerts are now forwarded to Telegram once. 18 stale worker notices (17 from September) were acknowledged first.
+- `installed_integrations` treated an unpaired Telegram (`{"enabled": False}`) as paired.
+- DuckDuckGo bot challenge -> SearXNG; site blocks on Ghost's user agent are skipped, not spoofed.
+- Phone DNS goes over Tailscale everywhere, so "recent phone DNS" alone cannot mean home.
+
+## Next
+
+1. Ghost uses the vault knowledge graph (Ghost/vault + graphify) as memory/context.
+2. Ghost Android companion app on ghost-mobile: GPS logger, Android usage tracker (ActivityWatch-like),
+   DND/silent control for quiet windows, overnight emulator self-tests by Ghost.
+3. Phase 2 slice 1: LL5 room + LL6 two-key escalation (proposal in STATE.md).
