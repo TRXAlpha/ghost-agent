@@ -18,8 +18,8 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
    (`docker run -d -p 8888:8080 searxng/searxng`, enable `json` in `formats`) and set
    `GHOST_SEARCH_URL=http://<pi-tailnet-ip>:8888`.
 3. **Turn on the assistant-lane grant:** `ghost grant care.message_owner on` (cap 3 per 24 h).
-4. **Model: GLM-5.3-Flash via gonkarouter (owner choice 2026-11-22, remote).** Copy the Hermes key once into a
-   Ghost-only user env var (run it yourself; Ghost was not allowed to read the Hermes key):
+4. **Done 2026-11-22: GLM-5.3-Flash via gonkarouter (owner choice, remote).** Key copied from the Hermes
+   .env into user env `GHOST_OPENJARVIS_API_KEY` with owner approval (not printed). Manual equivalent:
    `$k = (Select-String '^HERMES_CUSTOM_API_GONKAROUTER_IO_API_KEY=' "$env:LOCALAPPDATA\hermes\.env").Line.Split('=',2)[1]; [Environment]::SetEnvironmentVariable('GHOST_OPENJARVIS_API_KEY', $k, 'User')`
    Then `.\scripts\ghost-life.ps1 -Check` and `.\scripts\ghost-life.ps1` (relay + daemon; routing env is
    per process). Remote inference sends owner files, facts and situation (health values withheld) to gonkarouter.
@@ -36,7 +36,7 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
 
 | Scenario | State | Evidence |
 |---|---|---|
-| 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | Intake, fact, event, one-shot owner context in the tick, `why` link: built | **mock** (scripted planner). Whether the model concludes "reuse" is unverified: no model was reachable |
+| 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | Built | **live** 2026-11-22, GLM-5.3-Flash: opportunity opp_4b39acab15acf5d0ea3a "Verify the Samsung watch syncs into HealthHub via Health Connect ... no new adapter", trigger owner_request, evidence owner_fact:owner_dab60c695a28. Caveat: the seeded USER.md states that Samsung Health syncs into Health Connect, so the model was given the key fact. Live heartbeat hb_0f06acf52e18 chose propose_opportunity (HealthHub endpoint approval) |
 | 2. Hackathon: research, reminders, 3 ideas, "build 2" | Briefing with quote-verified facts, reminders, 3 ideas, `build N` (CLI + Telegram), one result report: built | **mock** (scripted search/fetch/model). Live blocked on search backend and a model |
 | 3. 24 h run: fresh situation, <= 3 unprompted messages, digest with situation | Situation record, decay, heartbeat cap 3/24 h, digest line: built | **local** (situation rebuild on this PC: Windows idle + CLI contact; ActivityWatch absent). No 24 h run |
 | 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **live** inbound fact path: 2026-11-22 owner sent "got a new Samsung watch" -> ghost-bot inbox -> relay -> fact owner_dab60c695a28 -> reply delivered. `stop` over Telegram: mock only |

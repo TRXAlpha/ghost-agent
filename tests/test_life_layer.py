@@ -323,3 +323,19 @@ def test_daemon_runs_heartbeat_without_idle(tmp_path):
     default = GhostDaemon(tmp_path, "m", runner=Runner(), trace_fn=lambda: {}, improver_fn=lambda: {},
                           improve_sync_fn=lambda: [], sleep_fn=lambda s: None)
     assert default.run_cycle()["heartbeat"]["status"] == "no_owner_files"
+
+
+def test_unaddressed_fact_is_not_tagged_and_stays_pending(tmp_path):
+    owner.tell(tmp_path, "I got a new Samsung watch")
+    seen = []
+    off_topic = lambda m, msgs, **k: seen.append(json.loads(msgs[1]["content"])) or json.dumps({
+        "title": "Fix iteration limits", "goal": "Diagnose iteration_limit failures in hello.py jobs",
+        "rationale": "r", "kind": "coding", "confidence": 0.5, "requires_user_input": False})
+    engine = ProactiveEngine(tmp_path, "tiny", chat_fn=off_topic)
+    first = engine.tick(auto_queue=False)
+    assert first["opportunity"]["trigger"] == "tick"
+    assert not any(e["source"].startswith("owner_fact:") for e in first["opportunity"]["evidence_items"])
+    engine.tick(auto_queue=False)
+    engine.tick(auto_queue=False)
+    engine.tick(auto_queue=False)
+    assert [bool(s.get("new_owner_facts")) for s in seen] == [True, True, True, False]  # released after 3

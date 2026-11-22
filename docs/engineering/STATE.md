@@ -19,7 +19,8 @@ Slice 1 (LL0, LL1, LL3/LL3b core, LL4, Telegram intake) on `life-layer`:
   OpenJarvis venv 67 passed.
 - Slice 3: ghost-bot relay (ghostpi patched, Ghost `telegram relay` follows the inbox over SSH).
   Suite 1484 passed / 1 skipped; OpenJarvis venv 72 passed.
-- Live: Telegram outbound; relay attached to ghostpi (ghostbot token, live check success 2026-11-22). No live model,
+- Live 2026-11-22 on GLM-5.3-Flash (gonkarouter): scenario 1 proactive tick, one heartbeat; Telegram inbound fact via relay. Fixes found live: 700-token budgets starve the reasoning model (REASONING_BUDGET=4000), owner-fact tagging needed a relevance check, confidence range stated in the prompt. Suite 1487 passed / 1 skipped.
+- Earlier: Telegram outbound; relay attached to ghostpi (ghostbot token, live check success 2026-11-22). No live model,
   search, ActivityWatch, HA or HealthHub evidence yet (owner steps in STATUS.md).
 
 ## Repository

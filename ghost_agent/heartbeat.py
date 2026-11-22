@@ -24,6 +24,7 @@ from uuid import uuid4
 from .context_manager import MemoryRecord, ValidatedMemoryStore
 from .models.chat import chat
 from .owner import owner_context
+from .proactive import REASONING_BUDGET
 from .runtime import AttentionManager, EmergencyStop, Event, EventBus, Notification
 from .security import SECRET_PATTERNS
 from .utils.storage import atomic_json, exclusive_lock
@@ -319,7 +320,7 @@ class Heartbeat:
         receipt["model_called"] = True
         try:
             raw = self.chat(self.model, self._prompt(context),
-                            options={"temperature": 0.3, "num_predict": 400},
+                            options={"temperature": 0.3, "num_predict": REASONING_BUDGET},
                             timeout=min(90, int(os.environ.get("GHOST_OLLAMA_TIMEOUT", "90"))),
                             response_format="json")
             action = parse_action(raw)
