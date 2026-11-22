@@ -1838,6 +1838,13 @@ def main() -> None:
     heartbeat_parser.add_argument("action", choices=["beat", "receipts"], nargs="?", default="beat")
     heartbeat_parser.add_argument("--model", default=None)
     heartbeat_parser.add_argument("--if-due", action="store_true", help="Skip unless 30 min passed")
+    brief_parser = sub.add_parser("brief", help="Research pending owner goals now: facts, reminders, 3 ideas")
+    brief_parser.add_argument("--model", default=None)
+    sub.add_parser("ideas", help="Show the current 3 ideas")
+    build_parser = sub.add_parser("build", help="Queue idea N from `ghost ideas` in the sandbox")
+    build_parser.add_argument("number", type=int)
+    build_parser.add_argument("--model", default=None)
+    sub.add_parser("reminders", help="List owner reminders")
     grant_parser = sub.add_parser("grant", help="Show or set assistant-lane care.* grants")
     grant_parser.add_argument("name", nargs="?", default="")
     grant_parser.add_argument("state", nargs="?", choices=["on", "off"], default=None)
@@ -2134,6 +2141,10 @@ def main() -> None:
         "situation": lambda: _cmd_life(args),
         "heartbeat": lambda: _cmd_life(args),
         "grant": lambda: _cmd_life(args),
+        "brief": lambda: _cmd_life(args),
+        "ideas": lambda: _cmd_life(args),
+        "build": lambda: _cmd_life(args),
+        "reminders": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3651,6 +3662,16 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command in {"brief", "ideas", "build", "reminders"}:
+            from . import briefing
+            if args.command == "brief":
+                result = hb.life_tick(root, _resolve_model(args.model))
+            elif args.command == "ideas":
+                result = briefing.load_ideas(root)
+            elif args.command == "build":
+                result = briefing.build(root, args.number, _resolve_model(args.model))
+            else:
+                result = briefing.reminders(root)
         elif args.command == "heartbeat":
             if args.action == "receipts":
                 result = hb.receipts(root, 20)

@@ -316,9 +316,23 @@ class TelegramBridge:
                         conversation_id=message.message_id)
                     receipt["status"] = "delivered" if delivered else "delivery_failed"
                     return
-                build_goal = self._sandbox_request(message.content) if self.allow_sandbox_builds else None
-                fact = None if build_goal else self._owner_fact(message.content)
-                if fact:
+                idea = re.fullmatch(r"\s*/?build\s+([1-9])\s*", message.content, flags=re.IGNORECASE)
+                build_goal = None if idea else (
+                    self._sandbox_request(message.content) if self.allow_sandbox_builds else None)
+                fact = None if (build_goal or idea) else self._owner_fact(message.content)
+                if idea:
+                    from ..briefing import BriefingError, build as build_idea
+                    if not self.allow_sandbox_builds:
+                        content = "Sandbox builds are off for this Telegram session (serve --allow-sandbox-builds)."
+                    else:
+                        try:
+                            queued = build_idea(self.root, int(idea.group(1)), self.model)
+                            content = (f"Queued prototype {idea.group(1)} ({queued.get('title', '')}) as "
+                                       f"{queued['job_id']}. I'll report the tested result; nothing goes live.")
+                        except BriefingError as exc:
+                            content = f"Not queued: {exc}"
+                    result = {"task_id": "owner_build", "content": content}
+                elif fact:
                     result = {"task_id": fact["memory_id"],
                               "content": f"Noted ({fact['kind']}: {fact['subject']}). "
                                          f"I'll work on it in the next idle window. Why: ghost why {fact['memory_id']}"}

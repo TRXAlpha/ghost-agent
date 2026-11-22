@@ -51,8 +51,11 @@ def _default_heartbeat_fn(root: Path, model: str) -> Callable[[], dict]:
         # Starts once Ghost has met the owner (`ghost tell` / `ghost owner show`).
         if not (Path(root) / ".ghost" / "owner" / "SOUL.md").exists():
             return {"status": "no_owner_files"}
+        from .heartbeat import life_tick
+        life = life_tick(root, model)
         heartbeat = Heartbeat(root, model)
-        return heartbeat.beat() if heartbeat.due() else {"status": "not_due"}
+        result = heartbeat.beat() if heartbeat.due() else {"status": "not_due"}
+        return {**result, "life": life}
     return beat
 
 

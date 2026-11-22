@@ -128,7 +128,41 @@ def used_in_window(root: Path, action: str, window_hours: float, now: float) -> 
     """Count executed (status=done) actions of one kind inside the cap window."""
     since = now - window_hours * 3600
     return sum(1 for r in receipts(root, 5000)
-               if r.get("action") == action and r.get("status") == "done" and r.get("at", 0) >= since)
+               if r.get("action") == action and r.get("status") == "done" and r.get("at", 0) >= since
+               and not r.get("prompted"))
+
+
+def deliver_owner(root: Path, text: str, *, why: str,
+                  send_fn: Optional[Callable[[Path, str], dict]] = None) -> dict[str, Any]:
+    """Prompted message (reply, reminder, build report): notification + Telegram if granted.
+
+    Prompted messages answer something the owner asked for, so they do not
+    count toward the unprompted cap, but they still need care.message_owner
+    for Telegram and still respect the emergency stop.
+    """
+    now = time.time()
+    receipt: dict[str, Any] = {"receipt_id": f"hb_{uuid4().hex[:12]}", "at": now, "action": "message_owner",
+                               "text": text[:600], "reason": why, "prompted": True, "model_called": False}
+    if EmergencyStop(root).active():
+        return _append_receipt(root, {**receipt, "status": "refused", "refusal": "emergency_stop"})
+    AttentionManager(root).notify(Notification("important", f"Ghost: {text}"[:2000],
+                                               notification_id=f"hb-{receipt['receipt_id']}", source="heartbeat"))
+    delivery: dict[str, Any] = {"status": "notification_only", "detail": "care.message_owner is off"}
+    if load_grants(root)["care.message_owner"]["enabled"]:
+        if send_fn is None:
+            from .openjarvis_bridge.telegram import send_owner
+            send_fn = send_owner
+        delivery = send_fn(root, text)
+    return _append_receipt(root, {**receipt, "status": "done", "delivery": delivery})
+
+
+SALIENT_KINDS = ("owner.fact", "owner.briefing", "situation.changed")
+SALIENT_MIN_GAP = 300
+
+
+def salient_since(root: Path, since: float) -> list[str]:
+    """Tier 2 salience gate (deterministic): event kinds that warrant an early heartbeat."""
+    return [e.kind for e in EventBus(root).recent(300) if e.kind in SALIENT_KINDS and e.created_at > since]
 
 
 def explain(root: Path, item_id: str) -> Optional[dict[str, Any]]:
@@ -221,7 +255,12 @@ class Heartbeat:
 
     def due(self, now: Optional[float] = None) -> bool:
         now = time.time() if now is None else now
-        return now - float(self._state().get("last_beat_at", 0)) >= self.interval
+        last = float(self._state().get("last_beat_at", 0))
+        if now - last >= self.interval:
+            return True
+        # Salience: an owner fact, briefing or situation change brings the beat forward.
+        seen = float(self._state().get("seen_until", last))
+        return now - last >= SALIENT_MIN_GAP and bool(salient_since(self.root, seen))
 
     def _calls_today(self, now: float) -> int:
         day = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
@@ -268,7 +307,9 @@ class Heartbeat:
         except Exception as exc:  # tier 1 failure must not kill the beat
             EventBus(self.root).emit(Event("heartbeat.situation_error", {"error": type(exc).__name__},
                                            source="heartbeat"))
-        atomic_json(self.state_path, {**self._state(), "last_beat_at": now})
+        # seen_until: events up to here (incl. this rebuild) never re-trigger salience.
+        atomic_json(self.state_path, {**self._state(), "last_beat_at": now,
+                                      "seen_until": max(now, time.time())})
         receipt: dict[str, Any] = {"receipt_id": f"hb_{uuid4().hex[:12]}", "at": now,
                                    "model": self.model, "model_called": False}
         if self._calls_today(now) >= DAILY_MODEL_CALLS:
@@ -335,5 +376,30 @@ class Heartbeat:
         return {**receipt, "status": "done", "delivery": delivery}
 
 
-__all__ = ["ACTIONS", "GRANT_DEFAULTS", "Heartbeat", "HeartbeatError", "load_grants", "set_grant",
+def life_tick(root: Path, model: str, *, now: Optional[float] = None,
+              send_fn: Optional[Callable[[Path, str], dict]] = None,
+              quiet_hours: tuple[int, int] = DEFAULT_QUIET_HOURS, **briefing_kwargs) -> dict[str, Any]:
+    """One daemon pass of the assistant lane, before the heartbeat.
+
+    Tier 1: rebuild the situation record. Then fire due reminders (held during
+    quiet hours), report finished owner builds, and brief pending owner goals.
+    """
+    from . import briefing
+    now = time.time() if now is None else now
+    out: dict[str, Any] = {}
+    if EmergencyStop(root).active():
+        return {"status": "stopped"}
+    deliver = lambda reason: (lambda text: deliver_owner(root, text, why=reason, send_fn=send_fn))
+    try:
+        out["situation"] = situation.rebuild(root, briefing_kwargs.pop("adapters", None), now)["fields"]["task_guess"]["value"]
+    except Exception as exc:
+        out["situation"] = f"error: {type(exc).__name__}"
+    if not _quiet(now, quiet_hours):
+        out["reminders"] = len(briefing.fire_due(root, deliver("reminder"), now))
+    out["builds_reported"] = len(briefing.report_finished(root, deliver("build result")))
+    out["briefings"] = briefing.run_pending(root, model, deliver("owner goal briefing"), **briefing_kwargs)
+    return out
+
+
+__all__ = ["life_tick", "deliver_owner", "salient_since", "ACTIONS", "GRANT_DEFAULTS", "Heartbeat", "HeartbeatError", "load_grants", "set_grant",
            "receipts", "used_in_window", "explain", "parse_action"]

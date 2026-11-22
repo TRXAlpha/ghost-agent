@@ -64,3 +64,23 @@ def test_send_owner_is_honest_without_token(tmp_path, monkeypatch):
     assert result == {"status": "sent", "message_id": 9} and sent == [("1234", "hi")]
     EmergencyStop(tmp_path).engage("t")
     assert send_owner(tmp_path, "hi", sender=lambda *a: {"ok": True})["status"] == "refused"
+
+
+def test_build_n_queues_current_idea(tmp_path):
+    from ghost_agent import briefing
+    from ghost_agent.utils.storage import atomic_json
+    atomic_json(tmp_path / ".ghost/owner/ideas.json", {"goal_id": "g", "ideas": [
+        {"title": f"Idea {i}", "pitch": "p", "build_goal": f"Build tested prototype {i}", "job_id": "",
+         "reported": False} for i in (1, 2, 3)]})
+    pair(tmp_path, "1234", "1234")
+    channel = MagicMock()
+    channel.send.return_value = True
+    off = TelegramBridge(tmp_path, channel, "tiny", responder=MagicMock())
+    off.handle(message("build 2"))
+    assert "Sandbox builds are off" in channel.send.call_args[0][1]
+    on = TelegramBridge(tmp_path, channel, "tiny", responder=MagicMock(), allow_sandbox_builds=True)
+    on.handle(message("build 2", message_id="6"))
+    assert "Queued prototype 2 (Idea 2)" in channel.send.call_args[0][1]
+    assert briefing.load_ideas(tmp_path)["ideas"][1]["job_id"]
+    on.handle(message("build 9", message_id="7"))
+    assert "Not queued" in channel.send.call_args[0][1]

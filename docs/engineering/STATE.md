@@ -13,7 +13,12 @@ Slice 1 (LL0, LL1, LL3/LL3b core, LL4, Telegram intake) on `life-layer`:
   `.ghost/owner/SOUL.md` exists); Telegram bridge records `owner.contact`, stores facts, `stop` engages
   the emergency stop; `ghost why` explains `hb_*` and `owner_*` ids; digests append the situation line.
 - Coding lane unchanged: proactive kinds, blocked markers and sandbox gates untouched.
-- No live model, Telegram, ActivityWatch, HA or HealthHub evidence yet (owner steps in STATUS.md).
+- Slice 2: `briefing.py` (owner goals -> quote-verified research, reminders, 3 ideas, build N, one report),
+  `heartbeat.life_tick` (situation rebuild, reminders, reports, briefings) run by the daemon before the
+  beat, salience gate, prompted deliveries outside the unprompted cap. Suite 1479 passed / 1 skipped;
+  OpenJarvis venv 67 passed.
+- Live: Telegram outbound only (ghostbot token, live check success 2026-11-22). No live model,
+  search, ActivityWatch, HA or HealthHub evidence yet (owner steps in STATUS.md).
 
 ## Repository
 - Branch: master

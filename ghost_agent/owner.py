@@ -201,6 +201,8 @@ def tell(root: Path, statement: str, *, source: str = "cli") -> dict[str, Any]:
         goal = GoalStore(root).create(parsed["subject"][:200], kind="owner", priority=60,
                                       deadline_at=parsed["deadline_at"])
         goal_id = goal.goal_id
+        from .briefing import queue_briefing
+        queue_briefing(root, goal_id, parsed["subject"], parsed["deadline_at"])
     event = EventBus(root).emit(Event(
         "owner.fact",
         {"memory_id": record.memory_id, "kind": parsed["kind"], "subject": parsed["subject"],

@@ -5,11 +5,15 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
 
 ## Owner-only steps (Ghost cannot do these)
 
-1. **Telegram bot token (new bot, not the ghost-hub token).** BotFather `/newbot`, then in the
-   shell that runs Ghost: `$env:GHOST_TELEGRAM_BOT_TOKEN = '<token>'`. Never paste it in chat or a file.
-2. **Pair your private chat.** Send the bot any message, read your user id, then
-   `ghost openjarvis telegram pair --user-id <id> --chat-id <id>` and
-   `ghost openjarvis telegram live-check --chat-id <id>` (runbook: `../telegram-live-qualification.md`).
+1. **Done 2026-11-22 (outbound):** ghostbot token copied from ghostpi `~/ghost-hub/.env` into the Windows
+   user env var `GHOST_TELEGRAM_BOT_TOKEN` (never printed, not in the repo); chat 5309400589 paired from
+   `state/owner.json`; live check `success` (fingerprint 4d6c579e43942932).
+2. **Inbound needs its own bot.** ghost-bot on the Pi long-polls `getUpdates` with the same token, and
+   Telegram allows one poller per token (HTTP 409). Either make a second bot for Ghost (BotFather
+   `/newbot`, set `GHOST_TELEGRAM_BOT_TOKEN` to it, re-pair), or later have ghost-bot relay owner messages.
+2b. **Search backend.** DuckDuckGo returns a bot challenge (HTTP 202) to Ghost. Run SearXNG on ghostpi
+   (`docker run -d -p 8888:8080 searxng/searxng`, enable `json` in `formats`) and set
+   `GHOST_SEARCH_URL=http://<pi-tailnet-ip>:8888`.
 3. **Turn on the assistant-lane grant:** `ghost grant care.message_owner on` (cap 3 per 24 h).
 4. **Model for the heartbeat and proactive loop.** Either start Ollama with a model that fits, or set
    the GLM-5.3-Flash route in the Ghost shell: `GHOST_INFERENCE_BACKEND=openjarvis`,
@@ -30,15 +34,15 @@ dispatcher was already dead on 2026-11-22; its c3/E4-E8 branches stay unmerged).
 | Scenario | State | Evidence |
 |---|---|---|
 | 1. "New Samsung watch" -> fact -> idle tick concludes reuse Health Connect via HealthHub | Intake, fact, event, one-shot owner context in the tick, `why` link: built | **mock** (scripted planner). Whether the model concludes "reuse" is unverified: no model was reachable |
-| 2. Hackathon: research, reminders, 3 ideas, "build 2" | Goal + deadline fact from "I'm joining X on YYYY-MM-DD" only | not started |
+| 2. Hackathon: research, reminders, 3 ideas, "build 2" | Briefing with quote-verified facts, reminders, 3 ideas, `build N` (CLI + Telegram), one result report: built | **mock** (scripted search/fetch/model). Live blocked on search backend and a model |
 | 3. 24 h run: fresh situation, <= 3 unprompted messages, digest with situation | Situation record, decay, heartbeat cap 3/24 h, digest line: built | **local** (situation rebuild on this PC: Windows idle + CLI contact; ActivityWatch absent). No 24 h run |
-| 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **mock** (OpenJarvis channel test doubles) |
+| 4. `ghost why` on every action; Telegram emergency stop | Heartbeat receipts and owner facts explainable; `stop` over Telegram engages the stop | **mock** for inbound; outbound send **live** |
 | 5. All existing tests pass; new code has tests | see STATE.md | **local** |
 
 ## Next slices
 
-1. LL2 live: owner steps 1-3, then a real `owner.contact` and a real heartbeat message.
-2. Scenario 2: `research` lane for owner goals (dates, deadline, rules, sources), reminders from
-   deadlines, 3 ideas message, "build N" over Telegram -> `queue_sandbox_outcome`.
-3. Salience gate (tier 2) on `situation.changed` / `owner.fact` so the heartbeat runs early on change.
+1. Phase 1 live run once a model is reachable: `ghost tell` the watch and a real hackathon, `ghost brief`,
+   24 h daemon run with `care.message_owner` on.
+2. LL5 room adapter + LL6 two-key escalation (Phase 2 start), ghost-bot relay for inbound if no second bot.
+3. Phase 2 patterns: per-weekday transition counts from situation history, proposed once, automated after accept.
 4. ActivityWatch installed -> 14-day `task_guess` replay against owner labels (LL3b acceptance).
