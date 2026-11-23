@@ -36,7 +36,8 @@ def _http(method: str, path: str, body: Optional[dict] = None) -> dict:
     import requests
     url = os.environ["GHOST_PHONE_URL"].rstrip("/") + path
     headers = {"Authorization": "Bearer " + os.environ["GHOST_PHONE_TOKEN"]}
-    response = requests.request(method, url, json=body, headers=headers, timeout=10)
+    # The phone answers slowly after idling (Tailscale/Doze wake-up: 8-12 s measured), so 25 s.
+    response = requests.request(method, url, json=body, headers=headers, timeout=25)
     response.raise_for_status()
     return response.json()
 
@@ -100,6 +101,17 @@ def home_point(root: Path, run: Optional[Callable[[list[str]], str]] = None) -> 
         return None
     atomic_json(path, point)
     return point
+
+
+def set_home_from_phone(root: Path, max_age: float = FRESH, now: Optional[float] = None) -> dict:
+    """Save the newest phone GPS fix as the home point (owner runs it while at home)."""
+    now = time.time() if now is None else now
+    fixes = _recent(root, {"location"}, limit=500)
+    if not fixes or now - fixes[-1]["at"] / 1000 > max_age:
+        raise ValueError("No phone GPS fix in the last 15 minutes; open the companion app and try again")
+    point = {"lat": float(fixes[-1]["data"]["lat"]), "lon": float(fixes[-1]["data"]["lon"]), "set_at": now}
+    atomic_json(Path(root).resolve() / ".ghost" / "owner" / "home.json", point)
+    return {"home": "saved", "accuracy_m": fixes[-1]["data"].get("acc")}
 
 
 def adapter(root: Path, http: Callable[..., dict] = _http,

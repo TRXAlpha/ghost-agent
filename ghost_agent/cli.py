@@ -1846,6 +1846,8 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    phone_parser = sub.add_parser("phone", help="Ghost Companion: pull now or save home from the phone's GPS")
+    phone_parser.add_argument("action", choices=["pull", "sethome"])
     mobile_parser = sub.add_parser("mobile-test", help="Build + test the Ghost Companion app on the emulator (not the phone)")
     mobile_parser.add_argument("--repo", default="", help="ghost-mobile checkout (default GHOST_MOBILE_REPO or ../ghost-mobile-companion)")
     vault_parser = sub.add_parser("vault", help="Query the owner's Obsidian vault graph (read-only)")
@@ -2162,6 +2164,7 @@ def main() -> None:
         "life-report": lambda: _cmd_life(args),
         "vault": lambda: _cmd_life(args),
         "mobile-test": lambda: _cmd_life(args),
+        "phone": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3679,6 +3682,13 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "phone":
+            from . import phone
+            if args.action == "pull":
+                result = {"pulled": len(phone.pull(root))}
+            else:
+                phone.pull(root)
+                result = phone.set_home_from_phone(root)
         elif args.command == "mobile-test":
             repo = Path(args.repo or os.environ.get("GHOST_MOBILE_REPO") or root.parent / "ghost-mobile-companion")
             folder = root / ".ghost" / "mobile-tests"

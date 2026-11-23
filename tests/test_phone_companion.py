@@ -99,3 +99,12 @@ def test_failed_telegram_falls_back_to_phone(tmp_path, monkeypatch):
     receipt = hb.deliver_owner(tmp_path, "reminder text", why="t",
                                send_fn=lambda root, text: {"status": "not_configured"})
     assert receipt["delivery"]["phone"] == "sent" and sent == ["reminder text"]
+
+
+def test_set_home_from_phone_uses_fresh_fix_only(tmp_path):
+    import pytest
+    phone.pull(tmp_path, FakePhone([ev(1, "location", NOW - 60, lat=44.4269, lon=26.1026, acc=8)]))
+    assert phone.set_home_from_phone(tmp_path, now=NOW)["home"] == "saved"
+    assert json.loads((tmp_path / ".ghost/owner/home.json").read_text())["lat"] == 44.4269
+    with pytest.raises(ValueError):
+        phone.set_home_from_phone(tmp_path, now=NOW + 3600)
