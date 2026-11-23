@@ -233,13 +233,17 @@ class PhoneChannel:
         return notify(text, self.http)
 
 
-def process_inbox(root: Path, model: str, *, http: Callable[..., dict] = _http, responder=None) -> int:
+_POOL = None
+
+
+def process_inbox(root: Path, model: str, *, http: Callable[..., dict] = _http, responder=None,
+                  background: bool = False) -> int:
     """Owner messages typed in the companion app, handled exactly like Telegram ones (once each).
 
     The bridge's pairing, receipts, emergency stop/resume, owner facts, build N and chat all
     apply; replies go back as phone notifications. Works without ghostpi or Telegram.
     """
-    from .openjarvis_bridge.telegram import RelayMessage, TelegramBridge, pairing
+    from .openjarvis_bridge.telegram import RelayMessage, TelegramBridge, _dispatch, pairing
     owner = pairing(root)
     if not owner.get("enabled"):
         return 0
@@ -253,9 +257,14 @@ def process_inbox(root: Path, model: str, *, http: Callable[..., dict] = _http, 
     if not messages:
         return 0
     bridge = TelegramBridge(root, PhoneChannel(http), model, responder=responder, allow_sandbox_builds=True)
+    global _POOL
+    if background and _POOL is None:  # one queued worker: code sessions run beside the life lane, in order
+        from concurrent.futures import ThreadPoolExecutor
+        _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ghost-phone-chat")
     for event in messages:
         # Offset keeps phone message ids apart from Telegram's in the shared receipt ledger.
-        bridge.handle(RelayMessage({"message_id": 10**12 + event["seq"], "chat_id": owner["chat_id"],
-                                    "from_id": owner["user_id"], "text": str(event["data"].get("text", ""))}))
+        _dispatch(bridge, RelayMessage({"message_id": 10**12 + event["seq"], "chat_id": owner["chat_id"],
+                                        "from_id": owner["user_id"], "text": str(event["data"].get("text", ""))}),
+                  _POOL if background else None)
         atomic_json(cursor, {"seq": event["seq"]})
     return len(messages)

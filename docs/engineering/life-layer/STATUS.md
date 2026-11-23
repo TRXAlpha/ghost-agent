@@ -14,6 +14,7 @@ Campaign 2026-10c is paused (dispatcher already dead on 2026-11-22; c3/E4-E8 bra
 | Place | `ghost-place.timer` on ghostpi every 2 min -> `state/ghost-place.json` (home/away/unknown only) | Telegram live location (<=150 m of home) > Tailscale LAN endpoint > public endpoint with recent AdGuard activity |
 | PC activity | ActivityWatch (user install, Startup shortcut), `localhost:5600` | `pc_activity`, `task_guess` |
 | Fallbacks | PC | ghostpi down >= 3 min: relay polls Telegram from the PC and hands back when the Pi answers or on 409 (live 2026-11-23 07:46). Telegram delivery failing: messages go to the companion app as notifications. Companion app "Send to Ghost": inbound channel with no Pi or Telegram. |
+| Code session | PC | Owner decision 2026-11-23: Telegram/phone chat can run code. `session.code` grant (on), scratch workspace `.ghost/sessions/telegram/work` (`ghost session root <dir>` to point it at a repo, CLI only), 500 calls/h, audit `.ghost/sessions/telegram/audit.jsonl`. Amends the old rule that the bridge never grants shell: the allowlist in authority.py is unchanged, session tools are a separate grant. |
 | Worker prompt cap | PC | `GHOST_MAX_INPUT_CHARS` (GLM launcher 96000, default 24000) |
 | Grants | `care.message_owner` on, cap 100/24 h (owner: no restriction); `idle_work` on | hard rules stay: no diagnosis, public = draft, emergency stop |
 

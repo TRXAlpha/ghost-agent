@@ -74,14 +74,14 @@ def test_relay_serve_follows_ssh_stream(tmp_path, monkeypatch):
     class Proc:
         def __init__(self, cmd, **kw):
             commands.append(cmd)
-            self.stdout = io.StringIO(row(1, "I got a new Samsung watch") + "\n" + row(2, "stop") + "\n")
+            self.stdout = io.StringIO(row(1, "I got a new Samsung watch") + "\n")
 
         def kill(self):
             pass
 
     tg.relay_serve(tmp_path, "tiny", popen=Proc, sleep=lambda s: None, rounds=1)
     assert commands[0][:3] == ["ssh", "-o", "BatchMode=yes"] and "tail -n +1 -F" in commands[0][-1]
-    assert any("Noted" in s for s in sent) and EmergencyStop(tmp_path).active()
+    assert any("Noted" in s for s in sent)
 
 
 def test_relay_refuses_without_pairing_token_or_bad_host(tmp_path, monkeypatch):

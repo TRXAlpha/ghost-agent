@@ -1846,6 +1846,9 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    session_parser = sub.add_parser("session", help="Read-write code session in Telegram/phone chat: show, set root, view audit")
+    session_parser.add_argument("action", nargs="?", choices=["show", "root", "audit"], default="show")
+    session_parser.add_argument("path", nargs="?", default="")
     channel_parser = sub.add_parser("channel", help="Where Ghost messages you: telegram, phone (companion app) or both")
     channel_parser.add_argument("name", nargs="?", choices=["telegram", "phone", "both"])
     phone_parser = sub.add_parser("phone", help="Ghost Companion: pull now or save home from the phone's GPS")
@@ -2168,6 +2171,7 @@ def main() -> None:
         "mobile-test": lambda: _cmd_life(args),
         "phone": lambda: _cmd_life(args),
         "channel": lambda: _cmd_life(args),
+        "session": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3685,6 +3689,19 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "session":
+            from .openjarvis_bridge import session_tools
+            if args.action == "root":
+                if not args.path:
+                    raise ValueError("session root needs a directory path")
+                result = {"root": str(session_tools.set_session_root(root, args.path))}
+            elif args.action == "audit":
+                result = session_tools.audit_rows(root)[-25:]
+            else:
+                grant = hb.load_grants(root)["session.code"]
+                result = {"enabled": grant["enabled"], "cap": f"{grant['max']} calls per {grant['window_hours']} h",
+                          "root": str(session_tools.session_root(root)),
+                          "calls_last_hour": len(session_tools.audit_rows(root, time.time() - 3600))}
         elif args.command == "channel":
             result = hb.set_owner_channel(root, args.name) if args.name else {"channel": hb.owner_channel(root)}
         elif args.command == "phone":

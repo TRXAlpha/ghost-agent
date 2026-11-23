@@ -37,6 +37,8 @@ GRANT_DEFAULTS: dict[str, dict[str, Any]] = {
     "care.post_room": {"enabled": False, "max": 12, "window_hours": 1},
     "care.contact_emergency": {"enabled": False, "max": 1, "window_hours": 24},
     "care.phone_actions": {"enabled": False, "max": 100, "window_hours": 24},  # DND/silent on the companion app
+    # Read-write code session in Telegram/phone chat (run/read/write/list in one workspace); calls per hour.
+    "session.code": {"enabled": False, "max": 500, "window_hours": 1},
 }
 ACTION_GRANT = {"message_owner": "care.message_owner", "post_room": "care.post_room"}
 INTERVAL_SECONDS = 1800
@@ -455,7 +457,7 @@ def life_tick(root: Path, model: str, *, now: Optional[float] = None,
         out["phone_watchdog"] = watchdog(root, deliver("phone offline"), now)
     out["phone_dnd"] = sync_quiet_dnd(root, now)
     try:
-        out["phone_inbox"] = process_inbox(root, model)
+        out["phone_inbox"] = process_inbox(root, model, background=True)
     except Exception as exc:
         out["phone_inbox"] = f"error: {type(exc).__name__}"
     return out

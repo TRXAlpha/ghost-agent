@@ -380,8 +380,10 @@ class TelegramBridge:
                               "content": f"Queued a sandbox build ({job.job_id}). Ghost will research, implement, test, and report; nothing is promoted live automatically."}
                 else:
                     try:
+                        from . import session_tools
+                        extra = {"code_session": True} if session_tools.enabled(self.root) else {}
                         result = self.responder(self.root, message.content, self.model, memory=self.memory,
-                                                channel="telegram", identity="owner:telegram")
+                                                channel="telegram", identity="owner:telegram", **extra)
                     except Exception as exc:
                         # Tell the owner instead of failing silently; nothing was sent yet.
                         result = {"task_id": "responder_unavailable",
@@ -537,7 +539,8 @@ class BotApiChannel:
 
     def send(self, chat_id: str, text: str, conversation_id: str = "") -> bool:
         try:
-            return bool(self.sender(self.token, chat_id, text).get("ok"))
+            parts = [text[i:i + 3900] for i in range(0, max(len(text), 1), 3900)]
+            return all(bool(self.sender(self.token, chat_id, part).get("ok")) for part in parts)
         except Exception:
             return False
 
@@ -546,7 +549,18 @@ def _relay_cursor_path(root: Path) -> Path:
     return state_root(root) / "telegram-relay-cursor.json"
 
 
-def relay_lines(root: Path, bridge: "TelegramBridge", lines) -> int:
+def _dispatch(bridge: "TelegramBridge", message, executor=None) -> None:
+    """Hand one message to the bridge. With an executor everything except stop/resume is queued
+    (one worker, in order), so a long code session can never delay the emergency stop."""
+    content = message.content
+    urgent = isinstance(content, str) and (bridge._stop_request(content) or bridge._resume_request(content))
+    if executor is None or urgent:
+        bridge.handle(message)
+    else:
+        executor.submit(bridge.handle, message)
+
+
+def relay_lines(root: Path, bridge: "TelegramBridge", lines, executor=None) -> int:
     """Feed inbox rows (JSON lines) to the bridge, committing a line cursor after each.
 
     Receipts dedup by chat:message_id, so a row re-read after a crash is never
@@ -565,7 +579,7 @@ def relay_lines(root: Path, bridge: "TelegramBridge", lines) -> int:
         except ValueError:
             row = None
         if isinstance(row, dict) and isinstance(row.get("text"), str):
-            bridge.handle(RelayMessage(row))
+            _dispatch(bridge, RelayMessage(row), executor)
             handled += 1
         atomic_json(path, {"line": line_no, "updated_at": time.time()})
     return handled
@@ -599,7 +613,9 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
     popen = popen or subprocess.Popen
     delay = 1.0
     last_healthy = clock()
-    fallback = fallback or (lambda: fallback_poll(root, bridge, token, host, popen=popen))
+    from concurrent.futures import ThreadPoolExecutor
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ghost-chat")
+    fallback = fallback or (lambda: fallback_poll(root, bridge, token, host, popen=popen, executor=executor))
     print(f"Telegram relay following {host}:{RELAY_INBOX}. Ctrl+C stops it.", flush=True)
     try:
         # Keeps listening during an emergency stop: the bridge drops everything
@@ -615,7 +631,7 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
             opened = clock()
             try:
-                if relay_lines(root, bridge, proc.stdout):
+                if relay_lines(root, bridge, proc.stdout, executor):
                     delay = 1.0
             finally:
                 proc.kill()
@@ -631,6 +647,9 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
             sleep(delay)  # ssh dropped (PC slept, Wi-Fi): reconnect with backoff
             delay = min(delay * 2, 60.0)
     finally:
+        if rounds is None:
+            bridge.stopped.set()  # service exit: revoke the in-flight reply and drop queued messages
+        executor.shutdown(wait=True, cancel_futures=rounds is None)  # bounded (test) runs flush the queue first
         bridge.stopped.set()
         worker_stop.set()
         if worker is not None:
@@ -641,7 +660,8 @@ _PI_COMMANDS = ("/status", "/wake", "/dns", "/setphone", "/honeypot", "/print", 
 
 
 def fallback_poll(root: Path, bridge: "TelegramBridge", token: str, host: str, *,
-                  get=None, probe=None, popen=None, probe_every: float = 60.0, clock=time.monotonic) -> str:
+                  get=None, probe=None, popen=None, probe_every: float = 60.0, clock=time.monotonic,
+                  executor=None) -> str:
     """PC-side getUpdates while ghostpi is down. Returns why it stopped ("pi_back" or "conflict").
 
     Only safe because ghost-bot (the normal sole poller) is unreachable: a 409 Conflict means
@@ -691,8 +711,8 @@ def fallback_poll(root: Path, bridge: "TelegramBridge", token: str, host: str, *
                 bridge.channel.send(str(chat), "ghostpi is offline, so hub commands are unavailable. "
                                     "Ghost on the PC is answering everything else.")
             elif text:
-                bridge.handle(RelayMessage({"message_id": m.get("message_id"), "chat_id": chat,
-                                            "from_id": (m.get("from") or {}).get("id"), "text": text}))
+                _dispatch(bridge, RelayMessage({"message_id": m.get("message_id"), "chat_id": chat,
+                                                "from_id": (m.get("from") or {}).get("id"), "text": text}), executor)
             atomic_json(path, {"offset": offset, "updated_at": time.time()})
     EventBus(root).emit(Event("telegram.fallback", {"state": "stopped", "reason": reason}, source="relay"))
     return reason
