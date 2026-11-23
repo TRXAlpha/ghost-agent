@@ -42,6 +42,40 @@ def _http(method: str, path: str, body: Optional[dict] = None) -> dict:
     return response.json()
 
 
+def _reach(root: Path, ok: Optional[bool] = None, now: Optional[float] = None) -> dict[str, Any]:
+    """Reachability record (.ghost/phone/reach.json); ok=True/False updates it."""
+    path = _dir(root) / "reach.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if ok is not None:
+        now = time.time() if now is None else now
+        state["last_ok" if ok else "last_fail"] = now
+        if ok:
+            state["notified"] = False
+        atomic_json(path, state)
+    return state
+
+
+def watchdog(root: Path, deliver: Callable[[str], Any], now: Optional[float] = None, after: float = 900) -> bool:
+    """Tell the owner once when a phone that used to answer has been silent for `after` seconds.
+
+    Honor/Huawei phones freeze background services (measured 2026-11-23: GPS logging stopped
+    3 min after the app left the foreground). Silence from Ghost must not look like "no news".
+    """
+    now = time.time() if now is None else now
+    state = _reach(root)
+    last_ok = state.get("last_ok")
+    if not last_ok or state.get("notified") or state.get("last_fail", 0) <= last_ok or now - last_ok < after:
+        return False
+    deliver(f"The Ghost Companion app on your phone stopped answering {round((now - last_ok) / 60)} min ago "
+            "(the phone probably froze it). Open the app once to wake it; until then I use Telegram.")
+    state["notified"] = True
+    atomic_json(_dir(root) / "reach.json", state)
+    return True
+
+
 def pull(root: Path, http: Callable[..., dict] = _http) -> list[dict[str, Any]]:
     """Fetch events after the stored cursor and append them to .ghost/phone/events.jsonl."""
     folder = _dir(root)
@@ -50,7 +84,12 @@ def pull(root: Path, http: Callable[..., dict] = _http) -> list[dict[str, Any]]:
         since = int(json.loads(cursor_path.read_text(encoding="utf-8")).get("seq", 0))
     except (OSError, ValueError):
         since = 0
-    data = http("GET", f"/events?since={since}&limit=2000")
+    try:
+        data = http("GET", f"/events?since={since}&limit=2000")
+    except Exception:
+        _reach(root, ok=False)
+        raise
+    _reach(root, ok=True)
     events = [e for e in data.get("events", []) if isinstance(e, dict) and isinstance(e.get("seq"), int)]
     if int(data.get("last_seq", since)) < since:
         since, events = 0, []  # app reinstalled: sequence restarted; next pull starts over
@@ -122,6 +161,9 @@ def adapter(root: Path, http: Callable[..., dict] = _http,
     def read(now: float) -> dict[str, dict]:
         if http is _http and not configured():
             return {}
+        state = _reach(root)
+        if state.get("last_fail", 0) > state.get("last_ok", 0) and now - state["last_fail"] < 120:
+            return {}  # just failed: skip rather than stall every rebuild on a 25 s timeout
         pull(root, http)
         out: dict[str, dict] = {}
         usage = _recent(root, {"app", "screen_on", "screen_off", "unlock"})

@@ -1,5 +1,6 @@
 """Ghost Companion (Android) adapter and quiet-window DND, with a fake phone endpoint."""
 import json
+import time
 from datetime import datetime
 
 from ghost_agent import heartbeat as hb, owner, phone, situation
@@ -138,3 +139,39 @@ def test_channel_preference(tmp_path, monkeypatch):
     hb.set_grant(tmp_path, "care.message_owner", False)
     hb.deliver_owner(tmp_path, "e", why="t", send_fn=tg)
     assert "e" not in tg_sent + phone_sent  # the grant gates every channel
+
+
+def test_watchdog_tells_once_and_rearms(tmp_path):
+    import pytest
+    up = FakePhone([ev(1, "app", NOW - 10, pkg="x")])
+    phone.pull(tmp_path, up)
+
+    def down(*a, **k):
+        raise TimeoutError("frozen")
+    with pytest.raises(TimeoutError):
+        phone.pull(tmp_path, down)
+    said = []
+    assert phone.watchdog(tmp_path, said.append, now=time.time() + 60) is False  # under 15 min
+    assert phone.watchdog(tmp_path, said.append, now=time.time() + 1000) is True
+    assert phone.watchdog(tmp_path, said.append, now=time.time() + 2000) is False  # once per outage
+    assert len(said) == 1 and "stopped answering" in said[0]
+    phone.pull(tmp_path, up)  # back: re-armed
+    with pytest.raises(TimeoutError):
+        phone.pull(tmp_path, down)
+    assert phone.watchdog(tmp_path, said.append, now=time.time() + 2000) is True
+
+
+def test_failed_pull_backs_off_and_never_nags_before_first_success(tmp_path):
+    calls = []
+
+    def down(*a, **k):
+        calls.append(1)
+        raise TimeoutError("x")
+    read = phone.adapter(tmp_path, http=down)
+    for _ in range(2):
+        try:
+            read(time.time())
+        except TimeoutError:
+            pass
+    assert len(calls) == 1  # second rebuild inside 120 s skipped the call
+    assert phone.watchdog(tmp_path, lambda t: None, now=time.time() + 5000) is False  # never answered: no nag

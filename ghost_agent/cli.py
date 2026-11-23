@@ -1705,7 +1705,7 @@ def main() -> None:
     accomplish_parser.add_argument("goal", nargs="+", help="Outcome to pursue")
     accomplish_parser.add_argument("--model", default=None, help="Coding/tool-use model")
     accomplish_parser.add_argument("--research-model", default=None, help="Research model")
-    accomplish_parser.add_argument("--iterations", type=int, default=30)
+    accomplish_parser.add_argument("--iterations", type=int, default=99)
     accomplish_parser.add_argument("--command-budget-seconds", type=float, default=300)
     accomplish_parser.add_argument("--command-budget-calls", type=int, default=32)
     accomplish_parser.add_argument("--command-timeout-seconds", type=float, default=30,
@@ -1740,7 +1740,7 @@ def main() -> None:
     jobs_parser.add_argument("--goal-id", default="", help="jobs add: goal id the recurring job serves")
     jobs_parser.add_argument("--recurrence", default="", help="jobs add: interval:SECONDS for a recurring job")
     jobs_parser.add_argument("--priority", type=int, default=50, help="jobs add: job priority (higher first)")
-    jobs_parser.add_argument("--iterations", type=int, default=30, help="jobs add: iteration budget for the job")
+    jobs_parser.add_argument("--iterations", type=int, default=99, help="jobs add: iteration budget for the job")
     emergency_parser = sub.add_parser("emergency-stop", help="Stop or resume consequential jobs")
     emergency_parser.add_argument("action", choices=["engage", "clear", "status"])
     emergency_parser.add_argument("--reason", default="user requested emergency stop")

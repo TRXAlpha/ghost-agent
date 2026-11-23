@@ -226,12 +226,12 @@ def test_record_feedback_requires_queued_or_running(tmp_path: Path):
 def test_queued_job_budget_values(tmp_path: Path):
     from ghost_agent.proactive import queue_sandbox_outcome
     job = queue_sandbox_outcome(tmp_path, "build a small calculator", "scripted-model")
-    assert job.iterations == 30
-    assert job.acceptance_contract["command_budget_seconds"] == 1800
-    assert job.acceptance_contract["command_budget_calls"] == 96
+    assert job.iterations == 99
+    assert job.acceptance_contract["command_budget_seconds"] == 3600
+    assert job.acceptance_contract["command_budget_calls"] == 250
     scheduler = Scheduler(tmp_path)
     scheduled = scheduler.list()[0]
-    assert scheduled.budget["iterations"] == 30
+    assert scheduled.budget["iterations"] == 99
 
 
 def test_opportunity_store_methods_defined_once():

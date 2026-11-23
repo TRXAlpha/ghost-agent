@@ -450,7 +450,9 @@ def life_tick(root: Path, model: str, *, now: Optional[float] = None,
     out["briefings"] = briefing.run_pending(root, model, deliver("owner goal briefing"), **briefing_kwargs)
     out["digest"] = deliver_digest(root, deliver("morning digest"), now)
     out["alerts"] = forward_alerts(root, deliver("worker alert"))
-    from .phone import process_inbox, sync_quiet_dnd
+    from .phone import process_inbox, sync_quiet_dnd, watchdog
+    if not _quiet(now, quiet_hours, root):
+        out["phone_watchdog"] = watchdog(root, deliver("phone offline"), now)
     out["phone_dnd"] = sync_quiet_dnd(root, now)
     try:
         out["phone_inbox"] = process_inbox(root, model)
