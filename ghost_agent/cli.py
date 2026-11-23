@@ -1846,6 +1846,8 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    channel_parser = sub.add_parser("channel", help="Where Ghost messages you: telegram, phone (companion app) or both")
+    channel_parser.add_argument("name", nargs="?", choices=["telegram", "phone", "both"])
     phone_parser = sub.add_parser("phone", help="Ghost Companion: pull now or save home from the phone's GPS")
     phone_parser.add_argument("action", choices=["pull", "sethome"])
     mobile_parser = sub.add_parser("mobile-test", help="Build + test the Ghost Companion app on the emulator (not the phone)")
@@ -2165,6 +2167,7 @@ def main() -> None:
         "vault": lambda: _cmd_life(args),
         "mobile-test": lambda: _cmd_life(args),
         "phone": lambda: _cmd_life(args),
+        "channel": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3682,6 +3685,8 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "channel":
+            result = hb.set_owner_channel(root, args.name) if args.name else {"channel": hb.owner_channel(root)}
         elif args.command == "phone":
             from . import phone
             if args.action == "pull":

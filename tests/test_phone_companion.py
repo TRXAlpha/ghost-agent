@@ -117,3 +117,24 @@ def test_first_sync_outside_window_never_touches_owner_dnd(tmp_path):
     fake = FakePhone([])
     assert phone.sync_quiet_dnd(tmp_path, NOW + 3600, http=fake) == "unchanged"
     assert not fake.calls  # owner's manual DND stays as it is
+
+
+def test_channel_preference(tmp_path, monkeypatch):
+    phone_sent, tg_sent = [], []
+    monkeypatch.setattr(phone, "notify", lambda text, *a, **k: phone_sent.append(text) or ok["phone"])
+    ok = {"phone": True}
+    tg = lambda root, text: tg_sent.append(text) or {"status": "sent"}
+    hb.set_grant(tmp_path, "care.message_owner", True)
+    assert hb.deliver_owner(tmp_path, "a", why="t", send_fn=tg)["delivery"]["channel"] == "telegram"  # default
+    hb.set_owner_channel(tmp_path, "phone")
+    assert hb.deliver_owner(tmp_path, "b", why="t", send_fn=tg)["delivery"]["channel"] == "phone"
+    assert tg_sent == ["a"] and phone_sent == ["b"]
+    ok["phone"] = False  # phone asleep/off tailnet -> Telegram takes it
+    assert hb.deliver_owner(tmp_path, "c", why="t", send_fn=tg)["delivery"]["channel"] == "telegram"
+    hb.set_owner_channel(tmp_path, "both")
+    ok["phone"] = True
+    hb.deliver_owner(tmp_path, "d", why="t", send_fn=tg)
+    assert tg_sent[-1] == "d" and phone_sent[-1] == "d"
+    hb.set_grant(tmp_path, "care.message_owner", False)
+    hb.deliver_owner(tmp_path, "e", why="t", send_fn=tg)
+    assert "e" not in tg_sent + phone_sent  # the grant gates every channel

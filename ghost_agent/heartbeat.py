@@ -151,14 +151,46 @@ def deliver_owner(root: Path, text: str, *, why: str,
                                                notification_id=f"hb-{receipt['receipt_id']}", source="heartbeat"))
     delivery: dict[str, Any] = {"status": "notification_only", "detail": "care.message_owner is off"}
     if load_grants(root)["care.message_owner"]["enabled"]:
-        if send_fn is None:
-            from .openjarvis_bridge.telegram import send_owner
-            send_fn = send_owner
-        delivery = send_fn(root, text)
-    if delivery.get("status") != "sent":
-        from .phone import notify
-        delivery["phone"] = "sent" if notify(text) else "unavailable"  # fallback channel, no Pi or Telegram needed
+        delivery = send_to_owner(root, text, send_fn)
     return _append_receipt(root, {**receipt, "status": "done", "delivery": delivery})
+
+
+CHANNELS = ("telegram", "phone", "both")
+
+
+def owner_channel(root: Path) -> str:
+    """Preferred channel from .ghost/owner/channel.json (`ghost channel ...`); default telegram."""
+    try:
+        value = json.loads((Path(root).resolve() / ".ghost" / "owner" / "channel.json").read_text(encoding="utf-8"))["channel"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "telegram"
+    return value if value in CHANNELS else "telegram"
+
+
+def set_owner_channel(root: Path, channel: str) -> dict[str, str]:
+    if channel not in CHANNELS:
+        raise HeartbeatError(f"channel must be one of {', '.join(CHANNELS)}")
+    atomic_json(Path(root).resolve() / ".ghost" / "owner" / "channel.json", {"channel": channel})
+    return {"channel": channel}
+
+
+def send_to_owner(root: Path, text: str, send_fn: Optional[Callable[[Path, str], dict]] = None) -> dict[str, Any]:
+    """Deliver on the preferred channel; the other one is the fallback, so nothing is lost."""
+    from .phone import notify
+    if send_fn is None:
+        from .openjarvis_bridge.telegram import send_owner
+        send_fn = send_owner
+    channel = owner_channel(root)
+    if channel == "phone":
+        if notify(text):
+            return {"status": "sent", "channel": "phone"}
+        return {**send_fn(root, text), "channel": "telegram", "phone": "unavailable"}
+    delivery = {**send_fn(root, text), "channel": "telegram"}
+    if channel == "both":
+        delivery["phone"] = "sent" if notify(text) else "unavailable"
+    elif delivery.get("status") != "sent":
+        delivery["phone"] = "sent" if notify(text) else "unavailable"  # fallback, no Pi or Telegram needed
+    return delivery
 
 
 SALIENT_KINDS = ("owner.fact", "owner.briefing", "situation.changed")
@@ -391,15 +423,7 @@ class Heartbeat:
         AttentionManager(self.root).notify(Notification(
             "important", f"Ghost: {text}", notification_id=f"hb-{receipt['receipt_id']}",
             source="heartbeat"))
-        send = self.send_fn
-        if send is None:
-            from .openjarvis_bridge.telegram import send_owner
-            send = send_owner
-        delivery = send(self.root, text)
-        if delivery.get("status") != "sent":
-            from .phone import notify
-            delivery["phone"] = "sent" if notify(text) else "unavailable"
-        return {**receipt, "status": "done", "delivery": delivery}
+        return {**receipt, "status": "done", "delivery": send_to_owner(self.root, text, self.send_fn)}
 
 
 def life_tick(root: Path, model: str, *, now: Optional[float] = None,
