@@ -157,12 +157,14 @@ def sync_quiet_dnd(root: Path, now: float, http: Callable[..., dict] = _http) ->
         have = json.loads(state_path.read_text(encoding="utf-8")).get("on")
     except (OSError, ValueError):
         have = None
-    if have == want:
+    if have == want or (not want and have is not True):
+        # Ghost only switches off a DND it switched on itself; the owner's own DND is left alone.
+        if have is None:
+            atomic_json(state_path, {"on": False, "at": now})
         return "unchanged"
     try:
         http("POST", "/dnd", {"on": want})
-        if want or have is not None:
-            http("POST", "/ringer", {"mode": "silent" if want else "normal"})
+        http("POST", "/ringer", {"mode": "silent" if want else "normal"})
     except Exception as exc:
         return f"unreachable: {type(exc).__name__}"  # phone off/away from tailnet: retry next tick
     atomic_json(state_path, {"on": want, "at": now})

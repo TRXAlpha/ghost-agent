@@ -108,3 +108,12 @@ def test_set_home_from_phone_uses_fresh_fix_only(tmp_path):
     assert json.loads((tmp_path / ".ghost/owner/home.json").read_text())["lat"] == 44.4269
     with pytest.raises(ValueError):
         phone.set_home_from_phone(tmp_path, now=NOW + 3600)
+
+
+def test_first_sync_outside_window_never_touches_owner_dnd(tmp_path):
+    owner.ensure_owner_files(tmp_path)
+    owner.edit_owner_file(tmp_path, "USER.md", "# USER\n\n## Quiet windows\n- Monday 09:05-09:49\n")
+    hb.set_grant(tmp_path, "care.phone_actions", True)
+    fake = FakePhone([])
+    assert phone.sync_quiet_dnd(tmp_path, NOW + 3600, http=fake) == "unchanged"
+    assert not fake.calls  # owner's manual DND stays as it is
