@@ -73,3 +73,29 @@ def test_unreachable_phone_retries_later(tmp_path):
         raise ConnectionError("phone asleep")
     assert phone.sync_quiet_dnd(tmp_path, NOW, http=down).startswith("unreachable")
     assert not (tmp_path / ".ghost/phone/dnd.json").exists()
+
+
+def test_phone_inbox_runs_through_the_bridge_once(tmp_path):
+    from unittest.mock import MagicMock
+    from ghost_agent.openjarvis_bridge.telegram import pair
+    from ghost_agent.runtime import EmergencyStop
+    pair(tmp_path, "5309400589", "5309400589")
+    fake = FakePhone([ev(1, "owner_message", NOW - 30, text="I got a new FTC robot controller"),
+                      ev(2, "owner_message", NOW - 20, text="what is on my plate today?"),
+                      ev(3, "owner_message", NOW - 10, text="stop")])
+    phone.pull(tmp_path, fake)
+    responder = MagicMock(return_value={"task_id": "t", "content": "Your plate: nothing urgent."})
+    assert phone.process_inbox(tmp_path, "tiny", http=fake, responder=responder) == 3
+    notes = [body["text"] for method, path, body in fake.calls if path == "/notify"]
+    assert any("Noted (device" in n for n in notes) and "Your plate: nothing urgent." in notes
+    assert EmergencyStop(tmp_path).active() and any("Emergency stop engaged" in n for n in notes)
+    assert phone.process_inbox(tmp_path, "tiny", http=fake, responder=responder) == 0  # cursor: each once
+
+
+def test_failed_telegram_falls_back_to_phone(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(phone, "notify", lambda text, *a, **k: sent.append(text) or True)
+    hb.set_grant(tmp_path, "care.message_owner", True)
+    receipt = hb.deliver_owner(tmp_path, "reminder text", why="t",
+                               send_fn=lambda root, text: {"status": "not_configured"})
+    assert receipt["delivery"]["phone"] == "sent" and sent == ["reminder text"]

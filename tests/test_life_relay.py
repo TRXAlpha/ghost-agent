@@ -109,3 +109,45 @@ def test_responder_failure_is_told_not_silent(tmp_path):
     responder.side_effect = ConnectionError("engine down")
     tg.relay_lines(tmp_path, b, [row(1, "how are you?")])
     assert "can't answer chat questions right now" in sent[0][1]
+
+
+def test_fallback_poll_answers_owner_and_hands_back(tmp_path):
+    sent = []
+    b, responder = bridge(tmp_path, sent)
+    updates = [{"update_id": 7, "message": {"message_id": 70, "chat": {"id": OWNER}, "from": {"id": OWNER},
+                                            "text": "I got a new Samsung watch"}},
+               {"update_id": 8, "message": {"message_id": 71, "chat": {"id": OWNER}, "from": {"id": OWNER},
+                                            "text": "/status"}},
+               {"update_id": 9, "message": {"message_id": 72, "chat": {"id": 999}, "from": {"id": 999},
+                                            "text": "hi"}}]
+    calls = {"n": 0}
+
+    def get(offset):
+        calls["n"] += 1
+        return (200, {"result": updates}) if calls["n"] == 1 else (409, {})
+
+    assert tg.fallback_poll(tmp_path, b, "x", "ghostpi", get=get, probe=lambda: False) == "conflict"
+    assert any("Noted (device" in s[1] for s in sent) and any("ghostpi is offline" in s[1] for s in sent)
+    assert len(sent) == 2  # stranger ignored
+    offset = json.loads((tmp_path / ".ghost/openjarvis/telegram-fallback-offset.json").read_text())["offset"]
+    assert offset == 10
+
+
+def test_relay_switches_to_fallback_after_pi_is_gone(tmp_path, monkeypatch):
+    tg.pair(tmp_path, str(OWNER), str(OWNER))
+    monkeypatch.setenv("GHOST_TELEGRAM_BOT_TOKEN", "x")
+    now = {"t": 0.0}
+    clock = lambda: now["t"]
+
+    class DeadSsh:  # ssh exits at once: Pi unreachable
+        def __init__(self, cmd, **kw):
+            self.stdout = io.StringIO("")
+            now["t"] += 61
+
+        def kill(self):
+            pass
+
+    fell_back = []
+    tg.relay_serve(tmp_path, "tiny", popen=DeadSsh, sleep=lambda s: None, rounds=5,
+                   fallback_after=180, fallback=lambda: fell_back.append(now["t"]), clock=clock)
+    assert fell_back and fell_back[0] >= 180

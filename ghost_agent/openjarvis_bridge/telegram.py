@@ -573,7 +573,8 @@ def relay_lines(root: Path, bridge: "TelegramBridge", lines) -> int:
 
 def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
                 allow_sandbox_builds=False, run_worker=False, popen=None, sleep=time.sleep,
-                rounds: int | None = None) -> None:
+                rounds: int | None = None, fallback_after: float = 180.0, fallback=None,
+                clock=time.monotonic) -> None:
     """Follow ghost-bot's owner inbox on ghostpi over one SSH `tail -F` and answer via Bot API.
 
     ghostpi keeps the only getUpdates poller for the shared token; Ghost Core
@@ -597,6 +598,8 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
     worker = _start_worker(root, worker_stop) if run_worker else None
     popen = popen or subprocess.Popen
     delay = 1.0
+    last_healthy = clock()
+    fallback = fallback or (lambda: fallback_poll(root, bridge, token, host, popen=popen))
     print(f"Telegram relay following {host}:{RELAY_INBOX}. Ctrl+C stops it.", flush=True)
     try:
         # Keeps listening during an emergency stop: the bridge drops everything
@@ -610,11 +613,21 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
             proc = popen(["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", host,
                           f"touch {RELAY_INBOX} && tail -n +{start + 1} -F {RELAY_INBOX}"],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+            opened = clock()
             try:
                 if relay_lines(root, bridge, proc.stdout):
                     delay = 1.0
             finally:
                 proc.kill()
+            if clock() - opened >= 30:
+                last_healthy = clock()  # the ssh session lived: the Pi was there
+            elif clock() - last_healthy >= fallback_after:
+                # ghostpi (and ghost-bot, the only poller) has been unreachable for minutes:
+                # poll Telegram from the PC until the Pi answers again, then hand back.
+                print("ghostpi unreachable; PC fallback is polling Telegram", flush=True)
+                fallback()
+                last_healthy, delay = clock(), 1.0
+                continue
             sleep(delay)  # ssh dropped (PC slept, Wi-Fi): reconnect with backoff
             delay = min(delay * 2, 60.0)
     finally:
@@ -622,3 +635,64 @@ def relay_serve(root: Path, model: str, *, host: str = "ghostpi", memory=False,
         worker_stop.set()
         if worker is not None:
             worker.join(timeout=2.0)
+
+
+_PI_COMMANDS = ("/status", "/wake", "/dns", "/setphone", "/honeypot", "/print", "/brief", "/fw", "/sethome", "/claim")
+
+
+def fallback_poll(root: Path, bridge: "TelegramBridge", token: str, host: str, *,
+                  get=None, probe=None, popen=None, probe_every: float = 60.0, clock=time.monotonic) -> str:
+    """PC-side getUpdates while ghostpi is down. Returns why it stopped ("pi_back" or "conflict").
+
+    Only safe because ghost-bot (the normal sole poller) is unreachable: a 409 Conflict means
+    another poller is back and Ghost hands polling over at once. Owner messages go through the
+    same bridge as relayed ones; Pi hub commands get an honest "ghostpi is offline" reply.
+    """
+    import subprocess
+    if get is None:
+        import requests
+
+        def get(offset):
+            response = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                                    params={"offset": offset, "timeout": 25,
+                                            "allowed_updates": json.dumps(["message"])}, timeout=40)
+            return response.status_code, response.json()
+    if probe is None:
+        def probe():
+            return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "true"],
+                                  capture_output=True, timeout=15).returncode == 0
+    path = state_root(root) / "telegram-fallback-offset.json"
+    try:
+        offset = int(json.loads(path.read_text(encoding="utf-8")).get("offset", 0))
+    except (OSError, ValueError):
+        offset = 0
+    owner = pairing(root)
+    EventBus(root).emit(Event("telegram.fallback", {"state": "started"}, source="relay"))
+    last_probe = clock()
+    reason = "pi_back"
+    while True:
+        if clock() - last_probe >= probe_every:
+            last_probe = clock()
+            if probe():
+                break
+        try:
+            status, data = get(offset)
+        except Exception:
+            time.sleep(5)
+            continue
+        if status == 409:
+            reason = "conflict"
+            break
+        for update in data.get("result", []) if isinstance(data, dict) else []:
+            offset = max(offset, int(update.get("update_id", 0)) + 1)
+            m = update.get("message") or {}
+            text, chat = m.get("text", ""), (m.get("chat") or {}).get("id")
+            if text and str(chat) == owner.get("chat_id") and text.split()[0].split("@")[0].lower() in _PI_COMMANDS:
+                bridge.channel.send(str(chat), "ghostpi is offline, so hub commands are unavailable. "
+                                    "Ghost on the PC is answering everything else.")
+            elif text:
+                bridge.handle(RelayMessage({"message_id": m.get("message_id"), "chat_id": chat,
+                                            "from_id": (m.get("from") or {}).get("id"), "text": text}))
+            atomic_json(path, {"offset": offset, "updated_at": time.time()})
+    EventBus(root).emit(Event("telegram.fallback", {"state": "stopped", "reason": reason}, source="relay"))
+    return reason

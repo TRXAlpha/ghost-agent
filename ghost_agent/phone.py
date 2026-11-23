@@ -155,3 +155,51 @@ def sync_quiet_dnd(root: Path, now: float, http: Callable[..., dict] = _http) ->
         return f"unreachable: {type(exc).__name__}"  # phone off/away from tailnet: retry next tick
     atomic_json(state_path, {"on": want, "at": now})
     return "on" if want else "cleared"
+
+
+def notify(text: str, http: Callable[..., dict] = _http, title: str = "Ghost") -> bool:
+    """Show a notification on the phone (the companion app's /notify). False when unreachable."""
+    if http is _http and not configured():
+        return False
+    try:
+        return bool(http("POST", "/notify", {"title": title, "text": text[:4000]}).get("id"))
+    except Exception:
+        return False
+
+
+class PhoneChannel:
+    """TelegramBridge channel whose replies go to the phone as notifications."""
+
+    def __init__(self, http: Callable[..., dict] = _http) -> None:
+        self.http = http
+
+    def send(self, chat_id: str, text: str, conversation_id: str = "") -> bool:
+        return notify(text, self.http)
+
+
+def process_inbox(root: Path, model: str, *, http: Callable[..., dict] = _http, responder=None) -> int:
+    """Owner messages typed in the companion app, handled exactly like Telegram ones (once each).
+
+    The bridge's pairing, receipts, emergency stop/resume, owner facts, build N and chat all
+    apply; replies go back as phone notifications. Works without ghostpi or Telegram.
+    """
+    from .openjarvis_bridge.telegram import RelayMessage, TelegramBridge, pairing
+    owner = pairing(root)
+    if not owner.get("enabled"):
+        return 0
+    folder = _dir(root)
+    cursor = folder / "inbox-cursor.json"
+    try:
+        done = int(json.loads(cursor.read_text(encoding="utf-8")).get("seq", 0))
+    except (OSError, ValueError):
+        done = 0
+    messages = [e for e in _recent(root, {"owner_message"}) if e["seq"] > done]
+    if not messages:
+        return 0
+    bridge = TelegramBridge(root, PhoneChannel(http), model, responder=responder, allow_sandbox_builds=True)
+    for event in messages:
+        # Offset keeps phone message ids apart from Telegram's in the shared receipt ledger.
+        bridge.handle(RelayMessage({"message_id": 10**12 + event["seq"], "chat_id": owner["chat_id"],
+                                    "from_id": owner["user_id"], "text": str(event["data"].get("text", ""))}))
+        atomic_json(cursor, {"seq": event["seq"]})
+    return len(messages)

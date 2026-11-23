@@ -155,6 +155,9 @@ def deliver_owner(root: Path, text: str, *, why: str,
             from .openjarvis_bridge.telegram import send_owner
             send_fn = send_owner
         delivery = send_fn(root, text)
+    if delivery.get("status") != "sent":
+        from .phone import notify
+        delivery["phone"] = "sent" if notify(text) else "unavailable"  # fallback channel, no Pi or Telegram needed
     return _append_receipt(root, {**receipt, "status": "done", "delivery": delivery})
 
 
@@ -393,6 +396,9 @@ class Heartbeat:
             from .openjarvis_bridge.telegram import send_owner
             send = send_owner
         delivery = send(self.root, text)
+        if delivery.get("status") != "sent":
+            from .phone import notify
+            delivery["phone"] = "sent" if notify(text) else "unavailable"
         return {**receipt, "status": "done", "delivery": delivery}
 
 
@@ -420,8 +426,12 @@ def life_tick(root: Path, model: str, *, now: Optional[float] = None,
     out["briefings"] = briefing.run_pending(root, model, deliver("owner goal briefing"), **briefing_kwargs)
     out["digest"] = deliver_digest(root, deliver("morning digest"), now)
     out["alerts"] = forward_alerts(root, deliver("worker alert"))
-    from .phone import sync_quiet_dnd
+    from .phone import process_inbox, sync_quiet_dnd
     out["phone_dnd"] = sync_quiet_dnd(root, now)
+    try:
+        out["phone_inbox"] = process_inbox(root, model)
+    except Exception as exc:
+        out["phone_inbox"] = f"error: {type(exc).__name__}"
     return out
 
 
