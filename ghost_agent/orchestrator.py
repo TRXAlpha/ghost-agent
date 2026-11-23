@@ -209,6 +209,9 @@ class Task:
         return paths
 
 
+VERIFY_COMMAND_TIMEOUT = 600  # seconds per verification gate command
+
+
 class Orchestrator:
     WORKSPACE_MODES = ("project", "empty")
 
@@ -677,6 +680,7 @@ class Orchestrator:
                 self._tui_complete(state["last_result"])
                 break
 
+            self._progress_note = self._budget_note(state, iteration_limit, last_feedback)
             phase = state["phase"]
             if phase == "INGEST":
                 state["phase"] = "PLAN" if self.genes["plan_enabled"] else "IMPLEMENT"
@@ -1141,7 +1145,15 @@ class Orchestrator:
             "thought": "Run the harness verification gate",
             "actions": [{"tool": "run_cmd", "cmd": command, "cwd": "."}],
         })
-        results, _ = self._execute_actions(response, workspace, actions_log)
+        # Gates get a realistic timeout: in project mode `pytest -q` is the whole Ghost suite
+        # (~4 min) and the 30 s per-command default made it time out on every run, so no such job
+        # could ever pass verification (measured 2026-11-23: 99 iterations, 191 timed-out runs).
+        previous = getattr(self, "_command_timeout", 30)
+        self._command_timeout = max(previous, VERIFY_COMMAND_TIMEOUT)
+        try:
+            results, _ = self._execute_actions(response, workspace, actions_log)
+        finally:
+            self._command_timeout = previous
         if len(results) != 1 or not isinstance(results[0], dict):
             return {"returncode": 1, "output": "Invalid verification result: expected one command record"}
         result = results[0]
@@ -1213,6 +1225,32 @@ class Orchestrator:
             f"{testing_hint}"
         )
 
+    @staticmethod
+    def _budget_note(state: Dict[str, Any], limit: int, last_feedback: str) -> str:
+        """Tell the model where it is in its budget and when it is repeating itself.
+
+        Measured 2026-11-23: jobs spent 99 iterations repeating one failing command. The model
+        never saw how many iterations were left or that the same step had already failed N times.
+        """
+        iteration = int(state.get("iteration", 0))
+        remaining = limit - iteration
+        note = f"Budget: iteration {iteration + 1} of {limit}."
+        signature = " ".join(last_feedback.split())[:300]
+        if signature and signature == state.get("feedback_sig"):
+            state["feedback_repeats"] = int(state.get("feedback_repeats", 0)) + 1
+        else:
+            state["feedback_repeats"] = 0
+        state["feedback_sig"] = signature
+        if state["feedback_repeats"] >= 2:
+            note += (f" WARNING: this step has now failed {state['feedback_repeats'] + 1} times with the same result. "
+                     "Do not run it again. Change approach: run a narrower command (one test file), read the "
+                     "error closely, or take a different route.")
+        if remaining <= max(2, limit // 5):
+            note += (f" Only {remaining} iteration(s) left: stop exploring. Make the smallest change that gets the "
+                     "tests passing and finish. If the task cannot be finished, leave the workspace in a working "
+                     "state and write NOTES.md listing what is done and what remains.")
+        return note
+
     def _model_turn(
         self,
         messages: List[Dict[str, str]],
@@ -1225,6 +1263,8 @@ class Orchestrator:
             turn_messages.append(
                 {"role": "user", "content": f"Last feedback:\n{last_feedback}"}
             )
+        if getattr(self, "_progress_note", ""):
+            turn_messages.append({"role": "user", "content": self._progress_note})
         turn_messages.append({"role": "user", "content": prompt})
         # _run_loop puts the full system instructions and task contract first;
         # later seed messages are optional retrieval/history context. Preserve
