@@ -13,6 +13,8 @@ Campaign 2026-10c is paused (dispatcher already dead on 2026-11-22; c3/E4-E8 bra
 | Search | SearXNG on ghostpi `100.71.145.20:8888` (tailnet only, mem 256 MB, JSON on) | `GHOST_SEARCH_URL`; compose `~/ghost-hub/searxng/` |
 | Place | `ghost-place.timer` on ghostpi every 2 min -> `state/ghost-place.json` (home/away/unknown only) | Telegram live location (<=150 m of home) > Tailscale LAN endpoint > public endpoint with recent AdGuard activity |
 | PC activity | ActivityWatch (user install, Startup shortcut), `localhost:5600` | `pc_activity`, `task_guess` |
+| Fallbacks | PC | ghostpi down >= 3 min: relay polls Telegram from the PC and hands back when the Pi answers or on 409 (live 2026-11-23 07:46). Telegram delivery failing: messages go to the companion app as notifications. Companion app "Send to Ghost": inbound channel with no Pi or Telegram. |
+| Worker prompt cap | PC | `GHOST_MAX_INPUT_CHARS` (GLM launcher 96000, default 24000) |
 | Grants | `care.message_owner` on, cap 100/24 h (owner: no restriction); `idle_work` on | hard rules stay: no diagnosis, public = draft, emergency stop |
 
 Pi changes (all owner-approved 2026-11-22): `ghost_bot.py` relay patch (backup `ghost_bot.py.bak-relay`),
