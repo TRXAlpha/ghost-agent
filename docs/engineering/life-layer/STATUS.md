@@ -22,6 +22,16 @@ SearXNG compose. Undo: restore the backups, `systemctl disable --now ghost-place
 
 ## Owner steps still open
 
+0. **Install the Ghost Companion on the phone** (built 2026-11-23, ghost-mobile branch `companion`, flavor
+   `v8companion`, installs beside v1-v7 as "Ghost Companion"):
+   APK `ghost-mobile-companion/android/app/build/outputs/apk/v8companion/debug/app-v8companion-debug.apk`.
+   Open it, tap Grant location, Allow all the time, Grant usage access, Grant DND access, Start, then
+   Copy Ghost token and set it on the PC: `[Environment]::SetEnvironmentVariable('GHOST_PHONE_TOKEN','<token>','User')`
+   (`GHOST_PHONE_URL` is already `http://100.95.143.88:8799`). Then restart: `Start-ScheduledTask GhostLife`.
+   Ghost then pulls phone_activity + GPS place and switches DND/silent in the quiet windows
+   (`care.phone_actions` is on). Nightly at 03:30 Ghost rebuilds and tests the app on the emulator
+   (`GhostMobileTest` task), never on the phone; first run PASS (Telegram).
+
 1. **HealthHub:** owner is checking where it runs. Until an endpoint is approved, `health` stays unknown.
 2. **Keep the Telegram live location shared** (Attach -> Location -> Share live location, until turned off);
    otherwise place falls back to Tailscale (home on Wi-Fi only; mobile data at home reads as away 0.6).
@@ -54,6 +64,7 @@ Build 2 result: reported to the owner on Telegram once the worker finishes (idle
 ## Next
 
 1. Ghost uses the vault knowledge graph (Ghost/vault + graphify) as memory/context.
-2. Ghost Android companion app on ghost-mobile: GPS logger, Android usage tracker (ActivityWatch-like),
-   DND/silent control for quiet windows, overnight emulator self-tests by Ghost.
+2. Done 2026-11-23: Ghost Companion (see owner step 0). Reviewed by opencode/gemini-4-hydrogen;
+   6 of 10 findings fixed, 4 documented as shortcuts. Live on the phone pending install.
+2b. Iteration limits raised on owner request (queued jobs 30, accomplish 30). Build 2 rerun with them.
 3. Phase 2 slice 1: LL5 room + LL6 two-key escalation (proposal in STATE.md).
