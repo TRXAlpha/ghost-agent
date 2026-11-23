@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 from .runtime import Event, EventBus
 from .utils.storage import atomic_json, exclusive_lock
 
-FIELDS = ("place", "pc_activity", "current_project", "task_guess", "health", "owner_contact")
+FIELDS = ("place", "pc_activity", "current_project", "task_guess", "health", "owner_contact", "phone_activity")
 UNKNOWN = "unknown"
 AW_URL = "http://localhost:5600/api/0"
 _GAMES = ("factorio", "steam", "minecraft", "remoteplay", "ps remote", "gta", "chiaki")
@@ -212,7 +212,8 @@ def owner_repos(root: Path) -> list[Path]:
 
 def default_adapters(root: Path) -> dict[str, Callable[[float], dict]]:
     """Adapters in priority order: later ones only fill fields earlier ones left empty."""
-    return {"pushed": pushed_adapter(root), "ghostpi_place": ghostpi_place_adapter(),
+    from .phone import adapter as phone_adapter
+    return {"pushed": pushed_adapter(root), "phone": phone_adapter(root), "ghostpi_place": ghostpi_place_adapter(),
             "activitywatch": activitywatch_adapter(),
             "windows_idle": windows_idle_adapter(), "git": git_adapter(owner_repos(root)),
             "owner_contact": owner_contact_adapter(root)}

@@ -36,6 +36,7 @@ GRANT_DEFAULTS: dict[str, dict[str, Any]] = {
     "care.message_owner": {"enabled": False, "max": 3, "window_hours": 24},
     "care.post_room": {"enabled": False, "max": 12, "window_hours": 1},
     "care.contact_emergency": {"enabled": False, "max": 1, "window_hours": 24},
+    "care.phone_actions": {"enabled": False, "max": 100, "window_hours": 24},  # DND/silent on the companion app
 }
 ACTION_GRANT = {"message_owner": "care.message_owner", "post_room": "care.post_room"}
 INTERVAL_SECONDS = 1800
@@ -419,6 +420,8 @@ def life_tick(root: Path, model: str, *, now: Optional[float] = None,
     out["briefings"] = briefing.run_pending(root, model, deliver("owner goal briefing"), **briefing_kwargs)
     out["digest"] = deliver_digest(root, deliver("morning digest"), now)
     out["alerts"] = forward_alerts(root, deliver("worker alert"))
+    from .phone import sync_quiet_dnd
+    out["phone_dnd"] = sync_quiet_dnd(root, now)
     return out
 
 

@@ -34,13 +34,14 @@ from .utils.storage import atomic_json, exclusive_lock
 
 # Bounded per-job allowance for queued sandbox work (proactive, Telegram,
 # capability improver). Raised from 4 iterations / 120 s after real jobs
-# could not finish within it (audit 2026-10-06).
-QUEUED_JOB_ITERATIONS = 10
+# could not finish within it (audit 2026-10-06); raised again to 30 on owner request
+# (2026-11-23: jobs kept ending at iteration_limit). Command budget scales with it.
+QUEUED_JOB_ITERATIONS = 30
 # Output budget for JSON planning calls. Reasoning models (GLM-5.3-Flash) spend
 # reasoning tokens from the same budget; at 700 they returned no text (2026-11-22).
 REASONING_BUDGET = 4000
-QUEUED_JOB_COMMAND_SECONDS = 600
-QUEUED_JOB_COMMAND_CALLS = 32
+QUEUED_JOB_COMMAND_SECONDS = 1800
+QUEUED_JOB_COMMAND_CALLS = 96
 
 # TD3 (R09/S07): "less of this" memory. Word tokens shorter than these are
 # ignored for similarity, and these common words never count as signal.

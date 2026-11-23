@@ -173,7 +173,7 @@ def test_cli_jobs_add_list_round_trip(tmp_path: Path, monkeypatch, capsys) -> No
     assert "refused" in out and "interval:SECONDS" in out
 
 
-def test_jobs_add_default_iterations_is_10(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_jobs_add_default_iterations_is_30(tmp_path: Path, monkeypatch, capsys) -> None:
     import sys
     import ghost_agent.cli as cli_mod
     monkeypatch.chdir(tmp_path)
@@ -193,7 +193,7 @@ def test_jobs_add_default_iterations_is_10(tmp_path: Path, monkeypatch, capsys) 
     cli_mod.main()
     assert len(captured) == 1
     args = captured[0]
-    assert args.iterations == 10, f"expected parser default 10, got {args.iterations}"
+    assert args.iterations == 30, f"expected parser default 30, got {args.iterations}"
     # Now run the real command handler with the parsed args
     real_cmd_jobs(args)
     out = capsys.readouterr().out
@@ -203,7 +203,7 @@ def test_jobs_add_default_iterations_is_10(tmp_path: Path, monkeypatch, capsys) 
     scheduler = Scheduler(tmp_path)
     jobs = scheduler.list()
     assert len(jobs) == 1
-    assert jobs[0].budget["iterations"] == 10
+    assert jobs[0].budget["iterations"] == 30
 
 
 def test_cli_remove_refused_for_queued_oneshot(tmp_path: Path, monkeypatch, capsys) -> None:

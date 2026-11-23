@@ -22,6 +22,7 @@ import re
 import shlex
 import sys
 import threading
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -1704,7 +1705,7 @@ def main() -> None:
     accomplish_parser.add_argument("goal", nargs="+", help="Outcome to pursue")
     accomplish_parser.add_argument("--model", default=None, help="Coding/tool-use model")
     accomplish_parser.add_argument("--research-model", default=None, help="Research model")
-    accomplish_parser.add_argument("--iterations", type=int, default=12)
+    accomplish_parser.add_argument("--iterations", type=int, default=30)
     accomplish_parser.add_argument("--command-budget-seconds", type=float, default=300)
     accomplish_parser.add_argument("--command-budget-calls", type=int, default=32)
     accomplish_parser.add_argument("--command-timeout-seconds", type=float, default=30,
@@ -1739,7 +1740,7 @@ def main() -> None:
     jobs_parser.add_argument("--goal-id", default="", help="jobs add: goal id the recurring job serves")
     jobs_parser.add_argument("--recurrence", default="", help="jobs add: interval:SECONDS for a recurring job")
     jobs_parser.add_argument("--priority", type=int, default=50, help="jobs add: job priority (higher first)")
-    jobs_parser.add_argument("--iterations", type=int, default=10, help="jobs add: iteration budget for the job")
+    jobs_parser.add_argument("--iterations", type=int, default=30, help="jobs add: iteration budget for the job")
     emergency_parser = sub.add_parser("emergency-stop", help="Stop or resume consequential jobs")
     emergency_parser.add_argument("action", choices=["engage", "clear", "status"])
     emergency_parser.add_argument("--reason", default="user requested emergency stop")
@@ -1845,6 +1846,8 @@ def main() -> None:
     build_parser.add_argument("number", type=int)
     build_parser.add_argument("--model", default=None)
     sub.add_parser("reminders", help="List owner reminders")
+    mobile_parser = sub.add_parser("mobile-test", help="Build + test the Ghost Companion app on the emulator (not the phone)")
+    mobile_parser.add_argument("--repo", default="", help="ghost-mobile checkout (default GHOST_MOBILE_REPO or ../ghost-mobile-companion)")
     vault_parser = sub.add_parser("vault", help="Query the owner's Obsidian vault graph (read-only)")
     vault_parser.add_argument("action", choices=["stats", "query"])
     vault_parser.add_argument("text", nargs="?", default="")
@@ -2158,6 +2161,7 @@ def main() -> None:
         "remind": lambda: _cmd_life(args),
         "life-report": lambda: _cmd_life(args),
         "vault": lambda: _cmd_life(args),
+        "mobile-test": lambda: _cmd_life(args),
         "proactive": lambda: _cmd_proactive(args),
         "self-repair": lambda: _cmd_self_repair(args),
         "device": lambda: _cmd_device(args),
@@ -3675,6 +3679,23 @@ def _cmd_life(args: argparse.Namespace) -> None:
             else:
                 print(situation.summary(root))
                 result = situation.load(root)
+        elif args.command == "mobile-test":
+            repo = Path(args.repo or os.environ.get("GHOST_MOBILE_REPO") or root.parent / "ghost-mobile-companion")
+            folder = root / ".ghost" / "mobile-tests"
+            folder.mkdir(parents=True, exist_ok=True)
+            out = folder / f"{time.strftime('%Y%m%dT%H%M%S')}.json"
+            subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                            str(repo / "scripts" / "companion_emulator_test.ps1"), "-Out", str(out), "-Build"],
+                           timeout=1800, check=False)
+            try:
+                result = json.loads(out.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                result = {"ok": False, "checks": {"run": {"ok": False, "detail": "no result file"}}}
+            failed = [name for name, check in result.get("checks", {}).items() if not check.get("ok")]
+            EventBus(root).emit(Event("mobile.test", {"ok": result.get("ok"), "failed": failed, "file": out.name},
+                                      source="mobile-test"))
+            hb.deliver_owner(root, f"Companion app nightly emulator test: {'PASS' if result.get('ok') else 'FAIL'}"
+                             + (f" (failed: {', '.join(failed)})" if failed else ""), why="mobile test")
         elif args.command == "vault":
             from . import vault
             graph = vault.build_graph(cache=root / ".ghost" / "vault-graph.json")

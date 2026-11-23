@@ -11,7 +11,7 @@
 #   .\scripts\ghost-life.ps1 -Stop        stop the supervised processes
 #   .\scripts\ghost-life.ps1 -Report      write docs/engineering/life-layer/24h-report.md and send a summary
 #   .\scripts\ghost-life.ps1 -ScheduleReport   one-shot task that runs -Report 24 h from now
-param([switch]$Check, [switch]$Supervise, [switch]$Install, [switch]$Stop, [switch]$Report, [switch]$ScheduleReport,
+param([switch]$Check, [switch]$Supervise, [switch]$Install, [switch]$Stop, [switch]$Report, [switch]$ScheduleReport, [switch]$MobileTest, [switch]$ScheduleMobileTest,
       [string]$Model = 'zai-org/GLM-5.3-Flash')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -45,6 +45,19 @@ if ($ScheduleReport) {
     "GhostLife24hReport scheduled for $at"
     exit 0
 }
+if ($ScheduleMobileTest) {
+    # Nightly emulator test of the companion app (never the owner's phone), inside night quiet hours.
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -MobileTest"
+    $trigger = New-ScheduledTaskTrigger -Daily -At 3:30am
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName 'GhostMobileTest' -Action $action -Trigger $trigger -Settings $settings `
+        -Principal $principal -Description 'Nightly Ghost Companion emulator test' -Force | Out-Null
+    "GhostMobileTest scheduled daily 03:30"
+    exit 0
+}
 if ($Stop) {
     if (Test-Path $statePath) {
         $s = Get-Content $statePath -Raw | ConvertFrom-Json
@@ -70,11 +83,18 @@ $env:GHOST_MODEL = $Model
 $env:GHOST_OLLAMA_TIMEOUT = '180'
 $env:GHOST_OPENJARVIS_REASONING_EFFORT = 'low'  # GLM spends a 4k cap on reasoning otherwise
 $env:GHOST_SEARCH_URL = [Environment]::GetEnvironmentVariable('GHOST_SEARCH_URL', 'User')
+foreach ($n in 'GHOST_PHONE_URL', 'GHOST_PHONE_TOKEN') {  # optional until the companion app is paired
+    $v = [Environment]::GetEnvironmentVariable($n, 'User'); if ($v) { Set-Item "env:$n" $v }
+}
 $env:PYTHONIOENCODING = 'utf-8'
 
 $py = Join-Path $root 'workspaces/openjarvis-venv/Scripts/python.exe'
 if ($Check) {
     & $py -m ghost_agent.cli openjarvis doctor --probe
+    exit $LASTEXITCODE
+}
+if ($MobileTest) {
+    & $py -m ghost_agent.cli mobile-test | Set-Content (Join-Path $logs 'mobile-test.out') -Encoding utf8
     exit $LASTEXITCODE
 }
 if ($Report) {
@@ -123,6 +143,8 @@ while ($true) {
     }
     $health = [ordered]@{
         supervisor_pid = $PID
+        model = $Model
+        reasoning_effort = $env:GHOST_OPENJARVIS_REASONING_EFFORT  # visible: a stale supervisor once ran without it
         started_at = [DateTimeOffset]::new($started).ToUnixTimeSeconds()
         updated_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     }
