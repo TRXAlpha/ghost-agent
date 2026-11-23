@@ -87,3 +87,13 @@ def test_required_input_is_never_truncated_or_sent_over_budget(monkeypatch, part
 def test_invalid_input_budget_fails_before_initialization(tmp_path, limit):
     with pytest.raises(ValueError, match="max_input_chars"):
         module.Orchestrator(tmp_path, max_input_chars=limit)
+
+
+def test_env_lifts_default_input_budget(tmp_path, monkeypatch):
+    from ghost_agent.orchestrator import Orchestrator
+    monkeypatch.setenv("GHOST_MAX_INPUT_CHARS", "96000")
+    assert Orchestrator(tmp_path, model="m").max_input_chars == 96000
+    monkeypatch.setenv("GHOST_MAX_INPUT_CHARS", "lots")
+    assert Orchestrator(tmp_path, model="m").max_input_chars == 24000
+    monkeypatch.delenv("GHOST_MAX_INPUT_CHARS")
+    assert Orchestrator(tmp_path, model="m", max_input_chars=5000).max_input_chars == 5000

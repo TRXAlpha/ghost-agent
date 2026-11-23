@@ -81,7 +81,8 @@ $env:GHOST_OPENJARVIS_URL = 'https://api.gonkarouter.io/v1'
 $env:GHOST_ALLOW_REMOTE_INFERENCE = '1'
 $env:GHOST_MODEL = $Model
 $env:GHOST_OLLAMA_TIMEOUT = '180'
-$env:GHOST_OPENJARVIS_REASONING_EFFORT = 'low'  # GLM spends a 4k cap on reasoning otherwise
+$env:GHOST_OPENJARVIS_REASONING_EFFORT = 'low'
+$env:GHOST_MAX_INPUT_CHARS = '96000'  # GLM has ~128k tokens of context; the worker default is 24k  # GLM spends a 4k cap on reasoning otherwise
 $env:GHOST_SEARCH_URL = [Environment]::GetEnvironmentVariable('GHOST_SEARCH_URL', 'User')
 foreach ($n in 'GHOST_PHONE_URL', 'GHOST_PHONE_TOKEN') {  # optional until the companion app is paired
     $v = [Environment]::GetEnvironmentVariable($n, 'User'); if ($v) { Set-Item "env:$n" $v }

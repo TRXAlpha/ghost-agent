@@ -220,9 +220,14 @@ class Orchestrator:
         timeout: int = 60,
         verbose: bool = False,
         tui: Optional[TUICallback] = None,
-        max_input_chars: int = 24_000,
+        max_input_chars: Optional[int] = None,
         max_output_tokens: int = 4096,
     ) -> None:
+        if max_input_chars is None:
+            # 24k chars fits small local models; GHOST_MAX_INPUT_CHARS lifts it for large-context
+            # routes (the GLM launcher sets 96000; a 30-iteration job outgrew 24k on 2026-11-23).
+            env_limit = os.environ.get("GHOST_MAX_INPUT_CHARS", "24000")
+            max_input_chars = int(env_limit) if env_limit.isdecimal() else 24_000
         if type(max_input_chars) is not int or max_input_chars <= 0:
             raise ValueError("max_input_chars must be a positive integer")
         self.max_input_chars = max_input_chars
